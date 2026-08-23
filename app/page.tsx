@@ -43,6 +43,7 @@ type Habit = { id: string; label: string; done: boolean; icon: string };
 type Workout = { id: string; title: string; day: string; duration: string; done: boolean };
 type ApplicationStage = "收藏" | "准备" | "已投" | "面试" | "Offer" | "拒绝";
 type Application = { id: string; company: string; role: string; stage: ApplicationStage; link: string; contact: string; date: string; notes: string };
+type AIPlanPreview = { summary: string; changes: string[]; nextData: AppData };
 
 type AppData = {
   tasks: Task[];
@@ -119,6 +120,25 @@ function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+function deriveAIChanges(current: AppData, next: AppData) {
+  const collections: Array<["tasks" | "schedule" | "goals" | "habits" | "workouts" | "applications", string]> = [["tasks", "任务"], ["schedule", "固定安排"], ["goals", "目标"], ["habits", "饮食习惯"], ["workouts", "运动"], ["applications", "求职记录"]];
+  const changes: string[] = [];
+  const displayName = (item: Record<string, unknown>) => String(item.title || item.company || item.label || item.code || item.id || "未命名记录");
+  for (const [key, label] of collections) {
+    const before = current[key] as unknown as Array<Record<string, unknown> & { id: string }>;
+    const after = next[key] as unknown as Array<Record<string, unknown> & { id: string }>;
+    const beforeMap = new Map(before.map((item) => [item.id, item]));
+    const afterMap = new Map(after.map((item) => [item.id, item]));
+    for (const item of after) {
+      if (!beforeMap.has(item.id)) changes.push(`新增${label}：${displayName(item)}`);
+      else if (JSON.stringify(beforeMap.get(item.id)) !== JSON.stringify(item)) changes.push(`修改${label}：${displayName(item)}`);
+    }
+    for (const item of before) if (!afterMap.has(item.id)) changes.push(`删除${label}：${displayName(item)}`);
+  }
+  if (changes.length === 0) return ["没有检测到实际数据变化。"];
+  return changes.length > 40 ? [...changes.slice(0, 40), `另有 ${changes.length - 40} 项变更`] : changes;
+}
+
 function formatDate(date: string) {
   const value = new Date(`${date}T12:00:00`);
   return `${value.getMonth() + 1}月${value.getDate()}日`;
@@ -140,6 +160,11 @@ export default function Home() {
   const [workoutEditor, setWorkoutEditor] = useState<Workout | "new" | null>(null);
   const [applicationEditor, setApplicationEditor] = useState<Application | "new" | null>(null);
   const [pasteEditor, setPasteEditor] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiText, setAiText] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
+  const [aiPreview, setAiPreview] = useState<AIPlanPreview | null>(null);
   const [filter, setFilter] = useState<"全部" | TaskCategory>("全部");
   const importRef = useRef<HTMLInputElement>(null);
   const today = getTorontoToday();
@@ -197,6 +222,33 @@ export default function Home() {
       try { setData(JSON.parse(String(reader.result))); } catch { window.alert("这个备份文件无法读取。"); }
     };
     reader.readAsText(file);
+  }
+
+  async function createAIPlan() {
+    if (!aiText.trim() || aiLoading) return;
+    setAiLoading(true);
+    setAiError("");
+    setAiPreview(null);
+    try {
+      const response = await fetch("/api/ai-plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ instruction: aiText.trim(), currentData: data, today }) });
+      const result = await response.json() as AIPlanPreview & { error?: string };
+      if (!response.ok) throw new Error(result.error || "AI 暂时无法创建计划。");
+      if (!result.nextData || !Array.isArray(result.changes) || !Array.isArray(result.nextData.tasks) || !Array.isArray(result.nextData.goals)) throw new Error("AI 返回的数据格式不完整，请再试一次。");
+      setAiPreview({ ...result, changes: deriveAIChanges(data, result.nextData) });
+    } catch (error) {
+      setAiError(error instanceof Error ? error.message : "AI 暂时无法创建计划。");
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  function applyAIPlan() {
+    if (!aiPreview) return;
+    setData({ ...aiPreview.nextData, habitDate: today, workoutWeek: getWeekKey(today) });
+    setAiText("");
+    setAiPreview(null);
+    setAiError("");
+    setAiOpen(false);
   }
 
   return (
@@ -418,6 +470,28 @@ export default function Home() {
           </div>
         )}
       </section>
+
+      <button className={`ai-launcher ${aiOpen ? "active" : ""}`} onClick={() => setAiOpen((open) => !open)} aria-label={aiOpen ? "关闭 MAP AI" : "打开 MAP AI"}><span>✦</span><strong>MAP AI</strong></button>
+      {aiOpen && <aside className="ai-panel" aria-label="MAP AI 计划助手">
+        <header><div><p className="section-kicker">INTENT → PLAN</p><h2>告诉我你想怎么安排。</h2></div><button onClick={() => setAiOpen(false)} aria-label="关闭">×</button></header>
+        {!aiPreview ? <>
+          <p className="ai-intro">直接粘贴课程通知、职位描述、旅行安排，或者用一句话告诉我你想新增、修改或删除什么。</p>
+          <div className="ai-prompts">
+            {["把这周的待办按优先级安排好", "明天下午安排一次 45 分钟力量训练", "把这段职位信息加入求职看板"].map((prompt) => <button key={prompt} onClick={() => setAiText(prompt)}>{prompt}</button>)}
+          </div>
+          <textarea value={aiText} onChange={(event) => setAiText(event.target.value)} placeholder="例如：下周一开始，每周一三五晚上 7 点刷题一小时；再加一个目标，年底前完成 100 道题……" autoFocus />
+          {aiError && <p className="ai-error">{aiError}</p>}
+          <p className="ai-privacy">发送时，这段文字和当前计划数据会传给 OpenAI。API key 只在服务端使用，不会进入浏览器。</p>
+          <button className="ai-submit" onClick={createAIPlan} disabled={!aiText.trim() || aiLoading}>{aiLoading ? <><i /> 正在整理你的计划…</> : <>生成修改预览 <span>→</span></>}</button>
+        </> : <div className="ai-preview">
+          <div className="ai-preview-mark">✓</div>
+          <p className="section-kicker">READY TO APPLY</p>
+          <h3>{aiPreview.summary}</h3>
+          <div className="ai-change-list">{aiPreview.changes.map((change, index) => <div key={`${change}-${index}`}><span>{String(index + 1).padStart(2, "0")}</span><p>{change}</p></div>)}</div>
+          <p className="ai-confirm-note">这些改动尚未写入。确认后才会更新当前电脑里的 MAP 数据。</p>
+          <div className="ai-preview-actions"><button className="ghost-button" onClick={() => setAiPreview(null)}>返回修改</button><button className="primary-button" onClick={applyAIPlan}>确认并应用</button></div>
+        </div>}
+      </aside>}
 
       {taskEditor && <TaskModal value={taskEditor} onClose={() => setTaskEditor(null)} onSave={(task) => { setData((current) => ({ ...current, tasks: taskEditor === "new" ? [...current.tasks, task] : current.tasks.map((item) => item.id === task.id ? task : item) })); setTaskEditor(null); }} onDelete={taskEditor === "new" ? undefined : () => { deleteTask(taskEditor.id); setTaskEditor(null); }} />}
       {scheduleEditor && <ScheduleModal value={scheduleEditor} onClose={() => setScheduleEditor(null)} onSave={(schedule) => { setData((current) => ({ ...current, schedule: scheduleEditor === "new" ? [...current.schedule, schedule] : current.schedule.map((item) => item.id === schedule.id ? schedule : item) })); setScheduleEditor(null); }} onDelete={scheduleEditor === "new" ? undefined : () => { setData((current) => ({ ...current, schedule: current.schedule.filter((item) => item.id !== scheduleEditor.id) })); setScheduleEditor(null); }} />}
