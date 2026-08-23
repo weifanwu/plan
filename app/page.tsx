@@ -51,6 +51,8 @@ type AppData = {
   habits: Habit[];
   workouts: Workout[];
   applications: Application[];
+  habitDate: string;
+  workoutWeek: string;
 };
 
 const DAY_ORDER = ["Mo", "Tu", "We", "Th", "Fr"];
@@ -60,6 +62,13 @@ const STORAGE_KEY = "map-life-os-v1";
 
 function getTorontoToday() {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Toronto", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+}
+
+function getWeekKey(dateString = getTorontoToday()) {
+  const date = new Date(`${dateString}T12:00:00`);
+  const offset = (date.getDay() + 6) % 7;
+  date.setDate(date.getDate() - offset);
+  return date.toISOString().slice(0, 10);
 }
 
 const initialData: AppData = {
@@ -100,6 +109,8 @@ const initialData: AppData = {
     { id: "w3", title: "力量训练", day: "周六", duration: "45 分钟", done: false },
   ],
   applications: [],
+  habitDate: getTorontoToday(),
+  workoutWeek: getWeekKey(),
 };
 
 const categoryTone: Record<TaskCategory, string> = { 学业: "lime", 求职: "coral", 生活: "blue", 健康: "lavender" };
@@ -141,7 +152,11 @@ export default function Home() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved) as Partial<AppData>;
-        setData({ ...initialData, ...parsed, tasks: parsed.tasks || initialData.tasks, schedule: parsed.schedule || initialData.schedule, goals: parsed.goals || initialData.goals, habits: parsed.habits || initialData.habits, workouts: parsed.workouts || initialData.workouts, applications: parsed.applications || [] });
+        const currentDay = getTorontoToday();
+        const currentWeek = getWeekKey(currentDay);
+        const savedHabits = parsed.habits || initialData.habits;
+        const savedWorkouts = parsed.workouts || initialData.workouts;
+        setData({ ...initialData, ...parsed, tasks: parsed.tasks || initialData.tasks, schedule: parsed.schedule || initialData.schedule, goals: parsed.goals || initialData.goals, habits: parsed.habitDate === currentDay ? savedHabits : savedHabits.map((habit) => ({ ...habit, done: false })), workouts: parsed.workoutWeek === currentWeek ? savedWorkouts : savedWorkouts.map((workout) => ({ ...workout, done: false })), applications: parsed.applications || [], habitDate: currentDay, workoutWeek: currentWeek });
       } catch { /* keep safe defaults */ }
     }
     setReady(true);
@@ -390,7 +405,7 @@ export default function Home() {
                 <div className="habit-list">
                   {data.habits.map((habit) => <div className={`habit-list-row ${habit.done ? "done" : ""}`} key={habit.id}><button className="habit-check" onClick={() => setData((current) => ({ ...current, habits: current.habits.map((item) => item.id === habit.id ? { ...item, done: !item.done } : item) }))}>{habit.done ? "✓" : habit.icon}</button><span>{habit.label}</span><button className="edit-link" onClick={() => setHabitEditor(habit)}>编辑</button></div>)}
                 </div>
-                <p className="panel-note">每天午夜不会自动重置；第一版由你手动勾选或重置，避免误删记录。</p>
+                <p className="panel-note">饮食勾选每天自动重置；运动计划每周一自动开始新一周。</p>
               </section>
               <section className="panel workout-panel">
                 <div className="panel-heading"><div><p className="section-kicker">MOVEMENT</p><h3>本周运动计划</h3></div><button className="ghost-button small" onClick={() => setWorkoutEditor("new")}>＋ 添加</button></div>
