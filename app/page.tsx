@@ -55,8 +55,12 @@ type AppData = {
 
 const DAY_ORDER = ["Mo", "Tu", "We", "Th", "Fr"];
 const DAY_LABEL: Record<string, string> = { Mo: "周一", Tu: "周二", We: "周三", Th: "周四", Fr: "周五" };
-const TODAY = "2026-08-23";
+const BASE_DATE = "2026-08-23";
 const STORAGE_KEY = "map-life-os-v1";
+
+function getTorontoToday() {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Toronto", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+}
 
 const initialData: AppData = {
   goals: [
@@ -71,18 +75,18 @@ const initialData: AppData = {
     { id: "ta", code: "TA · SFWRENG", title: "Tutorial T01 · T02 · T03", kind: "TA", days: ["We"], start: "12:30", end: "14:20", room: "待确认", color: "blue" },
   ],
   tasks: [
-    { id: "stephnie", title: "解决 Stephnie 发的邮件", category: "生活", date: TODAY, time: "09:00", priority: "high", status: "todo" },
-    { id: "leetcode", title: "开始刷题", category: "求职", date: TODAY, time: "09:00", priority: "high", status: "todo" },
-    { id: "medical", title: "报销医药费", category: "生活", date: TODAY, time: "09:00", priority: "high", status: "todo" },
-    { id: "fees", title: "交学费和房租", category: "学业", date: TODAY, time: "09:00", priority: "high", status: "todo" },
-    { id: "applications", title: "开始筛选并投递更好的工作", category: "求职", date: TODAY, time: "09:00", priority: "normal", status: "todo" },
-    { id: "pte", title: "准备英语毕业要求并报名 PTE", category: "学业", date: TODAY, time: "09:00", priority: "high", status: "todo" },
-    { id: "irene", title: "给 Irene 发邮件确认上课", category: "学业", date: TODAY, time: "14:00", priority: "high", status: "todo" },
-    { id: "travel", title: "决定去哪里旅行", category: "生活", date: TODAY, time: "22:00", priority: "normal", status: "todo" },
+    { id: "stephnie", title: "解决 Stephnie 发的邮件", category: "生活", date: BASE_DATE, time: "09:00", priority: "high", status: "todo" },
+    { id: "leetcode", title: "开始刷题", category: "求职", date: BASE_DATE, time: "09:00", priority: "high", status: "todo" },
+    { id: "medical", title: "报销医药费", category: "生活", date: BASE_DATE, time: "09:00", priority: "high", status: "todo" },
+    { id: "fees", title: "交学费和房租", category: "学业", date: BASE_DATE, time: "09:00", priority: "high", status: "todo" },
+    { id: "applications", title: "开始筛选并投递更好的工作", category: "求职", date: BASE_DATE, time: "09:00", priority: "normal", status: "todo" },
+    { id: "pte", title: "准备英语毕业要求并报名 PTE", category: "学业", date: BASE_DATE, time: "09:00", priority: "high", status: "todo" },
+    { id: "irene", title: "给 Irene 发邮件确认上课", category: "学业", date: BASE_DATE, time: "14:00", priority: "high", status: "todo" },
+    { id: "travel", title: "决定去哪里旅行", category: "生活", date: BASE_DATE, time: "22:00", priority: "normal", status: "todo" },
     { id: "passport", title: "开始续护照，避免影响工签期限", category: "生活", date: "2026-08-24", time: "09:00", priority: "high", status: "todo" },
     { id: "haircut", title: "剪头发", category: "生活", date: "2026-08-25", time: "14:00", priority: "normal", status: "todo" },
     { id: "immigration", title: "研究移民政策", category: "生活", date: "2026-08-25", time: "09:00", endDate: "2026-08-30", priority: "normal", status: "todo" },
-    { id: "driving", title: "安排考驾照并开始找教练", category: "生活", date: TODAY, endDate: "2026-09-04", priority: "normal", status: "todo" },
+    { id: "driving", title: "安排考驾照并开始找教练", category: "生活", date: BASE_DATE, endDate: "2026-09-04", priority: "normal", status: "todo" },
   ],
   habits: [
     { id: "water", label: "喝够水", done: false, icon: "水" },
@@ -127,6 +131,10 @@ export default function Home() {
   const [pasteEditor, setPasteEditor] = useState(false);
   const [filter, setFilter] = useState<"全部" | TaskCategory>("全部");
   const importRef = useRef<HTMLInputElement>(null);
+  const today = getTorontoToday();
+  const todayLabel = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", weekday: "long", month: "long", day: "numeric" }).format(new Date()).toUpperCase();
+  const daysToGraduate = Math.max(0, Math.ceil((Date.parse("2026-12-28T12:00:00-05:00") - Date.parse(`${today}T12:00:00-05:00`)) / 86400000));
+  const semesterProgress = Math.max(0, Math.min(100, Math.round(((Date.parse(`${today}T12:00:00-05:00`) - Date.parse("2026-09-01T12:00:00-04:00")) / (Date.parse("2026-12-28T12:00:00-05:00") - Date.parse("2026-09-01T12:00:00-04:00"))) * 100)));
 
   useEffect(() => {
     const saved = window.localStorage.getItem(STORAGE_KEY);
@@ -143,8 +151,8 @@ export default function Home() {
     if (ready) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   }, [data, ready]);
 
-  const todayTasks = useMemo(() => data.tasks.filter((task) => task.date === TODAY && task.status === "todo"), [data.tasks]);
-  const completedToday = data.tasks.filter((task) => task.date === TODAY && task.status === "done").length;
+  const todayTasks = useMemo(() => data.tasks.filter((task) => task.date === today && task.status === "todo"), [data.tasks, today]);
+  const completedToday = data.tasks.filter((task) => task.date === today && task.status === "done").length;
   const taskProgress = todayTasks.length + completedToday === 0 ? 0 : Math.round((completedToday / (todayTasks.length + completedToday)) * 100);
   const workoutDone = data.workouts.filter((workout) => workout.done).length;
   const habitDone = data.habits.filter((habit) => habit.done).length;
@@ -195,10 +203,10 @@ export default function Home() {
 
         <div className="sidebar-spacer" />
         <div className="semester-card">
-          <div className="semester-card-top"><span>FALL · 2026</span><strong>0%</strong></div>
-          <div className="progress-track"><span style={{ width: "2%" }} /></div>
+          <div className="semester-card-top"><span>FALL · 2026</span><strong>{semesterProgress}%</strong></div>
+          <div className="progress-track"><span style={{ width: `${semesterProgress}%` }} /></div>
           <p>9月1日 — 12月28日</p>
-          <small>距离毕业还有 127 天</small>
+          <small>{daysToGraduate > 0 ? `距离毕业还有 ${daysToGraduate} 天` : "本学期已经结束"}</small>
         </div>
         <div className="data-tools">
           <button onClick={exportData}>导出备份</button>
@@ -211,7 +219,7 @@ export default function Home() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">SUNDAY · AUGUST 23</p>
+            <p className="eyebrow">{todayLabel}</p>
             <h1>{view === "today" ? "今天，先把生活拉回正轨。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "你的四个月毕业路线。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : "健康不是剩余时间。"}</h1>
           </div>
           <button className="primary-button" onClick={() => setTaskEditor("new")}><span>＋</span> 新建任务</button>
@@ -222,7 +230,7 @@ export default function Home() {
             <section className="countdown-hero">
               <div className="countdown-copy">
                 <p className="section-kicker">THE MAIN THING</p>
-                <h2><span>127</span> 天后毕业</h2>
+                <h2><span>{daysToGraduate}</span> 天后毕业</h2>
                 <p>从 9 月 1 日开始，课程、TA、求职和身体状态都服务于同一个结果：年底稳稳完成学业，同时不把自己耗尽。</p>
                 <button className="text-link" onClick={() => setView("semester")}>查看完整学期地图 <span>→</span></button>
               </div>
@@ -244,7 +252,7 @@ export default function Home() {
                 </div>
                 <div className="today-progress"><span style={{ width: `${taskProgress}%` }} /></div>
                 <div className="task-stack">
-                  {data.tasks.filter((task) => task.date === TODAY).slice().sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99")).map((task) => (
+                  {data.tasks.filter((task) => task.date === today).slice().sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99")).map((task) => (
                     <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} onEdit={() => setTaskEditor(task)} onDelete={() => deleteTask(task.id)} compact />
                   ))}
                 </div>
@@ -429,7 +437,7 @@ function Field({ label, children, wide = false }: { label: string; children: Rea
 
 function TaskModal({ value, onClose, onSave, onDelete }: { value: Task | "new"; onClose: () => void; onSave: (task: Task) => void; onDelete?: () => void }) {
   const existing = value === "new" ? null : value;
-  const [title, setTitle] = useState(existing?.title || ""); const [category, setCategory] = useState<TaskCategory>(existing?.category || "生活"); const [date, setDate] = useState(existing?.date || TODAY); const [time, setTime] = useState(existing?.time || "09:00"); const [priority, setPriority] = useState<"high" | "normal">(existing?.priority || "normal");
+  const [title, setTitle] = useState(existing?.title || ""); const [category, setCategory] = useState<TaskCategory>(existing?.category || "生活"); const [date, setDate] = useState(existing?.date || getTorontoToday()); const [time, setTime] = useState(existing?.time || "09:00"); const [priority, setPriority] = useState<"high" | "normal">(existing?.priority || "normal");
   return <ModalFrame title={existing ? "编辑任务" : "新建任务"} subtitle="TASK" onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); if (!title.trim()) return; onSave({ id: existing?.id || uid(), title: title.trim(), category, date, time, endDate: existing?.endDate, priority, status: existing?.status || "todo" }); }}><div className="form-grid"><Field label="任务名称" wide><input value={title} onChange={(e) => setTitle(e.target.value)} autoFocus required /></Field><Field label="类别"><select value={category} onChange={(e) => setCategory(e.target.value as TaskCategory)}><option>学业</option><option>求职</option><option>生活</option><option>健康</option></select></Field><Field label="优先级"><select value={priority} onChange={(e) => setPriority(e.target.value as "high" | "normal")}><option value="normal">普通</option><option value="high">优先</option></select></Field><Field label="日期"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} required /></Field><Field label="时间"><input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">保存任务</button></div></form></ModalFrame>;
 }
 
@@ -455,7 +463,7 @@ function WorkoutModal({ value, onClose, onSave, onDelete }: { value: Workout | "
 }
 
 function ApplicationModal({ value, onClose, onSave, onDelete }: { value: Application | "new"; onClose: () => void; onSave: (application: Application) => void; onDelete?: () => void }) {
-  const existing = value === "new" ? null : value; const [company, setCompany] = useState(existing?.company || ""); const [role, setRole] = useState(existing?.role || ""); const [stage, setStage] = useState<ApplicationStage>(existing?.stage || "收藏"); const [link, setLink] = useState(existing?.link || ""); const [contact, setContact] = useState(existing?.contact || ""); const [date, setDate] = useState(existing?.date || TODAY); const [notes, setNotes] = useState(existing?.notes || "");
+  const existing = value === "new" ? null : value; const [company, setCompany] = useState(existing?.company || ""); const [role, setRole] = useState(existing?.role || ""); const [stage, setStage] = useState<ApplicationStage>(existing?.stage || "收藏"); const [link, setLink] = useState(existing?.link || ""); const [contact, setContact] = useState(existing?.contact || ""); const [date, setDate] = useState(existing?.date || getTorontoToday()); const [notes, setNotes] = useState(existing?.notes || "");
   return <ModalFrame title={existing ? "编辑求职记录" : "添加求职记录"} subtitle="APPLICATION" onClose={onClose} onDelete={onDelete}><form onSubmit={(e) => { e.preventDefault(); onSave({ id: existing?.id || uid(), company, role, stage, link, contact, date, notes }); }}><div className="form-grid"><Field label="公司"><input value={company} onChange={(e) => setCompany(e.target.value)} required /></Field><Field label="岗位"><input value={role} onChange={(e) => setRole(e.target.value)} required /></Field><Field label="阶段"><select value={stage} onChange={(e) => setStage(e.target.value as ApplicationStage)}><option>收藏</option><option>准备</option><option>已投</option><option>面试</option><option>Offer</option><option>拒绝</option></select></Field><Field label="记录日期"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field><Field label="职位链接" wide><input type="url" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://" /></Field><Field label="联系人" wide><input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="姓名、邮箱或 LinkedIn" /></Field><Field label="备注 / 下一步" wide><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="为什么值得投？下一步是什么？" /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button>{link && <button type="button" className="ghost-button" onClick={() => window.open(link, "_blank", "noopener,noreferrer")}>打开职位</button>}<button className="primary-button">保存记录</button></div></form></ModalFrame>;
 }
 
@@ -465,7 +473,7 @@ function PasteApplicationModal({ onClose, onCreate }: { onClose: () => void; onC
     const lines = raw.split("\n").map((line) => line.trim()).filter(Boolean);
     const url = raw.match(/https?:\/\/[^\s]+/)?.[0] || "";
     const clean = lines.filter((line) => !line.startsWith("http"));
-    onCreate({ id: uid(), company: clean[0]?.slice(0, 80) || "待填写公司", role: clean[1]?.slice(0, 120) || "待填写岗位", stage: "收藏", link: url, contact: "", date: TODAY, notes: raw.slice(0, 2500) });
+    onCreate({ id: uid(), company: clean[0]?.slice(0, 80) || "待填写公司", role: clean[1]?.slice(0, 120) || "待填写岗位", stage: "收藏", link: url, contact: "", date: getTorontoToday(), notes: raw.slice(0, 2500) });
   }
   return <ModalFrame title="粘贴职位信息" subtitle="QUICK CAPTURE" onClose={onClose}><div className="paste-explainer">把 LinkedIn、公司官网或聊天里的职位信息直接贴进来。首版会提取前两行和链接，再打开完整表单让你确认；不会上传任何内容。</div><textarea className="paste-area" value={raw} onChange={(e) => setRaw(e.target.value)} placeholder={"Company name\nRole title\nhttps://company.com/job\n其他职位描述……"} autoFocus /><div className="modal-actions"><button className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" onClick={parse} disabled={!raw.trim()}>提取并继续</button></div></ModalFrame>;
 }
