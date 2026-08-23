@@ -41,7 +41,7 @@ type Goal = {
 
 type Habit = { id: string; label: string; done: boolean; icon: string };
 type Workout = { id: string; title: string; day: string; duration: string; done: boolean };
-type ApplicationStage = "收藏" | "准备" | "已投" | "面试" | "Offer" | "拒绝";
+type ApplicationStage = "已投" | "面试" | "Offer" | "拒绝";
 type Application = { id: string; company: string; role: string; stage: ApplicationStage; link: string; contact: string; date: string; notes: string };
 type AIPlanPreview = { summary: string; changes: string[]; nextData: AppData };
 
@@ -58,6 +58,9 @@ type AppData = {
 
 const DAY_ORDER = ["Mo", "Tu", "We", "Th", "Fr"];
 const DAY_LABEL: Record<string, string> = { Mo: "周一", Tu: "周二", We: "周三", Th: "周四", Fr: "周五" };
+const CALENDAR_DAY_ORDER = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+const CALENDAR_DAY_LABEL = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+const APPLICATION_STAGES: ApplicationStage[] = ["已投", "面试", "Offer", "拒绝"];
 const BASE_DATE = "2026-08-23";
 const STORAGE_KEY = "map-life-os-v1";
 
@@ -70,6 +73,29 @@ function getWeekKey(dateString = getTorontoToday()) {
   const offset = (date.getDay() + 6) % 7;
   date.setDate(date.getDate() - offset);
   return date.toISOString().slice(0, 10);
+}
+
+function buildCalendarCells(cursor: string) {
+  const [year, month] = cursor.split("-").map(Number);
+  const firstDay = new Date(Date.UTC(year, month - 1, 1));
+  const mondayOffset = (firstDay.getUTCDay() + 6) % 7;
+  const gridStart = Date.UTC(year, month - 1, 1 - mondayOffset);
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(gridStart + index * 86400000);
+    const key = date.toISOString().slice(0, 10);
+    const weekdayIndex = (date.getUTCDay() + 6) % 7;
+    return { key, day: date.getUTCDate(), inMonth: date.getUTCMonth() === month - 1, dayCode: CALENDAR_DAY_ORDER[weekdayIndex] };
+  });
+}
+
+function moveMonth(cursor: string, distance: number) {
+  const [year, month] = cursor.split("-").map(Number);
+  const next = new Date(Date.UTC(year, month - 1 + distance, 1));
+  return `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function normalizeApplications(applications: Application[] = []) {
+  return applications.map((application) => ({ ...application, stage: APPLICATION_STAGES.includes(application.stage as ApplicationStage) ? application.stage as ApplicationStage : "已投" as ApplicationStage }));
 }
 
 const initialData: AppData = {
@@ -154,6 +180,7 @@ export default function Home() {
   const [data, setData] = useState<AppData>(initialData);
   const [ready, setReady] = useState(false);
   const [taskEditor, setTaskEditor] = useState<Task | "new" | null>(null);
+  const [newTaskDate, setNewTaskDate] = useState<string | null>(null);
   const [scheduleEditor, setScheduleEditor] = useState<ScheduleItem | "new" | null>(null);
   const [goalEditor, setGoalEditor] = useState<Goal | "new" | null>(null);
   const [habitEditor, setHabitEditor] = useState<Habit | "new" | null>(null);
@@ -166,6 +193,10 @@ export default function Home() {
   const [aiError, setAiError] = useState("");
   const [aiPreview, setAiPreview] = useState<AIPlanPreview | null>(null);
   const [filter, setFilter] = useState<"全部" | TaskCategory>("全部");
+  const [semesterMode, setSemesterMode] = useState<"calendar" | "week">("calendar");
+  const [calendarCursor, setCalendarCursor] = useState(() => getTorontoToday().slice(0, 7));
+  const [draggedApplicationId, setDraggedApplicationId] = useState<string | null>(null);
+  const [dragOverStage, setDragOverStage] = useState<ApplicationStage | null>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const today = getTorontoToday();
   const todayLabel = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", weekday: "long", month: "long", day: "numeric" }).format(new Date()).toUpperCase();
@@ -181,7 +212,7 @@ export default function Home() {
         const currentWeek = getWeekKey(currentDay);
         const savedHabits = parsed.habits || initialData.habits;
         const savedWorkouts = parsed.workouts || initialData.workouts;
-        setData({ ...initialData, ...parsed, tasks: parsed.tasks || initialData.tasks, schedule: parsed.schedule || initialData.schedule, goals: parsed.goals || initialData.goals, habits: parsed.habitDate === currentDay ? savedHabits : savedHabits.map((habit) => ({ ...habit, done: false })), workouts: parsed.workoutWeek === currentWeek ? savedWorkouts : savedWorkouts.map((workout) => ({ ...workout, done: false })), applications: parsed.applications || [], habitDate: currentDay, workoutWeek: currentWeek });
+        setData({ ...initialData, ...parsed, tasks: parsed.tasks || initialData.tasks, schedule: parsed.schedule || initialData.schedule, goals: parsed.goals || initialData.goals, habits: parsed.habitDate === currentDay ? savedHabits : savedHabits.map((habit) => ({ ...habit, done: false })), workouts: parsed.workoutWeek === currentWeek ? savedWorkouts : savedWorkouts.map((workout) => ({ ...workout, done: false })), applications: normalizeApplications(parsed.applications), habitDate: currentDay, workoutWeek: currentWeek });
       } catch { /* keep safe defaults */ }
     }
     setReady(true);
@@ -196,6 +227,20 @@ export default function Home() {
   const taskProgress = todayTasks.length + completedToday === 0 ? 0 : Math.round((completedToday / (todayTasks.length + completedToday)) * 100);
   const workoutDone = data.workouts.filter((workout) => workout.done).length;
   const habitDone = data.habits.filter((habit) => habit.done).length;
+  const calendarCells = useMemo(() => buildCalendarCells(calendarCursor), [calendarCursor]);
+  const calendarMonthLabel = useMemo(() => {
+    const [year, month] = calendarCursor.split("-").map(Number);
+    return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", timeZone: "UTC" }).format(new Date(Date.UTC(year, month - 1, 1)));
+  }, [calendarCursor]);
+  const monthStart = `${calendarCursor}-01`;
+  const monthEnd = calendarCells.filter((cell) => cell.inMonth).at(-1)?.key || monthStart;
+  const visibleTaskCount = data.tasks.filter((task) => task.date <= monthEnd && (task.endDate || task.date) >= monthStart).length;
+  const visibleScheduleCount = calendarCells.filter((cell) => cell.inMonth && cell.key >= "2026-09-01" && cell.key <= "2026-12-31").reduce((count, cell) => count + data.schedule.filter((item) => item.days.includes(cell.dayCode)).length, 0);
+
+  function openNewTask(date?: string) {
+    setNewTaskDate(date || null);
+    setTaskEditor("new");
+  }
 
   function toggleTask(id: string) {
     setData((current) => ({ ...current, tasks: current.tasks.map((task) => task.id === id ? { ...task, status: task.status === "done" ? "todo" : "done" } : task) }));
@@ -203,6 +248,10 @@ export default function Home() {
 
   function deleteTask(id: string) {
     setData((current) => ({ ...current, tasks: current.tasks.filter((task) => task.id !== id) }));
+  }
+
+  function moveApplication(id: string, stage: ApplicationStage) {
+    setData((current) => ({ ...current, applications: current.applications.map((application) => application.id === id ? { ...application, stage } : application) }));
   }
 
   function exportData() {
@@ -219,7 +268,7 @@ export default function Home() {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      try { setData(JSON.parse(String(reader.result))); } catch { window.alert("这个备份文件无法读取。"); }
+      try { const parsed = JSON.parse(String(reader.result)) as AppData; setData({ ...parsed, applications: normalizeApplications(parsed.applications) }); } catch { window.alert("这个备份文件无法读取。"); }
     };
     reader.readAsText(file);
   }
@@ -289,7 +338,7 @@ export default function Home() {
             <p className="eyebrow">{todayLabel}</p>
             <h1>{view === "today" ? "今天，先把生活拉回正轨。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "你的四个月毕业路线。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : "健康不是剩余时间。"}</h1>
           </div>
-          <button className="primary-button" onClick={() => setTaskEditor("new")}><span>＋</span> 新建任务</button>
+          <button className="primary-button" onClick={() => openNewTask()}><span>＋</span> 新建任务</button>
         </header>
 
         {view === "today" && (
@@ -323,7 +372,7 @@ export default function Home() {
                     <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} onEdit={() => setTaskEditor(task)} onDelete={() => deleteTask(task.id)} compact />
                   ))}
                 </div>
-                <button className="add-row" onClick={() => setTaskEditor("new")}>＋ 添加今天的任务</button>
+                <button className="add-row" onClick={() => openNewTask(today)}>＋ 添加今天的任务</button>
               </section>
 
               <aside className="right-column">
@@ -387,7 +436,35 @@ export default function Home() {
               <button className="ghost-button" onClick={() => setScheduleEditor("new")}>＋ 添加固定安排</button>
             </section>
 
-            <section className="panel schedule-panel">
+            <div className="semester-viewbar">
+              <div className="view-switch" role="group" aria-label="学期地图视图"><button className={semesterMode === "calendar" ? "active" : ""} onClick={() => setSemesterMode("calendar")}>月历</button><button className={semesterMode === "week" ? "active" : ""} onClick={() => setSemesterMode("week")}>周课表</button></div>
+              <p>月历显示任务、课程和 TA；点击日期可直接安排新任务。</p>
+            </div>
+
+            {semesterMode === "calendar" ? <section className="panel calendar-panel">
+              <div className="calendar-toolbar">
+                <div><p className="section-kicker">CALENDAR</p><h3>{calendarMonthLabel}</h3><span>{visibleTaskCount} 项任务 · {visibleScheduleCount} 次固定安排</span></div>
+                <div className="calendar-nav"><button onClick={() => setCalendarCursor((cursor) => moveMonth(cursor, -1))} aria-label="上个月">←</button><button className="calendar-today" onClick={() => setCalendarCursor(today.slice(0, 7))}>今天</button><button onClick={() => setCalendarCursor((cursor) => moveMonth(cursor, 1))} aria-label="下个月">→</button></div>
+              </div>
+              <div className="calendar-scroll">
+                <div className="calendar-grid">
+                  {CALENDAR_DAY_LABEL.map((label, index) => <div className={`calendar-weekday ${index > 4 ? "weekend" : ""}`} key={label}>{label}</div>)}
+                  {calendarCells.map((cell) => {
+                    const tasks = data.tasks.filter((task) => task.date <= cell.key && (task.endDate || task.date) >= cell.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
+                    const schedules = cell.key >= "2026-09-01" && cell.key <= "2026-12-31" ? data.schedule.filter((item) => item.days.includes(cell.dayCode)).sort((a, b) => a.start.localeCompare(b.start)) : [];
+                    const events = [...tasks.map((task) => ({ type: "task" as const, time: task.date === cell.key ? task.time : "", item: task })), ...schedules.map((item) => ({ type: "schedule" as const, time: item.start, item }))].sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
+                    return <article className={`calendar-day ${cell.inMonth ? "" : "outside"} ${cell.key === today ? "today" : ""}`} key={cell.key}>
+                      <header><span>{cell.day}</span>{cell.key === today && <strong>今天</strong>}<button onClick={() => openNewTask(cell.key)} aria-label={`在 ${cell.key} 新建任务`}>＋</button></header>
+                      <div className="calendar-events">
+                        {events.slice(0, 4).map((event) => event.type === "task" ? <button key={`task-${event.item.id}`} className={`calendar-event task ${categoryTone[event.item.category]} ${event.item.status === "done" ? "done" : ""}`} onClick={() => setTaskEditor(event.item)} title={event.item.title}><time>{event.time || (event.item.date < cell.key ? "↳" : "")}</time><span>{event.item.title}</span></button> : <button key={`schedule-${event.item.id}`} className={`calendar-event schedule ${event.item.color}`} onClick={() => setScheduleEditor(event.item)} title={`${event.item.title} · ${event.item.room}`}><time>{event.item.start}</time><span>{event.item.code}</span></button>)}
+                        {events.length > 4 && <span className="calendar-more">还有 {events.length - 4} 项</span>}
+                      </div>
+                    </article>;
+                  })}
+                </div>
+              </div>
+              <div className="calendar-legend"><span><i className="task" />任务</span><span><i className="schedule" />课程 / TA</span><small>长期任务会持续显示到截止日</small></div>
+            </section> : <section className="panel schedule-panel">
               <div className="panel-heading"><div><p className="section-kicker">WEEKLY RHYTHM</p><h3>每周固定节奏</h3></div><span className="counter">点击课程可编辑</span></div>
               <div className="schedule-scroll">
                 <div className="schedule-grid">
@@ -407,7 +484,7 @@ export default function Home() {
                   ))}
                 </div>
               </div>
-            </section>
+            </section>}
 
             <section className="month-map">
               {[{ month: "SEP", title: "建立系统", text: "开学、确认课程与 TA、报名 PTE，把固定节奏跑起来。", tone: "lime" }, { month: "OCT", title: "稳住产出", text: "课程作业进入密集区，求职保持少量高质量投递。", tone: "blue" }, { month: "NOV", title: "提前收口", text: "项目与考试准备前移，不把所有风险留到十二月。", tone: "lavender" }, { month: "DEC", title: "完成毕业", text: "期末、课程收尾、材料确认，然后真正关掉这一章。", tone: "coral" }].map((item) => <article key={item.month} className={`month-card ${item.tone}`}><span>{item.month}</span><h3>{item.title}</h3><p>{item.text}</p></article>)}
@@ -421,10 +498,11 @@ export default function Home() {
               <div><p className="section-kicker">OPPORTUNITY PIPELINE</p><h2>{data.applications.length}</h2><p>个机会正在记录 · 现有一年实习 Offer 作为保底</p></div>
               <div className="career-actions"><button className="ghost-button" onClick={() => setPasteEditor(true)}>粘贴职位信息</button><button className="primary-button" onClick={() => setApplicationEditor("new")}>＋ 添加公司</button></div>
             </section>
+            <div className="pipeline-guide"><span>拖动卡片即可更新进度</span><i>已投 → 面试 → Offer / 拒绝</i></div>
             <section className="pipeline">
-              {(["收藏", "准备", "已投", "面试", "Offer", "拒绝"] as ApplicationStage[]).map((stage) => {
+              {APPLICATION_STAGES.map((stage) => {
                 const applications = data.applications.filter((application) => application.stage === stage);
-                return <div className="pipeline-column" key={stage}><header><strong>{stage}</strong><span>{applications.length}</span></header><div className="pipeline-stack">{applications.map((application) => <button className="application-card" key={application.id} onClick={() => setApplicationEditor(application)}><span className="company-initial">{application.company.slice(0, 1).toUpperCase()}</span><strong>{application.company}</strong><p>{application.role}</p>{application.date && <small>{formatDate(application.date)}</small>}</button>)}<button className="pipeline-add" onClick={() => setApplicationEditor("new")}>＋ 添加</button></div></div>;
+                return <div className={`pipeline-column ${dragOverStage === stage ? "drag-over" : ""}`} key={stage} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverStage(stage); }} onDrop={(event) => { event.preventDefault(); const id = event.dataTransfer.getData("text/plain") || draggedApplicationId; if (id) moveApplication(id, stage); setDraggedApplicationId(null); setDragOverStage(null); }}><header><strong>{stage}</strong><span>{applications.length}</span></header><div className="pipeline-stack">{applications.map((application) => <button draggable className={`application-card ${draggedApplicationId === application.id ? "dragging" : ""}`} key={application.id} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", application.id); setDraggedApplicationId(application.id); }} onDragEnd={() => { setDraggedApplicationId(null); setDragOverStage(null); }} onClick={() => setApplicationEditor(application)}><span className="company-initial">{application.company.slice(0, 1).toUpperCase()}</span><strong>{application.company}</strong><p>{application.role}</p>{application.date && <small>{formatDate(application.date)}</small>}<i className="drag-handle" aria-hidden="true">⋮⋮</i></button>)}<button className="pipeline-add" onClick={() => setApplicationEditor("new")}>＋ 添加</button></div></div>;
               })}
             </section>
             {data.applications.length === 0 && <section className="career-empty"><span>先从一个值得关注的公司开始</span><h3>不用海投。把真正比现有 Offer 更好的机会留下来，持续推进。</h3><button className="text-link" onClick={() => setPasteEditor(true)}>粘贴一段职位信息快速创建 →</button></section>}
@@ -435,7 +513,7 @@ export default function Home() {
           <div className="page-content planner-page">
             <div className="planner-toolbar">
               <div className="filter-row">{(["全部", "学业", "求职", "生活", "健康"] as const).map((item) => <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}<span>{item === "全部" ? data.tasks.length : data.tasks.filter((task) => task.category === item).length}</span></button>)}</div>
-              <button className="primary-button" onClick={() => setTaskEditor("new")}>＋ 新建任务</button>
+              <button className="primary-button" onClick={() => openNewTask()}>＋ 新建任务</button>
             </div>
             <section className="panel task-library">
               <div className="task-table-head"><span>任务</span><span>日期</span><span>类别</span><span>状态</span><span /></div>
@@ -493,7 +571,7 @@ export default function Home() {
         </div>}
       </aside>}
 
-      {taskEditor && <TaskModal value={taskEditor} onClose={() => setTaskEditor(null)} onSave={(task) => { setData((current) => ({ ...current, tasks: taskEditor === "new" ? [...current.tasks, task] : current.tasks.map((item) => item.id === task.id ? task : item) })); setTaskEditor(null); }} onDelete={taskEditor === "new" ? undefined : () => { deleteTask(taskEditor.id); setTaskEditor(null); }} />}
+      {taskEditor && <TaskModal value={taskEditor} defaultDate={newTaskDate || undefined} onClose={() => { setTaskEditor(null); setNewTaskDate(null); }} onSave={(task) => { setData((current) => ({ ...current, tasks: taskEditor === "new" ? [...current.tasks, task] : current.tasks.map((item) => item.id === task.id ? task : item) })); setTaskEditor(null); setNewTaskDate(null); }} onDelete={taskEditor === "new" ? undefined : () => { deleteTask(taskEditor.id); setTaskEditor(null); setNewTaskDate(null); }} />}
       {scheduleEditor && <ScheduleModal value={scheduleEditor} onClose={() => setScheduleEditor(null)} onSave={(schedule) => { setData((current) => ({ ...current, schedule: scheduleEditor === "new" ? [...current.schedule, schedule] : current.schedule.map((item) => item.id === schedule.id ? schedule : item) })); setScheduleEditor(null); }} onDelete={scheduleEditor === "new" ? undefined : () => { setData((current) => ({ ...current, schedule: current.schedule.filter((item) => item.id !== scheduleEditor.id) })); setScheduleEditor(null); }} />}
       {goalEditor && <GoalModal value={goalEditor} onClose={() => setGoalEditor(null)} onSave={(goal) => { setData((current) => ({ ...current, goals: goalEditor === "new" ? [...current.goals, goal] : current.goals.map((item) => item.id === goal.id ? goal : item) })); setGoalEditor(null); }} onDelete={goalEditor === "new" ? undefined : () => { setData((current) => ({ ...current, goals: current.goals.filter((item) => item.id !== goalEditor.id) })); setGoalEditor(null); }} />}
       {habitEditor && <HabitModal value={habitEditor} onClose={() => setHabitEditor(null)} onSave={(habit) => { setData((current) => ({ ...current, habits: habitEditor === "new" ? [...current.habits, habit] : current.habits.map((item) => item.id === habit.id ? habit : item) })); setHabitEditor(null); }} onDelete={habitEditor === "new" ? undefined : () => { setData((current) => ({ ...current, habits: current.habits.filter((item) => item.id !== habitEditor.id) })); setHabitEditor(null); }} />}
@@ -524,9 +602,9 @@ function ModalFrame({ title, subtitle, onClose, onDelete, children }: { title: s
 
 function Field({ label, children, wide = false }: { label: string; children: React.ReactNode; wide?: boolean }) { return <label className={wide ? "wide" : ""}><span>{label}</span>{children}</label>; }
 
-function TaskModal({ value, onClose, onSave, onDelete }: { value: Task | "new"; onClose: () => void; onSave: (task: Task) => void; onDelete?: () => void }) {
+function TaskModal({ value, defaultDate, onClose, onSave, onDelete }: { value: Task | "new"; defaultDate?: string; onClose: () => void; onSave: (task: Task) => void; onDelete?: () => void }) {
   const existing = value === "new" ? null : value;
-  const [title, setTitle] = useState(existing?.title || ""); const [category, setCategory] = useState<TaskCategory>(existing?.category || "生活"); const [date, setDate] = useState(existing?.date || getTorontoToday()); const [time, setTime] = useState(existing?.time || "09:00"); const [priority, setPriority] = useState<"high" | "normal">(existing?.priority || "normal");
+  const [title, setTitle] = useState(existing?.title || ""); const [category, setCategory] = useState<TaskCategory>(existing?.category || "生活"); const [date, setDate] = useState(existing?.date || defaultDate || getTorontoToday()); const [time, setTime] = useState(existing?.time || "09:00"); const [priority, setPriority] = useState<"high" | "normal">(existing?.priority || "normal");
   return <ModalFrame title={existing ? "编辑任务" : "新建任务"} subtitle="TASK" onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); if (!title.trim()) return; onSave({ id: existing?.id || uid(), title: title.trim(), category, date, time, endDate: existing?.endDate, priority, status: existing?.status || "todo" }); }}><div className="form-grid"><Field label="任务名称" wide><input value={title} onChange={(e) => setTitle(e.target.value)} autoFocus required /></Field><Field label="类别"><select value={category} onChange={(e) => setCategory(e.target.value as TaskCategory)}><option>学业</option><option>求职</option><option>生活</option><option>健康</option></select></Field><Field label="优先级"><select value={priority} onChange={(e) => setPriority(e.target.value as "high" | "normal")}><option value="normal">普通</option><option value="high">优先</option></select></Field><Field label="日期"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} required /></Field><Field label="时间"><input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">保存任务</button></div></form></ModalFrame>;
 }
 
@@ -552,8 +630,8 @@ function WorkoutModal({ value, onClose, onSave, onDelete }: { value: Workout | "
 }
 
 function ApplicationModal({ value, onClose, onSave, onDelete }: { value: Application | "new"; onClose: () => void; onSave: (application: Application) => void; onDelete?: () => void }) {
-  const existing = value === "new" ? null : value; const [company, setCompany] = useState(existing?.company || ""); const [role, setRole] = useState(existing?.role || ""); const [stage, setStage] = useState<ApplicationStage>(existing?.stage || "收藏"); const [link, setLink] = useState(existing?.link || ""); const [contact, setContact] = useState(existing?.contact || ""); const [date, setDate] = useState(existing?.date || getTorontoToday()); const [notes, setNotes] = useState(existing?.notes || "");
-  return <ModalFrame title={existing ? "编辑求职记录" : "添加求职记录"} subtitle="APPLICATION" onClose={onClose} onDelete={onDelete}><form onSubmit={(e) => { e.preventDefault(); onSave({ id: existing?.id || uid(), company, role, stage, link, contact, date, notes }); }}><div className="form-grid"><Field label="公司"><input value={company} onChange={(e) => setCompany(e.target.value)} required /></Field><Field label="岗位"><input value={role} onChange={(e) => setRole(e.target.value)} required /></Field><Field label="阶段"><select value={stage} onChange={(e) => setStage(e.target.value as ApplicationStage)}><option>收藏</option><option>准备</option><option>已投</option><option>面试</option><option>Offer</option><option>拒绝</option></select></Field><Field label="记录日期"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field><Field label="职位链接" wide><input type="url" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://" /></Field><Field label="联系人" wide><input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="姓名、邮箱或 LinkedIn" /></Field><Field label="备注 / 下一步" wide><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="为什么值得投？下一步是什么？" /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button>{link && <button type="button" className="ghost-button" onClick={() => window.open(link, "_blank", "noopener,noreferrer")}>打开职位</button>}<button className="primary-button">保存记录</button></div></form></ModalFrame>;
+  const existing = value === "new" ? null : value; const [company, setCompany] = useState(existing?.company || ""); const [role, setRole] = useState(existing?.role || ""); const [stage, setStage] = useState<ApplicationStage>(existing?.stage || "已投"); const [link, setLink] = useState(existing?.link || ""); const [contact, setContact] = useState(existing?.contact || ""); const [date, setDate] = useState(existing?.date || getTorontoToday()); const [notes, setNotes] = useState(existing?.notes || "");
+  return <ModalFrame title={existing ? "编辑求职记录" : "添加求职记录"} subtitle="APPLICATION" onClose={onClose} onDelete={onDelete}><form onSubmit={(e) => { e.preventDefault(); onSave({ id: existing?.id || uid(), company, role, stage, link, contact, date, notes }); }}><div className="form-grid"><Field label="公司"><input value={company} onChange={(e) => setCompany(e.target.value)} required /></Field><Field label="岗位"><input value={role} onChange={(e) => setRole(e.target.value)} required /></Field><Field label="阶段"><select value={stage} onChange={(e) => setStage(e.target.value as ApplicationStage)}>{APPLICATION_STAGES.map((item) => <option key={item}>{item}</option>)}</select></Field><Field label="记录日期"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field><Field label="职位链接" wide><input type="url" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://" /></Field><Field label="联系人" wide><input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="姓名、邮箱或 LinkedIn" /></Field><Field label="备注 / 下一步" wide><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="为什么值得投？下一步是什么？" /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button>{link && <button type="button" className="ghost-button" onClick={() => window.open(link, "_blank", "noopener,noreferrer")}>打开职位</button>}<button className="primary-button">保存记录</button></div></form></ModalFrame>;
 }
 
 function PasteApplicationModal({ onClose, onCreate }: { onClose: () => void; onCreate: (application: Application) => void }) {
@@ -562,7 +640,7 @@ function PasteApplicationModal({ onClose, onCreate }: { onClose: () => void; onC
     const lines = raw.split("\n").map((line) => line.trim()).filter(Boolean);
     const url = raw.match(/https?:\/\/[^\s]+/)?.[0] || "";
     const clean = lines.filter((line) => !line.startsWith("http"));
-    onCreate({ id: uid(), company: clean[0]?.slice(0, 80) || "待填写公司", role: clean[1]?.slice(0, 120) || "待填写岗位", stage: "收藏", link: url, contact: "", date: getTorontoToday(), notes: raw.slice(0, 2500) });
+    onCreate({ id: uid(), company: clean[0]?.slice(0, 80) || "待填写公司", role: clean[1]?.slice(0, 120) || "待填写岗位", stage: "已投", link: url, contact: "", date: getTorontoToday(), notes: raw.slice(0, 2500) });
   }
   return <ModalFrame title="粘贴职位信息" subtitle="QUICK CAPTURE" onClose={onClose}><div className="paste-explainer">把 LinkedIn、公司官网或聊天里的职位信息直接贴进来。首版会提取前两行和链接，再打开完整表单让你确认；不会上传任何内容。</div><textarea className="paste-area" value={raw} onChange={(e) => setRaw(e.target.value)} placeholder={"Company name\nRole title\nhttps://company.com/job\n其他职位描述……"} autoFocus /><div className="modal-actions"><button className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" onClick={parse} disabled={!raw.trim()}>提取并继续</button></div></ModalFrame>;
 }
