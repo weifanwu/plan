@@ -75,6 +75,16 @@ function getWeekKey(dateString = getTorontoToday()) {
   return date.toISOString().slice(0, 10);
 }
 
+function buildWeekDays(dateString: string) {
+  const date = new Date(`${dateString}T12:00:00Z`);
+  const mondayOffset = (date.getUTCDay() + 6) % 7;
+  const weekStart = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() - mondayOffset);
+  return Array.from({ length: 7 }, (_, index) => {
+    const day = new Date(weekStart + index * 86400000);
+    return { key: day.toISOString().slice(0, 10), dayCode: CALENDAR_DAY_ORDER[index], label: CALENDAR_DAY_LABEL[index], date: `${day.getUTCMonth() + 1}/${day.getUTCDate()}` };
+  });
+}
+
 function buildCalendarCells(cursor: string) {
   const [year, month] = cursor.split("-").map(Number);
   const firstDay = new Date(Date.UTC(year, month - 1, 1));
@@ -193,7 +203,7 @@ export default function Home() {
   const [aiError, setAiError] = useState("");
   const [aiPreview, setAiPreview] = useState<AIPlanPreview | null>(null);
   const [filter, setFilter] = useState<"全部" | TaskCategory>("全部");
-  const [semesterMode, setSemesterMode] = useState<"calendar" | "week">("calendar");
+  const [semesterMode, setSemesterMode] = useState<"calendar" | "week">("week");
   const [calendarCursor, setCalendarCursor] = useState(() => getTorontoToday().slice(0, 7));
   const [draggedApplicationId, setDraggedApplicationId] = useState<string | null>(null);
   const [dragOverStage, setDragOverStage] = useState<ApplicationStage | null>(null);
@@ -228,6 +238,10 @@ export default function Home() {
   const workoutDone = data.workouts.filter((workout) => workout.done).length;
   const habitDone = data.habits.filter((habit) => habit.done).length;
   const calendarCells = useMemo(() => buildCalendarCells(calendarCursor), [calendarCursor]);
+  const weekDays = useMemo(() => buildWeekDays(today), [today]);
+  const weekStart = weekDays[0].key;
+  const weekEnd = weekDays[6].key;
+  const weeklyTasks = data.tasks.filter((task) => task.date <= weekEnd && (task.endDate || task.date) >= weekStart);
   const calendarMonthLabel = useMemo(() => {
     const [year, month] = calendarCursor.split("-").map(Number);
     return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", timeZone: "UTC" }).format(new Date(Date.UTC(year, month - 1, 1)));
@@ -437,8 +451,8 @@ export default function Home() {
             </section>
 
             <div className="semester-viewbar">
-              <div className="view-switch" role="group" aria-label="学期地图视图"><button className={semesterMode === "calendar" ? "active" : ""} onClick={() => setSemesterMode("calendar")}>月历</button><button className={semesterMode === "week" ? "active" : ""} onClick={() => setSemesterMode("week")}>周课表</button></div>
-              <p>月历显示任务、课程和 TA；点击日期可直接安排新任务。</p>
+              <div className="view-switch" role="group" aria-label="学期地图视图"><button className={semesterMode === "week" ? "active" : ""} onClick={() => setSemesterMode("week")}>周课表</button><button className={semesterMode === "calendar" ? "active" : ""} onClick={() => setSemesterMode("calendar")}>月历</button></div>
+              <p>周课表集中显示本周任务与固定课程；月历显示整个月的全部安排。</p>
             </div>
 
             {semesterMode === "calendar" ? <section className="panel calendar-panel">
@@ -456,8 +470,7 @@ export default function Home() {
                     return <article className={`calendar-day ${cell.inMonth ? "" : "outside"} ${cell.key === today ? "today" : ""}`} key={cell.key}>
                       <header><span>{cell.day}</span>{cell.key === today && <strong>今天</strong>}<button onClick={() => openNewTask(cell.key)} aria-label={`在 ${cell.key} 新建任务`}>＋</button></header>
                       <div className="calendar-events">
-                        {events.slice(0, 4).map((event) => event.type === "task" ? <button key={`task-${event.item.id}`} className={`calendar-event task ${categoryTone[event.item.category]} ${event.item.status === "done" ? "done" : ""}`} onClick={() => setTaskEditor(event.item)} title={event.item.title}><time>{event.time || (event.item.date < cell.key ? "↳" : "")}</time><span>{event.item.title}</span></button> : <button key={`schedule-${event.item.id}`} className={`calendar-event schedule ${event.item.color}`} onClick={() => setScheduleEditor(event.item)} title={`${event.item.title} · ${event.item.room}`}><time>{event.item.start}</time><span>{event.item.code}</span></button>)}
-                        {events.length > 4 && <span className="calendar-more">还有 {events.length - 4} 项</span>}
+                        {events.map((event) => event.type === "task" ? <button key={`task-${event.item.id}`} className={`calendar-event task ${categoryTone[event.item.category]} ${event.item.status === "done" ? "done" : ""}`} onClick={() => setTaskEditor(event.item)} title={event.item.title}><time>{event.time || (event.item.date < cell.key ? "↳" : "")}</time><span>{event.item.title}</span></button> : <button key={`schedule-${event.item.id}`} className={`calendar-event schedule ${event.item.color}`} onClick={() => setScheduleEditor(event.item)} title={`${event.item.title} · ${event.item.room}`}><time>{event.item.start}</time><span>{event.item.code}</span></button>)}
                       </div>
                     </article>;
                   })}
@@ -465,7 +478,26 @@ export default function Home() {
               </div>
               <div className="calendar-legend"><span><i className="task" />任务</span><span><i className="schedule" />课程 / TA</span><small>长期任务会持续显示到截止日</small></div>
             </section> : <section className="panel schedule-panel">
-              <div className="panel-heading"><div><p className="section-kicker">WEEKLY RHYTHM</p><h3>每周固定节奏</h3></div><span className="counter">点击课程可编辑</span></div>
+              <div className="panel-heading"><div><p className="section-kicker">THIS WEEK</p><h3>本周安排</h3></div><span className="counter">{formatDate(weekStart)}—{formatDate(weekEnd)} · {weeklyTasks.length} 项任务</span></div>
+              <div className="week-task-section">
+                <div className="week-task-heading"><strong>本周任务</strong><span>点击任务编辑 · ＋ 直接安排到当天</span></div>
+                <div className="week-task-scroll">
+                  <div className="week-task-grid">
+                    {weekDays.map((day) => {
+                      const tasks = data.tasks.filter((task) => task.date <= day.key && (task.endDate || task.date) >= day.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
+                      return <article className={`week-task-day ${day.key === today ? "today" : ""}`} key={day.key}>
+                        <header><div><strong>{day.label}</strong><span>{day.date}</span></div>{day.key === today && <i>今天</i>}</header>
+                        <div className="week-task-list">
+                          {tasks.map((task) => <button key={task.id} className={`week-task-item ${categoryTone[task.category]} ${task.status === "done" ? "done" : ""}`} onClick={() => setTaskEditor(task)}><time>{task.date === day.key ? task.time || "全天" : "持续"}</time><span>{task.title}</span></button>)}
+                          {tasks.length === 0 && <span className="week-task-empty">暂无任务</span>}
+                        </div>
+                        <button className="week-task-add" onClick={() => openNewTask(day.key)}>＋ 添加</button>
+                      </article>;
+                    })}
+                  </div>
+                </div>
+              </div>
+              <div className="fixed-schedule-heading"><div><p className="section-kicker">WEEKLY RHYTHM</p><h3>每周固定课程与 TA</h3></div><span>点击安排可编辑</span></div>
               <div className="schedule-scroll">
                 <div className="schedule-grid">
                   <div className="time-column"><span /><span>8 AM</span><span>10 AM</span><span>12 PM</span><span>2 PM</span><span>4 PM</span><span>6 PM</span></div>
