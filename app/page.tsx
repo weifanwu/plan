@@ -185,6 +185,13 @@ function timeToMinutes(time: string) {
   return hour * 60 + minute;
 }
 
+function goalPriorityLabel(index: number) {
+  if (index === 0) return "最重要";
+  if (index === 1) return "第二重要";
+  if (index === 2) return "第三重要";
+  return `第 ${index + 1} 顺位`;
+}
+
 export default function Home() {
   const [view, setView] = useState<View>("today");
   const [data, setData] = useState<AppData>(initialData);
@@ -207,6 +214,8 @@ export default function Home() {
   const [calendarCursor, setCalendarCursor] = useState(() => getTorontoToday().slice(0, 7));
   const [draggedApplicationId, setDraggedApplicationId] = useState<string | null>(null);
   const [dragOverStage, setDragOverStage] = useState<ApplicationStage | null>(null);
+  const [draggedGoalId, setDraggedGoalId] = useState<string | null>(null);
+  const [dragOverGoalId, setDragOverGoalId] = useState<string | null>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const today = getTorontoToday();
   const todayLabel = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", weekday: "long", month: "long", day: "numeric" }).format(new Date()).toUpperCase();
@@ -266,6 +275,19 @@ export default function Home() {
 
   function moveApplication(id: string, stage: ApplicationStage) {
     setData((current) => ({ ...current, applications: current.applications.map((application) => application.id === id ? { ...application, stage } : application) }));
+  }
+
+  function moveGoal(sourceId: string, targetId: string) {
+    if (sourceId === targetId) return;
+    setData((current) => {
+      const goals = [...current.goals];
+      const sourceIndex = goals.findIndex((goal) => goal.id === sourceId);
+      const targetIndex = goals.findIndex((goal) => goal.id === targetId);
+      if (sourceIndex < 0 || targetIndex < 0) return current;
+      const [moved] = goals.splice(sourceIndex, 1);
+      goals.splice(targetIndex, 0, moved);
+      return { ...current, goals };
+    });
   }
 
   function exportData() {
@@ -413,8 +435,8 @@ export default function Home() {
               <div className="section-heading-row"><div><p className="section-kicker">NORTH STARS</p><h2>当前最重要的三条主线</h2></div><button className="ghost-button" onClick={() => setView("goals")}>管理长期目标</button></div>
               <div className="goal-grid">
                 {data.goals.map((goal, index) => (
-                  <article className={`goal-card ${goal.tone}`} key={goal.id}>
-                    <div className="goal-number">0{index + 1}</div>
+                  <article draggable className={`goal-card ${goal.tone} ${draggedGoalId === goal.id ? "dragging" : ""} ${dragOverGoalId === goal.id ? "drag-over" : ""}`} key={goal.id} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", goal.id); setDraggedGoalId(goal.id); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverGoalId(goal.id); }} onDrop={(event) => { event.preventDefault(); const sourceId = event.dataTransfer.getData("text/plain") || draggedGoalId; if (sourceId) moveGoal(sourceId, goal.id); setDraggedGoalId(null); setDragOverGoalId(null); }} onDragEnd={() => { setDraggedGoalId(null); setDragOverGoalId(null); }}>
+                    <div className="goal-number">0{index + 1} · {goalPriorityLabel(index)}</div><span className="goal-drag-handle" aria-hidden="true">⋮⋮</span>
                     <button className="more-button" onClick={() => setGoalEditor(goal)} aria-label={`编辑${goal.title}`}>•••</button>
                     <h3>{goal.title}</h3><p>{goal.description}</p>
                     <div className="goal-footer"><span>{goal.metric}</span><strong>{goal.progress}%</strong></div>
@@ -434,8 +456,9 @@ export default function Home() {
             </section>
             <section className="life-horizons">
               <div className="horizon-line"><span>NOW</span><i /><span>1 YEAR</span><i /><span>3 YEARS</span><i /><span>5+ YEARS</span></div>
+              <div className="goal-order-guide"><span>优先级按从左到右、从上到下排列</span><strong>拖动卡片即可改变顺序</strong></div>
               <div className="goal-grid expanded">
-                {data.goals.map((goal, index) => <article className={`goal-card ${goal.tone}`} key={goal.id}><div className="goal-number">DIRECTION · 0{index + 1}</div><button className="more-button" onClick={() => setGoalEditor(goal)} aria-label={`编辑${goal.title}`}>•••</button><h3>{goal.title}</h3><p>{goal.description}</p><div className="goal-footer"><span>{goal.metric}</span><strong>{goal.progress}%</strong></div><div className="goal-progress"><span style={{ width: `${goal.progress}%` }} /></div></article>)}
+                {data.goals.map((goal, index) => <article draggable className={`goal-card ${goal.tone} ${draggedGoalId === goal.id ? "dragging" : ""} ${dragOverGoalId === goal.id ? "drag-over" : ""}`} key={goal.id} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", goal.id); setDraggedGoalId(goal.id); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverGoalId(goal.id); }} onDrop={(event) => { event.preventDefault(); const sourceId = event.dataTransfer.getData("text/plain") || draggedGoalId; if (sourceId) moveGoal(sourceId, goal.id); setDraggedGoalId(null); setDragOverGoalId(null); }} onDragEnd={() => { setDraggedGoalId(null); setDragOverGoalId(null); }}><div className="goal-number">0{index + 1} · {goalPriorityLabel(index)}</div><span className="goal-drag-handle" aria-hidden="true">⋮⋮</span><button className="more-button" onClick={() => setGoalEditor(goal)} aria-label={`编辑${goal.title}`}>•••</button><h3>{goal.title}</h3><p>{goal.description}</p><div className="goal-footer"><span>{goal.metric}</span><strong>{goal.progress}%</strong></div><div className="goal-progress"><span style={{ width: `${goal.progress}%` }} /></div></article>)}
                 <button className="goal-add-card" onClick={() => setGoalEditor("new")}><span>＋</span><strong>添加下一条人生主线</strong><small>买房、家庭、工作、个人项目……</small></button>
               </div>
             </section>
@@ -479,25 +502,7 @@ export default function Home() {
               <div className="calendar-legend"><span><i className="task" />任务</span><span><i className="schedule" />课程 / TA</span><small>长期任务会持续显示到截止日</small></div>
             </section> : <section className="panel schedule-panel">
               <div className="panel-heading"><div><p className="section-kicker">THIS WEEK</p><h3>本周安排</h3></div><span className="counter">{formatDate(weekStart)}—{formatDate(weekEnd)} · {weeklyTasks.length} 项任务</span></div>
-              <div className="week-task-section">
-                <div className="week-task-heading"><strong>本周任务</strong><span>点击任务编辑 · ＋ 直接安排到当天</span></div>
-                <div className="week-task-scroll">
-                  <div className="week-task-grid">
-                    {weekDays.map((day) => {
-                      const tasks = data.tasks.filter((task) => task.date <= day.key && (task.endDate || task.date) >= day.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
-                      return <article className={`week-task-day ${day.key === today ? "today" : ""}`} key={day.key}>
-                        <header><div><strong>{day.label}</strong><span>{day.date}</span></div>{day.key === today && <i>今天</i>}</header>
-                        <div className="week-task-list">
-                          {tasks.map((task) => <button key={task.id} className={`week-task-item ${categoryTone[task.category]} ${task.status === "done" ? "done" : ""}`} onClick={() => setTaskEditor(task)}><time>{task.date === day.key ? task.time || "全天" : "持续"}</time><span>{task.title}</span></button>)}
-                          {tasks.length === 0 && <span className="week-task-empty">暂无任务</span>}
-                        </div>
-                        <button className="week-task-add" onClick={() => openNewTask(day.key)}>＋ 添加</button>
-                      </article>;
-                    })}
-                  </div>
-                </div>
-              </div>
-              <div className="fixed-schedule-heading"><div><p className="section-kicker">WEEKLY RHYTHM</p><h3>每周固定课程与 TA</h3></div><span>点击安排可编辑</span></div>
+              <div className="fixed-schedule-heading first"><div><p className="section-kicker">WEEKLY RHYTHM</p><h3>每周固定课程与 TA</h3></div><span>点击安排可编辑</span></div>
               <div className="schedule-scroll">
                 <div className="schedule-grid">
                   <div className="time-column"><span /><span>8 AM</span><span>10 AM</span><span>12 PM</span><span>2 PM</span><span>4 PM</span><span>6 PM</span></div>
@@ -514,6 +519,24 @@ export default function Home() {
                       </div>
                     </div>
                   ))}
+                </div>
+              </div>
+              <div className="week-task-section">
+                <div className="week-task-heading"><strong>本周任务</strong><span>点击任务编辑 · ＋ 直接安排到当天</span></div>
+                <div className="week-task-scroll">
+                  <div className="week-task-grid">
+                    {weekDays.map((day) => {
+                      const tasks = data.tasks.filter((task) => task.date <= day.key && (task.endDate || task.date) >= day.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
+                      return <article className={`week-task-day ${day.key === today ? "today" : ""}`} key={day.key}>
+                        <header><div><strong>{day.label}</strong><span>{day.date}</span></div>{day.key === today && <i>今天</i>}</header>
+                        <div className="week-task-list">
+                          {tasks.map((task) => <button key={task.id} className={`week-task-item ${categoryTone[task.category]} ${task.status === "done" ? "done" : ""}`} onClick={() => setTaskEditor(task)}><time>{task.date === day.key ? task.time || "全天" : "持续"}</time><span>{task.title}</span></button>)}
+                          {tasks.length === 0 && <span className="week-task-empty">暂无任务</span>}
+                        </div>
+                        <button className="week-task-add" onClick={() => openNewTask(day.key)}>＋ 添加</button>
+                      </article>;
+                    })}
+                  </div>
                 </div>
               </div>
             </section>}
