@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { applyAIOperations } from "../lib/ai-operations.mjs";
-import { createPrivateVault, PRIVATE_VAULT_ITERATIONS, sealPrivateVault, unlockPrivateVault } from "../lib/private-vault.mjs";
 import { rollOverTasks } from "../lib/task-rollover.mjs";
+import { isRoutineDueOn, nextRoutineOccurrence, routineFrequencyLabel, routineIntervalDays, routineTodayEntry } from "../lib/routine-schedule.mjs";
 import { shiftTaskToDate } from "../lib/task-reschedule.mjs";
 import { isCompletedTaskArchived } from "../lib/task-retention.mjs";
 import { isTaskVisibleToday } from "../lib/task-visibility.mjs";
@@ -12,7 +12,7 @@ type View = "today" | "goals" | "semester" | "career" | "planner" | "notes" | "v
 type TaskCategory = "学业" | "求职" | "生活" | "健康";
 type TaskStatus = "todo" | "done";
 type NoteCategory = "待办" | "想法" | "课程" | "项目" | "求职" | "生活";
-type VaultCategory = "API 密钥" | "登录信息" | "身份号码" | "地址" | "常用文本" | "其他";
+type RoutineFrequency = "daily" | "interval";
 
 type Task = {
   id: string;
@@ -66,16 +66,17 @@ type Workout = { id: string; title: string; day: string; duration: string; done:
 type ApplicationStage = "已投" | "面试" | "Offer" | "拒绝";
 type Application = { id: string; company: string; role: string; stage: ApplicationStage; link: string; contact: string; date: string; notes: string };
 type Note = { id: string; content: string; category: NoteCategory; pinned: boolean; createdAt: string; updatedAt: string };
-type VaultItem = { id: string; title: string; value: string; category: VaultCategory; notes: string; pinned: boolean; createdAt: string; updatedAt: string };
+type Routine = { id: string; title: string; details: string; category: TaskCategory; goalId?: string | null; startDate: string; time?: string | null; frequency: RoutineFrequency; intervalDays: number; active: boolean; completedDates: string[] };
+type ReferenceNote = { id: string; title: string; content: string; pinned: boolean; createdAt: string; updatedAt: string };
 type AIPlanPreview = { summary: string; changes: string[]; nextData: AppData };
 type AIModel = "gpt-5.6-luna" | "gpt-5.6-terra" | "gpt-5.6-sol" | "gpt-5.4-mini" | "gpt-5.4";
 type AIChatMessage = { id: string; role: "user" | "assistant"; content: string };
-type AICollection = "tasks" | "schedule" | "goals" | "habits" | "workouts" | "applications" | "notes";
+type AICollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "applications" | "notes" | "references";
 type AIOperation = { collection: AICollection; operation: "add" | "update" | "delete" | "reorder"; recordId: string; recordJson: string };
 type AIChatResponse = { reply: string; action: "answer" | "proposal"; summary: string; operations: AIOperation[]; error?: string };
 type VoiceState = "idle" | "recording" | "transcribing";
 type PlannerStatusFilter = "open" | "done" | "all";
-type RecordCollection = "tasks" | "schedule" | "goals" | "habits" | "workouts" | "applications" | "notes";
+type RecordCollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "applications" | "notes" | "references";
 type UndoNotice = { message: string; restore: (current: AppData) => AppData };
 type PWAInstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
 type TaskPrefill = { title: string; details: string; category: TaskCategory };
@@ -83,12 +84,14 @@ type TaskPrefill = { title: string; details: string; category: TaskCategory };
 type AppData = {
   phase: ActivePhase;
   tasks: Task[];
+  routines: Routine[];
   schedule: ScheduleItem[];
   goals: Goal[];
   habits: Habit[];
   workouts: Workout[];
   applications: Application[];
   notes: Note[];
+  references: ReferenceNote[];
   habitDate: string;
   workoutWeek: string;
 };
@@ -99,12 +102,9 @@ const CALENDAR_DAY_ORDER = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 const CALENDAR_DAY_LABEL = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 const APPLICATION_STAGES: ApplicationStage[] = ["已投", "面试", "Offer", "拒绝"];
 const NOTE_CATEGORIES: NoteCategory[] = ["待办", "想法", "课程", "项目", "求职", "生活"];
-const VAULT_CATEGORIES: VaultCategory[] = ["API 密钥", "登录信息", "身份号码", "地址", "常用文本", "其他"];
 const BASE_DATE = "2026-08-23";
 const STORAGE_KEY = "map-life-os-v1";
-const VAULT_STORAGE_KEY = "map-private-vault-v1";
-const VAULT_AUTO_LOCK_MS = 30 * 60 * 1000;
-const AI_WELCOME_MESSAGE: AIChatMessage = { id: "welcome", role: "assistant", content: "你好，我是 MAP AI。我能看到你当前阶段、长期目标、任务、课表、求职记录、健康计划和全部笔记，也知道哪些任务正在服务哪个目标。你可以让我分析现状、回答问题，或者一起把一个想法变成计划；任何数据修改都会先给你预览。" };
+const AI_WELCOME_MESSAGE: AIChatMessage = { id: "welcome", role: "assistant", content: "你好，我是 MAP AI。我能看到你当前阶段、长期目标、任务、固定任务、课表、求职记录、健康计划和草稿，也知道哪些行动正在服务哪个目标。你可以让我分析现状、回答问题，或者一起把一个想法变成计划；任何数据修改都会先给你预览。私人速记只会在你明确要求管理它时加入上下文。" };
 const LEGACY_TASK_GOALS: Record<string, string> = { stephnie: "graduate", leetcode: "career", fees: "graduate", applications: "career", pte: "graduate", irene: "graduate" };
 
 function getTorontoToday() {
@@ -164,6 +164,33 @@ function normalizeSchedule(schedule: ScheduleItem[] = []) {
   return schedule.map((item) => ({ ...item, detail: item.detail ?? null }));
 }
 
+function normalizeRoutines(routines: Routine[] = [], goals: Goal[] = []) {
+  const goalIds = new Set(goals.map((goal) => goal.id));
+  return routines.flatMap((routine) => {
+    if (!routine || typeof routine.id !== "string" || typeof routine.title !== "string" || typeof routine.startDate !== "string") return [];
+    const frequency: RoutineFrequency = routine.frequency === "interval" ? "interval" : "daily";
+    return [{
+      ...routine,
+      details: typeof routine.details === "string" ? routine.details : "",
+      category: (["学业", "求职", "生活", "健康"] as TaskCategory[]).includes(routine.category) ? routine.category : "生活",
+      goalId: routine.goalId && goalIds.has(routine.goalId) ? routine.goalId : null,
+      time: typeof routine.time === "string" ? routine.time : null,
+      frequency,
+      intervalDays: frequency === "daily" ? 1 : routineIntervalDays(routine),
+      active: routine.active !== false,
+      completedDates: Array.isArray(routine.completedDates) ? [...new Set(routine.completedDates.filter((date) => typeof date === "string"))].sort() : [],
+    }];
+  });
+}
+
+function normalizeReferences(references: ReferenceNote[] = []) {
+  return references.flatMap((reference) => {
+    if (!reference || typeof reference.id !== "string" || typeof reference.content !== "string") return [];
+    const now = new Date().toISOString();
+    return [{ id: reference.id, title: typeof reference.title === "string" && reference.title.trim() ? reference.title : referenceTitleFromContent(reference.content), content: reference.content, pinned: Boolean(reference.pinned), createdAt: typeof reference.createdAt === "string" ? reference.createdAt : now, updatedAt: typeof reference.updatedAt === "string" ? reference.updatedAt : now }];
+  });
+}
+
 const initialData: AppData = {
   phase: {
     goalId: "graduate",
@@ -199,6 +226,9 @@ const initialData: AppData = {
     { id: "immigration", title: "研究移民政策", category: "生活", date: "2026-08-25", time: "09:00", endDate: "2026-08-30", priority: "normal", status: "todo" },
     { id: "driving", title: "安排考驾照并开始找教练", category: "生活", date: BASE_DATE, endDate: "2026-09-04", priority: "normal", status: "todo" },
   ],
+  routines: [
+    { id: "routine-job-search", title: "找工作 / 筛选并投递岗位", details: "寻找明显优于现有实习 Offer 的机会", category: "求职", goalId: "career", startDate: "2026-08-24", time: "09:00", frequency: "interval", intervalDays: 2, active: true, completedDates: [] },
+  ],
   habits: [
     { id: "water", label: "喝够水", done: false, icon: "水" },
     { id: "fruit", label: "吃水果", done: false, icon: "果" },
@@ -212,6 +242,7 @@ const initialData: AppData = {
   ],
   applications: [],
   notes: [],
+  references: [],
   habitDate: getTorontoToday(),
   workoutWeek: getWeekKey(),
 };
@@ -223,7 +254,7 @@ function uid() {
 }
 
 function deriveAIChanges(current: AppData, next: AppData) {
-  const collections: Array<["tasks" | "schedule" | "goals" | "habits" | "workouts" | "applications" | "notes", string]> = [["tasks", "任务"], ["schedule", "固定安排"], ["goals", "目标"], ["habits", "饮食习惯"], ["workouts", "运动"], ["applications", "求职记录"], ["notes", "草稿"]];
+  const collections: Array<[AICollection, string]> = [["tasks", "任务"], ["routines", "固定任务"], ["schedule", "固定安排"], ["goals", "目标"], ["habits", "饮食习惯"], ["workouts", "运动"], ["applications", "求职记录"], ["notes", "草稿"], ["references", "私人速记"]];
   const changes: string[] = [];
   const displayName = (item: Record<string, unknown>) => String(item.title || item.company || item.label || item.code || item.content || item.id || "未命名记录").split("\n")[0].slice(0, 60);
   for (const [key, label] of collections) {
@@ -316,6 +347,29 @@ function notePreview(note: Note) {
   return (lines.length > 1 ? lines.slice(1).join("\n") : note.content).trim();
 }
 
+function referenceTitleFromContent(content: string) {
+  const firstLine = content.split("\n").find((line) => line.trim())?.trim() || "无标题资料";
+  try {
+    if (/^https?:\/\//i.test(firstLine)) return new URL(firstLine).hostname.replace(/^www\./, "") || "常用网址";
+  } catch { /* use the original first line */ }
+  return firstLine.slice(0, 80);
+}
+
+function referencePreview(reference: ReferenceNote) {
+  const lines = reference.content.split("\n").map((line) => line.trim()).filter(Boolean);
+  const withoutTitle = lines[0] === reference.title ? lines.slice(1) : lines;
+  return (withoutTitle.join(" · ") || reference.content).slice(0, 180);
+}
+
+function extractReferenceLinks(content: string) {
+  const matches = content.match(/https?:\/\/[^\s<>"']+/gi) || [];
+  return [...new Set(matches.map((link) => link.replace(/[),.;，。；）]+$/, "")))].slice(0, 12);
+}
+
+function referenceLinkLabel(link: string) {
+  try { return new URL(link).hostname.replace(/^www\./, "") || link; } catch { return link; }
+}
+
 function taskCategoryFromNote(category: NoteCategory): TaskCategory {
   if (category === "课程") return "学业";
   if (category === "求职") return "求职";
@@ -329,31 +383,12 @@ function formatNoteTime(value: string) {
   return new Intl.DateTimeFormat("zh-CN", { timeZone: "America/Toronto", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
-function normalizeVaultItems(value: unknown): VaultItem[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    if (!entry || typeof entry !== "object") return [];
-    const item = entry as Partial<VaultItem>;
-    if (typeof item.id !== "string" || typeof item.title !== "string" || typeof item.value !== "string") return [];
-    const now = new Date().toISOString();
-    return [{
-      id: item.id,
-      title: item.title,
-      value: item.value,
-      category: VAULT_CATEGORIES.includes(item.category as VaultCategory) ? item.category as VaultCategory : "其他",
-      notes: typeof item.notes === "string" ? item.notes : "",
-      pinned: Boolean(item.pinned),
-      createdAt: typeof item.createdAt === "string" ? item.createdAt : now,
-      updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : now,
-    }];
-  });
-}
-
 export default function Home() {
   const [view, setView] = useState<View>("today");
   const [data, setData] = useState<AppData>(initialData);
   const [ready, setReady] = useState(false);
   const [taskEditor, setTaskEditor] = useState<Task | "new" | null>(null);
+  const [routineEditor, setRoutineEditor] = useState<Routine | "new" | null>(null);
   const [newTaskDate, setNewTaskDate] = useState<string | null>(null);
   const [newTaskGoalId, setNewTaskGoalId] = useState<string | null>(null);
   const [taskPrefill, setTaskPrefill] = useState<TaskPrefill | null>(null);
@@ -369,20 +404,10 @@ export default function Home() {
   const [noteCategory, setNoteCategory] = useState<NoteCategory>("待办");
   const [noteFilter, setNoteFilter] = useState<"全部" | NoteCategory>("全部");
   const [noteQuery, setNoteQuery] = useState("");
-  const [vaultReady, setVaultReady] = useState(false);
-  const [vaultExists, setVaultExists] = useState(false);
-  const [vaultUnlocked, setVaultUnlocked] = useState(false);
-  const [vaultKey, setVaultKey] = useState<CryptoKey | null>(null);
-  const [vaultSalt, setVaultSalt] = useState("");
-  const [vaultIterations, setVaultIterations] = useState(PRIVATE_VAULT_ITERATIONS);
-  const [vaultItems, setVaultItems] = useState<VaultItem[]>([]);
-  const [vaultEditor, setVaultEditor] = useState<VaultItem | "new" | null>(null);
-  const [vaultQuery, setVaultQuery] = useState("");
-  const [vaultFilter, setVaultFilter] = useState<"全部" | VaultCategory>("全部");
-  const [vaultBusy, setVaultBusy] = useState(false);
-  const [vaultError, setVaultError] = useState("");
-  const [revealedVaultIds, setRevealedVaultIds] = useState<Set<string>>(() => new Set());
-  const [vaultCopiedId, setVaultCopiedId] = useState<string | null>(null);
+  const [referenceDraft, setReferenceDraft] = useState("");
+  const [referenceQuery, setReferenceQuery] = useState("");
+  const [referenceEditor, setReferenceEditor] = useState<ReferenceNote | null>(null);
+  const [referenceCopiedId, setReferenceCopiedId] = useState<string | null>(null);
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [taskDropDate, setTaskDropDate] = useState<string | null>(null);
   const [aiOpen, setAiOpen] = useState(false);
@@ -410,8 +435,8 @@ export default function Home() {
   const [standalone, setStandalone] = useState(false);
   const [today, setToday] = useState(() => getTorontoToday());
   const importRef = useRef<HTMLInputElement>(null);
-  const vaultImportRef = useRef<HTMLInputElement>(null);
   const noteDraftRef = useRef<HTMLTextAreaElement>(null);
+  const referenceDraftRef = useRef<HTMLTextAreaElement>(null);
   const aiConversationRef = useRef<HTMLDivElement>(null);
   const aiInputRef = useRef<HTMLTextAreaElement>(null);
   const aiSessionRef = useRef(0);
@@ -422,7 +447,7 @@ export default function Home() {
   const voiceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const voiceAbortRef = useRef<AbortController | null>(null);
   const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const vaultCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const referenceCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const todayLabel = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", weekday: "long", month: "long", day: "numeric" }).format(new Date()).toUpperCase();
   const phaseTiming = today < data.phase.startDate ? "before" : today > data.phase.endDate ? "after" : "active";
   const phaseDays = phaseTiming === "before" ? Math.max(0, daysBetween(today, data.phase.startDate)) : Math.max(0, daysBetween(today, data.phase.endDate));
@@ -446,9 +471,7 @@ export default function Home() {
     // Hydrate device-local state after the server-rendered shell mounts.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setToday(currentDay);
-    setData({ ...initialData, ...parsed, phase: savedPhase, tasks: normalizeTaskGoals(rollOverTasks(parsed.tasks || initialData.tasks, currentDay), savedGoals), schedule: normalizeSchedule(parsed.schedule || initialData.schedule), goals: savedGoals, habits: parsed.habitDate === currentDay ? savedHabits : savedHabits.map((habit) => ({ ...habit, done: false })), workouts: parsed.workoutWeek === currentWeek ? savedWorkouts : savedWorkouts.map((workout) => ({ ...workout, done: false })), applications: normalizeApplications(parsed.applications), notes: parsed.notes || initialData.notes, habitDate: currentDay, workoutWeek: currentWeek });
-    setVaultExists(Boolean(window.localStorage.getItem(VAULT_STORAGE_KEY)));
-    setVaultReady(true);
+    setData({ ...initialData, ...parsed, phase: savedPhase, tasks: normalizeTaskGoals(rollOverTasks(parsed.tasks || initialData.tasks, currentDay), savedGoals), routines: normalizeRoutines(parsed.routines || initialData.routines, savedGoals), schedule: normalizeSchedule(parsed.schedule || initialData.schedule), goals: savedGoals, habits: parsed.habitDate === currentDay ? savedHabits : savedHabits.map((habit) => ({ ...habit, done: false })), workouts: parsed.workoutWeek === currentWeek ? savedWorkouts : savedWorkouts.map((workout) => ({ ...workout, done: false })), applications: normalizeApplications(parsed.applications), notes: parsed.notes || initialData.notes, references: normalizeReferences(parsed.references), habitDate: currentDay, workoutWeek: currentWeek });
     setReady(true);
   }, []);
 
@@ -458,39 +481,8 @@ export default function Home() {
 
   useEffect(() => {
     if (view === "notes") window.requestAnimationFrame(() => noteDraftRef.current?.focus());
+    if (view === "vault") window.requestAnimationFrame(() => referenceDraftRef.current?.focus());
   }, [view]);
-
-  useEffect(() => {
-    if (!vaultUnlocked) return;
-    let timer = window.setTimeout(() => {
-      setVaultUnlocked(false);
-      setVaultKey(null);
-      setVaultSalt("");
-      setVaultIterations(PRIVATE_VAULT_ITERATIONS);
-      setVaultItems([]);
-      setVaultEditor(null);
-      setRevealedVaultIds(new Set());
-    }, VAULT_AUTO_LOCK_MS);
-    const resetTimer = () => {
-      window.clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        setVaultUnlocked(false);
-        setVaultKey(null);
-        setVaultSalt("");
-        setVaultIterations(PRIVATE_VAULT_ITERATIONS);
-        setVaultItems([]);
-        setVaultEditor(null);
-        setRevealedVaultIds(new Set());
-      }, VAULT_AUTO_LOCK_MS);
-    };
-    window.addEventListener("pointerdown", resetTimer);
-    window.addEventListener("keydown", resetTimer);
-    return () => {
-      window.clearTimeout(timer);
-      window.removeEventListener("pointerdown", resetTimer);
-      window.removeEventListener("keydown", resetTimer);
-    };
-  }, [vaultUnlocked]);
 
   useEffect(() => {
     if (!aiOpen) return;
@@ -547,14 +539,22 @@ export default function Home() {
 
   useEffect(() => () => {
     if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
-    if (vaultCopyTimerRef.current) clearTimeout(vaultCopyTimerRef.current);
+    if (referenceCopyTimerRef.current) clearTimeout(referenceCopyTimerRef.current);
   }, []);
 
   const visibleTasks = useMemo(() => data.tasks.filter((task) => !isCompletedTaskArchived(task, today)), [data.tasks, today]);
   const todayDisplayTasks = useMemo(() => visibleTasks.filter((task) => isTaskVisibleToday(task, today)), [visibleTasks, today]);
   const todayTasks = useMemo(() => todayDisplayTasks.filter((task) => task.status === "todo"), [todayDisplayTasks]);
+  const todayRoutineEntries = useMemo(() => data.routines.flatMap((routine) => {
+    const entry = routineTodayEntry(routine, today);
+    return entry ? [{ routine, ...entry }] : [];
+  }).sort((left, right) => (left.routine.time || "99:99").localeCompare(right.routine.time || "99:99")), [data.routines, today]);
   const completedToday = todayDisplayTasks.filter((task) => task.status === "done").length;
-  const taskProgress = todayTasks.length + completedToday === 0 ? 0 : Math.round((completedToday / (todayTasks.length + completedToday)) * 100);
+  const completedRoutineCount = todayRoutineEntries.filter((entry) => entry.completed).length;
+  const openRoutineCount = todayRoutineEntries.length - completedRoutineCount;
+  const todayOpenCount = todayTasks.length + openRoutineCount;
+  const todayCompletedCount = completedToday + completedRoutineCount;
+  const taskProgress = todayOpenCount + todayCompletedCount === 0 ? 0 : Math.round((todayCompletedCount / (todayOpenCount + todayCompletedCount)) * 100);
   const workoutDone = data.workouts.filter((workout) => workout.done).length;
   const habitDone = data.habits.filter((habit) => habit.done).length;
   const calendarCells = useMemo(() => buildCalendarCells(calendarCursor), [calendarCursor]);
@@ -562,6 +562,7 @@ export default function Home() {
   const weekStart = weekDays[0].key;
   const weekEnd = weekDays[6].key;
   const weeklyTasks = visibleTasks.filter((task) => task.date <= weekEnd && (task.endDate || task.date) >= weekStart);
+  const weeklyRoutineCount = weekDays.reduce((count, day) => count + data.routines.filter((routine) => isRoutineDueOn(routine, day.key)).length, 0);
   const weeklySpanTasks = weeklyTasks.filter(isMultiDayTask).slice().sort((a, b) => a.date.localeCompare(b.date) || (a.endDate || a.date).localeCompare(b.endDate || b.date));
   const calendarMonthLabel = useMemo(() => {
     const [year, month] = calendarCursor.split("-").map(Number);
@@ -571,6 +572,7 @@ export default function Home() {
   const monthEnd = calendarCells.filter((cell) => cell.inMonth).at(-1)?.key || monthStart;
   const monthlySpanTasks = visibleTasks.filter((task) => isMultiDayTask(task) && task.date <= monthEnd && (task.endDate || task.date) >= monthStart).slice().sort((a, b) => a.date.localeCompare(b.date));
   const visibleTaskCount = visibleTasks.filter((task) => task.date <= monthEnd && (task.endDate || task.date) >= monthStart).length;
+  const visibleRoutineCount = calendarCells.filter((cell) => cell.inMonth).reduce((count, cell) => count + data.routines.filter((routine) => isRoutineDueOn(routine, cell.key)).length, 0);
   const visibleScheduleCount = calendarCells.filter((cell) => cell.inMonth && cell.key >= data.phase.startDate && cell.key <= data.phase.endDate).reduce((count, cell) => count + data.schedule.filter((item) => item.days.includes(cell.dayCode)).length, 0);
   const applicationDateCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -594,10 +596,10 @@ export default function Home() {
     return data.notes.filter((note) => (noteFilter === "全部" || note.category === noteFilter) && (!query || note.content.toLocaleLowerCase().includes(query) || note.category.toLocaleLowerCase().includes(query))).slice().sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt));
   }, [data.notes, noteFilter, noteQuery]);
   const backlogCount = data.notes.filter((note) => note.category === "待办").length;
-  const visibleVaultItems = useMemo(() => {
-    const query = vaultQuery.trim().toLocaleLowerCase();
-    return vaultItems.filter((item) => (vaultFilter === "全部" || item.category === vaultFilter) && (!query || item.title.toLocaleLowerCase().includes(query) || item.value.toLocaleLowerCase().includes(query) || item.notes.toLocaleLowerCase().includes(query))).slice().sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updatedAt.localeCompare(left.updatedAt));
-  }, [vaultItems, vaultFilter, vaultQuery]);
+  const visibleReferences = useMemo(() => {
+    const query = referenceQuery.trim().toLocaleLowerCase();
+    return data.references.filter((reference) => !query || reference.title.toLocaleLowerCase().includes(query) || reference.content.toLocaleLowerCase().includes(query)).slice().sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updatedAt.localeCompare(left.updatedAt));
+  }, [data.references, referenceQuery]);
 
   function openNewTask(date?: string, goalId?: string) {
     setNewTaskDate(date || null);
@@ -655,135 +657,70 @@ export default function Home() {
 
   function openVault() {
     setView("vault");
-    setVaultError("");
+    window.requestAnimationFrame(() => referenceDraftRef.current?.focus());
   }
 
-  async function setupPrivateVault(passphrase: string) {
-    setVaultBusy(true);
-    setVaultError("");
+  function saveQuickReference() {
+    const content = referenceDraft.trim();
+    if (!content) return;
+    const now = new Date().toISOString();
+    const reference: ReferenceNote = { id: uid(), title: referenceTitleFromContent(content), content, pinned: false, createdAt: now, updatedAt: now };
+    setData((current) => ({ ...current, references: [reference, ...current.references] }));
+    setReferenceDraft("");
+    window.requestAnimationFrame(() => referenceDraftRef.current?.focus());
+  }
+
+  function saveReference(reference: ReferenceNote) {
+    setData((current) => ({ ...current, references: current.references.map((item) => item.id === reference.id ? reference : item) }));
+    setReferenceEditor(null);
+  }
+
+  function deleteReference(reference: ReferenceNote) {
+    removeRecord("references", reference.id, `已删除资料「${reference.title}」`);
+    setReferenceEditor(null);
+  }
+
+  function toggleReferencePin(reference: ReferenceNote) {
+    setData((current) => ({ ...current, references: current.references.map((item) => item.id === reference.id ? { ...item, pinned: !item.pinned, updatedAt: new Date().toISOString() } : item) }));
+  }
+
+  async function copyReference(reference: ReferenceNote) {
     try {
-      const result = await createPrivateVault(passphrase, []);
-      window.localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(result.envelope));
-      setVaultKey(result.key);
-      setVaultSalt(result.salt);
-      setVaultIterations(result.iterations);
-      setVaultItems([]);
-      setVaultExists(true);
-      setVaultUnlocked(true);
+      await navigator.clipboard.writeText(reference.content);
+      setReferenceCopiedId(reference.id);
+      if (referenceCopyTimerRef.current) clearTimeout(referenceCopyTimerRef.current);
+      referenceCopyTimerRef.current = setTimeout(() => setReferenceCopiedId(null), 1800);
     } catch {
-      setVaultError("无法创建保险箱。请确认浏览器允许本地存储后重试。");
-    } finally {
-      setVaultBusy(false);
+      window.alert("浏览器阻止了复制，请打开资料后手动复制。");
     }
   }
 
-  async function unlockPrivateVaultSession(passphrase: string) {
-    const saved = window.localStorage.getItem(VAULT_STORAGE_KEY);
-    if (!saved) { setVaultExists(false); setVaultError("没有找到本机保险箱，请先创建。"); return; }
-    setVaultBusy(true);
-    setVaultError("");
-    try {
-      const result = await unlockPrivateVault(passphrase, JSON.parse(saved));
-      setVaultKey(result.key);
-      setVaultSalt(result.salt);
-      setVaultIterations(result.iterations);
-      setVaultItems(normalizeVaultItems(result.items));
-      setVaultUnlocked(true);
-    } catch {
-      setVaultError("主密码不正确，或保险箱文件已经损坏。");
-    } finally {
-      setVaultBusy(false);
-    }
+  function openReferenceOrganizerAI() {
+    setAiOpen(true);
+    setAiText("请把我接下来粘贴的杂乱内容整理进私人速记。按主题拆成少量容易搜索的资料卡，不要遗漏原始信息：\n");
+    window.requestAnimationFrame(() => aiInputRef.current?.focus());
   }
 
-  function lockPrivateVault() {
-    setVaultUnlocked(false);
-    setVaultKey(null);
-    setVaultSalt("");
-    setVaultIterations(PRIVATE_VAULT_ITERATIONS);
-    setVaultItems([]);
-    setVaultEditor(null);
-    setVaultQuery("");
-    setRevealedVaultIds(new Set());
-    setVaultCopiedId(null);
-    setVaultError("");
+  function saveRoutine(routine: Routine) {
+    setData((current) => ({ ...current, routines: normalizeRoutines(routineEditor === "new" ? [...current.routines, routine] : current.routines.map((item) => item.id === routine.id ? routine : item), current.goals) }));
+    setRoutineEditor(null);
   }
 
-  async function persistVaultItems(nextItems: VaultItem[]) {
-    if (!vaultKey || !vaultSalt) { lockPrivateVault(); return false; }
-    try {
-      const envelope = await sealPrivateVault(nextItems, vaultKey, vaultSalt, vaultIterations);
-      window.localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(envelope));
-      setVaultItems(nextItems);
-      return true;
-    } catch {
-      setVaultError("这次修改没有保存，请保持页面打开并重试。");
-      return false;
-    }
+  function toggleRoutineCompletion(id: string, occurrenceDate: string) {
+    setData((current) => ({ ...current, routines: current.routines.map((routine) => {
+      if (routine.id !== id) return routine;
+      const completed = routine.completedDates.includes(occurrenceDate);
+      return { ...routine, completedDates: completed ? routine.completedDates.filter((date) => date !== occurrenceDate) : [...routine.completedDates, occurrenceDate].sort() };
+    }) }));
   }
 
-  async function saveVaultItem(item: VaultItem) {
-    const nextItems = vaultEditor === "new" ? [item, ...vaultItems] : vaultItems.map((current) => current.id === item.id ? item : current);
-    if (await persistVaultItems(nextItems)) setVaultEditor(null);
+  function toggleRoutineActive(id: string) {
+    setData((current) => ({ ...current, routines: current.routines.map((routine) => routine.id === id ? { ...routine, active: !routine.active } : routine) }));
   }
 
-  async function deleteVaultItem(item: VaultItem) {
-    if (!window.confirm(`确定删除「${item.title}」吗？这个操作无法撤销。`)) return;
-    if (await persistVaultItems(vaultItems.filter((current) => current.id !== item.id))) setVaultEditor(null);
-  }
-
-  async function toggleVaultPin(item: VaultItem) {
-    const updated = { ...item, pinned: !item.pinned, updatedAt: new Date().toISOString() };
-    await persistVaultItems(vaultItems.map((current) => current.id === item.id ? updated : current));
-  }
-
-  async function copyVaultValue(item: VaultItem) {
-    try {
-      await navigator.clipboard.writeText(item.value);
-      setVaultCopiedId(item.id);
-      if (vaultCopyTimerRef.current) clearTimeout(vaultCopyTimerRef.current);
-      vaultCopyTimerRef.current = setTimeout(() => setVaultCopiedId(null), 1800);
-    } catch {
-      setVaultError("浏览器阻止了复制，请点“显示”后手动复制。");
-    }
-  }
-
-  function toggleVaultReveal(id: string) {
-    setRevealedVaultIds((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }
-
-  function exportEncryptedVault() {
-    const encrypted = window.localStorage.getItem(VAULT_STORAGE_KEY);
-    if (!encrypted) return;
-    const blob = new Blob([encrypted], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = "map-private-vault-encrypted.json";
-    anchor.click();
-    URL.revokeObjectURL(url);
-  }
-
-  function importEncryptedVault(file?: File) {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const envelope = JSON.parse(String(reader.result)) as { version?: number; kdf?: string; ciphertext?: string };
-        if (envelope.version !== 1 || envelope.kdf !== "PBKDF2-SHA-256" || typeof envelope.ciphertext !== "string") throw new Error("invalid vault");
-        if (vaultExists && !window.confirm("导入会替换这台设备现有的保险箱。确定继续吗？")) return;
-        window.localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(envelope));
-        lockPrivateVault();
-        setVaultExists(true);
-      } catch {
-        setVaultError("这个文件不是有效的 MAP 加密保险箱备份。");
-      }
-    };
-    reader.readAsText(file);
+  function deleteRoutine(id: string) {
+    const routine = data.routines.find((item) => item.id === id);
+    removeRecord("routines", id, routine ? `已删除固定任务「${routine.title}」` : "已删除固定任务");
   }
 
   function toggleTask(id: string) {
@@ -912,7 +849,7 @@ export default function Home() {
         const importedGoals = parsed.goals || initialData.goals;
         const importedPhase = { ...initialData.phase, ...(parsed.phase || {}) };
         if (importedPhase.goalId && !importedGoals.some((goal) => goal.id === importedPhase.goalId)) importedPhase.goalId = null;
-        setData({ ...initialData, ...parsed, phase: importedPhase, goals: importedGoals, tasks: normalizeTaskGoals(rollOverTasks(parsed.tasks, today), importedGoals), schedule: normalizeSchedule(parsed.schedule), applications: normalizeApplications(parsed.applications), notes: parsed.notes || [] });
+        setData({ ...initialData, ...parsed, phase: importedPhase, goals: importedGoals, tasks: normalizeTaskGoals(rollOverTasks(parsed.tasks, today), importedGoals), routines: normalizeRoutines(parsed.routines || initialData.routines, importedGoals), schedule: normalizeSchedule(parsed.schedule), applications: normalizeApplications(parsed.applications), notes: parsed.notes || [], references: normalizeReferences(parsed.references) });
         showUndo("备份已导入", () => previous);
       } catch { window.alert("这个文件不是有效的 MAP 备份，当前数据没有改变。"); }
     };
@@ -1050,8 +987,10 @@ export default function Home() {
           ...operatedData,
           phase: operatedData.phase.goalId && !operatedData.goals.some((goal) => goal.id === operatedData.phase.goalId) ? { ...operatedData.phase, goalId: null } : operatedData.phase,
           tasks: normalizeTaskGoals(operatedData.tasks, operatedData.goals),
+          routines: normalizeRoutines(operatedData.routines, operatedData.goals),
           schedule: normalizeSchedule(operatedData.schedule),
           applications: normalizeApplications(operatedData.applications),
+          references: normalizeReferences(operatedData.references),
         };
         const changes = deriveAIChanges(data, nextData);
         if (changes.length === 1 && changes[0] === "没有检测到实际数据变化。") throw new Error("AI 没有生成有效的数据修改，请换一种说法再试。 ");
@@ -1090,7 +1029,7 @@ export default function Home() {
           <NavButton active={view === "career"} label="求职记录" icon="04" onClick={() => setView("career")} />
           <NavButton active={view === "planner"} label="任务计划" icon="05" onClick={() => setView("planner")} />
           <NavButton active={view === "notes"} label="草稿箱" icon="06" onClick={openNotes} />
-          <NavButton active={view === "vault"} label="私人保险箱" icon="07" onClick={openVault} />
+          <NavButton active={view === "vault"} label="私人速记" icon="07" onClick={openVault} />
           <NavButton active={view === "wellness"} label="健康运动" icon="08" onClick={() => setView("wellness")} />
         </nav>
 
@@ -1108,16 +1047,16 @@ export default function Home() {
           <input ref={importRef} type="file" accept="application/json" hidden onChange={(event) => { importData(event.target.files?.[0]); event.currentTarget.value = ""; }} />
         </div>
         {!standalone && <button className="install-app-button" onClick={installMapApp}><span>↓</span><div><strong>安装 MAP App</strong><small>独立窗口 · 支持离线</small></div></button>}
-        <p className="local-note"><span /> 本机保存 · 保险箱单独加密</p>
+        <p className="local-note"><span /> 计划与资料仅保存在这台设备</p>
       </aside>
 
       <section className="workspace">
         <header className="topbar">
           <div>
             <p className="eyebrow">{todayLabel}</p>
-            <h1>{view === "today" ? "今天，先把最重要的事情往前推。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "看清当前阶段的时间与节奏。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : view === "notes" ? "没准备好排期的，先放进草稿箱。" : view === "vault" ? "常用的敏感信息，安全地随取随用。" : "健康不是剩余时间。"}</h1>
+            <h1>{view === "today" ? "今天，先把最重要的事情往前推。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "看清当前阶段的时间与节奏。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : view === "notes" ? "没准备好排期的，先放进草稿箱。" : view === "vault" ? "零散资料，随手记下，一秒找到。" : "健康不是剩余时间。"}</h1>
           </div>
-          <div className="topbar-actions"><button className="quick-vault-top" onClick={openVault}><span>⌁</span> 保险箱</button><button className="quick-note-top" onClick={openNotes}><span>✎</span> 记草稿</button><button className="primary-button" onClick={() => openNewTask()}><span>＋</span> 新建任务</button></div>
+          <div className="topbar-actions"><button className="quick-vault-top" onClick={openVault}><span>⌁</span> 私人速记</button><button className="quick-note-top" onClick={openNotes}><span>✎</span> 记草稿</button><button className="primary-button" onClick={() => openNewTask()}><span>＋</span> 新建任务</button></div>
         </header>
 
         {view === "today" && (
@@ -1143,10 +1082,11 @@ export default function Home() {
               <section className="panel today-panel">
                 <div className="panel-heading">
                   <div><p className="section-kicker">TODAY</p><h3>今天要清掉的事</h3></div>
-                  <span className="counter">{todayTasks.length} 未完成</span>
+                  <span className="counter">{todayOpenCount} 未完成</span>
                 </div>
                 <div className="today-progress"><span style={{ width: `${taskProgress}%` }} /></div>
                 <div className="task-stack">
+                  {todayRoutineEntries.map(({ routine, occurrenceDate, completed, overdue }) => <RoutineTodayRow key={`${routine.id}-${occurrenceDate}`} routine={routine} occurrenceDate={occurrenceDate} completed={completed} overdue={overdue} goal={routine.goalId ? goalById.get(routine.goalId) : undefined} onToggle={() => toggleRoutineCompletion(routine.id, occurrenceDate)} onEdit={() => setRoutineEditor(routine)} />)}
                   {todayDisplayTasks.slice().sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99")).map((task) => (
                     <TaskRow key={task.id} task={task} goal={task.goalId ? goalById.get(task.goalId) : undefined} onToggle={() => toggleTask(task.id)} onEdit={() => setTaskEditor(task)} onDelete={() => deleteTask(task.id)} compact />
                   ))}
@@ -1227,7 +1167,7 @@ export default function Home() {
 
             {semesterMode === "calendar" ? <section className="panel calendar-panel">
               <div className="calendar-toolbar">
-                <div><p className="section-kicker">CALENDAR</p><h3>{calendarMonthLabel}</h3><span>{visibleTaskCount} 项任务 · {visibleScheduleCount} 次固定安排</span></div>
+                <div><p className="section-kicker">CALENDAR</p><h3>{calendarMonthLabel}</h3><span>{visibleTaskCount} 项任务 · {visibleRoutineCount} 次固定任务 · {visibleScheduleCount} 次固定安排</span></div>
                 <div className="calendar-nav"><button onClick={() => setCalendarCursor((cursor) => moveMonth(cursor, -1))} aria-label="上个月">←</button><button className="calendar-today" onClick={() => setCalendarCursor(today.slice(0, 7))}>今天</button><button onClick={() => setCalendarCursor((cursor) => moveMonth(cursor, 1))} aria-label="下个月">→</button></div>
               </div>
               {monthlySpanTasks.length > 0 && <section className="month-span-section">
@@ -1242,20 +1182,21 @@ export default function Home() {
                   {CALENDAR_DAY_LABEL.map((label, index) => <div className={`calendar-weekday ${index > 4 ? "weekend" : ""}`} key={label}>{label}</div>)}
                   {calendarCells.map((cell) => {
                     const tasks = visibleTasks.filter((task) => !isMultiDayTask(task) && task.date === cell.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
+                    const routines = data.routines.filter((routine) => isRoutineDueOn(routine, cell.key)).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
                     const schedules = cell.key >= data.phase.startDate && cell.key <= data.phase.endDate ? data.schedule.filter((item) => item.days.includes(cell.dayCode)).sort((a, b) => a.start.localeCompare(b.start)) : [];
-                    const events = [...tasks.map((task) => ({ type: "task" as const, time: task.date === cell.key ? task.time : "", item: task })), ...schedules.map((item) => ({ type: "schedule" as const, time: item.start, item }))].sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
+                    const events = [...tasks.map((task) => ({ type: "task" as const, time: task.time, item: task })), ...routines.map((routine) => ({ type: "routine" as const, time: routine.time, item: routine })), ...schedules.map((item) => ({ type: "schedule" as const, time: item.start, item }))].sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
                     return <article className={`calendar-day ${cell.inMonth ? "" : "outside"} ${cell.key === today ? "today" : ""} ${taskDropDate === cell.key ? "task-drop-target" : ""}`} key={cell.key} onDragOver={(event) => allowTaskDrop(event, cell.key)} onDrop={(event) => dropTaskOnDate(event, cell.key)}>
                       <header><span>{cell.day}</span>{cell.key === today && <strong>今天</strong>}<button onClick={() => openNewTask(cell.key)} aria-label={`在 ${cell.key} 新建任务`}>＋</button></header>
                       <div className="calendar-events">
-                        {events.map((event) => event.type === "task" ? <div key={`task-${event.item.id}`} draggable className={`calendar-event task ${categoryTone[event.item.category]} ${event.item.status === "done" ? "done" : ""} ${event.item.carriedFrom && event.item.status === "todo" ? "carried" : ""} ${draggedTaskId === event.item.id ? "dragging" : ""}`} onDragStart={(dragEvent) => beginTaskDrag(dragEvent, event.item)} onDragEnd={endTaskDrag} title={`${event.item.title} · 拖到其他日期可改期${event.item.details ? ` · ${event.item.details}` : ""}${event.item.carriedFrom && event.item.status === "todo" ? ` · 未完成顺延，原定 ${formatDate(event.item.carriedFrom)}` : ""}`}><TaskCalendarCheck task={event.item} onToggle={() => toggleTask(event.item.id)} /><button className="calendar-task-open" onClick={() => setTaskEditor(event.item)}><time>{event.time || (event.item.date < cell.key ? "↳" : "")}</time><span>{event.item.title}</span></button></div> : <button key={`schedule-${event.item.id}`} className={`calendar-event schedule ${event.item.color}`} onClick={() => setScheduleEditor(event.item)} title={`${event.item.title} · ${event.item.room}`}><time>{event.item.start}</time><span>{event.item.code}</span></button>)}
+                        {events.map((event) => event.type === "task" ? <div key={`task-${event.item.id}`} draggable className={`calendar-event task ${categoryTone[event.item.category]} ${event.item.status === "done" ? "done" : ""} ${event.item.carriedFrom && event.item.status === "todo" ? "carried" : ""} ${draggedTaskId === event.item.id ? "dragging" : ""}`} onDragStart={(dragEvent) => beginTaskDrag(dragEvent, event.item)} onDragEnd={endTaskDrag} title={`${event.item.title} · 拖到其他日期可改期${event.item.details ? ` · ${event.item.details}` : ""}${event.item.carriedFrom && event.item.status === "todo" ? ` · 未完成顺延，原定 ${formatDate(event.item.carriedFrom)}` : ""}`}><TaskCalendarCheck task={event.item} onToggle={() => toggleTask(event.item.id)} /><button className="calendar-task-open" onClick={() => setTaskEditor(event.item)}><time>{event.time || "全天"}</time><span>{event.item.title}</span></button></div> : event.type === "routine" ? <div key={`routine-${event.item.id}`} className={`calendar-event routine ${categoryTone[event.item.category]} ${event.item.completedDates.includes(cell.key) ? "done" : ""}`} title={`${event.item.title} · ${routineFrequencyLabel(event.item)}`}><RoutineCalendarCheck completed={event.item.completedDates.includes(cell.key)} label={event.item.title} onToggle={() => toggleRoutineCompletion(event.item.id, cell.key)} /><button className="calendar-task-open" onClick={() => setRoutineEditor(event.item)}><time>{event.time || "全天"}</time><span>{event.item.title}</span></button></div> : <button key={`schedule-${event.item.id}`} className={`calendar-event schedule ${event.item.color}`} onClick={() => setScheduleEditor(event.item)} title={`${event.item.title} · ${event.item.room}`}><time>{event.item.start}</time><span>{event.item.code}</span></button>)}
                       </div>
                     </article>;
                   })}
                 </div>
               </div>
-              <div className="calendar-legend"><span><i className="task" />当天任务</span><span><i className="schedule" />课程 / TA</span><small>拖动任务到日期格即可改期 · 跨度任务会保留持续天数</small></div>
+              <div className="calendar-legend"><span><i className="task" />当天任务</span><span><i className="routine" />固定任务</span><span><i className="schedule" />课程 / TA</span><small>拖动普通任务到日期格即可改期 · 固定任务在任务计划中调整规则</small></div>
             </section> : <section className="panel schedule-panel">
-              <div className="panel-heading"><div><p className="section-kicker">THIS WEEK</p><h3>本周安排</h3></div><span className="counter">{formatDate(weekStart)}—{formatDate(weekEnd)} · {weeklyTasks.length} 项任务</span></div>
+              <div className="panel-heading"><div><p className="section-kicker">THIS WEEK</p><h3>本周安排</h3></div><span className="counter">{formatDate(weekStart)}—{formatDate(weekEnd)} · {weeklyTasks.length} 项任务 · {weeklyRoutineCount} 次固定任务</span></div>
               <div className="fixed-schedule-heading first"><div><p className="section-kicker">WEEKLY RHYTHM</p><h3>每周固定课程与 TA</h3></div><span>点击安排可编辑</span></div>
               <div className="schedule-scroll">
                 <div className="schedule-grid">
@@ -1299,11 +1240,13 @@ export default function Home() {
                   <div className="week-task-grid">
                     {weekDays.map((day) => {
                       const tasks = visibleTasks.filter((task) => !isMultiDayTask(task) && task.date === day.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
+                      const routines = data.routines.filter((routine) => isRoutineDueOn(routine, day.key)).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
                       return <article className={`week-task-day ${day.key === today ? "today" : ""} ${taskDropDate === day.key ? "task-drop-target" : ""}`} key={day.key} onDragOver={(event) => allowTaskDrop(event, day.key)} onDrop={(event) => dropTaskOnDate(event, day.key)}>
                         <header><div><strong>{day.label}</strong><span>{day.date}</span></div>{day.key === today && <i>今天</i>}</header>
                         <div className="week-task-list">
+                          {routines.map((routine) => <article key={routine.id} className={`week-task-item routine ${categoryTone[routine.category]} ${routine.completedDates.includes(day.key) ? "done" : ""}`}><RoutineCalendarCheck completed={routine.completedDates.includes(day.key)} label={routine.title} onToggle={() => toggleRoutineCompletion(routine.id, day.key)} /><button className="week-task-open" onClick={() => setRoutineEditor(routine)}><time>{routine.time || "全天"}</time><span>{routine.title}<small>{routineFrequencyLabel(routine)}</small></span></button></article>)}
                           {tasks.map((task) => <article key={task.id} draggable className={`week-task-item ${categoryTone[task.category]} ${task.status === "done" ? "done" : ""} ${task.carriedFrom && task.status === "todo" ? "carried" : ""} ${draggedTaskId === task.id ? "dragging" : ""}`} onDragStart={(event) => beginTaskDrag(event, task)} onDragEnd={endTaskDrag} title="拖到其他日期可改期"><TaskCalendarCheck task={task} onToggle={() => toggleTask(task.id)} /><button className="week-task-open" onClick={() => setTaskEditor(task)}><time>{task.date === day.key ? task.time || "全天" : "持续"}</time><span>{task.title}{task.details && <small className="week-task-detail">{task.details}</small>}{task.carriedFrom && task.status === "todo" && <small>未完成顺延 · 原定 {formatDate(task.carriedFrom)}</small>}</span></button></article>)}
-                          {tasks.length === 0 && <span className="week-task-empty">暂无任务</span>}
+                          {tasks.length === 0 && routines.length === 0 && <span className="week-task-empty">暂无任务</span>}
                         </div>
                         <button className="week-task-add" onClick={() => openNewTask(day.key)}>＋ 添加</button>
                       </article>;
@@ -1339,6 +1282,18 @@ export default function Home() {
 
         {view === "planner" && (
           <div className="page-content planner-page">
+            <section className="panel routine-manager">
+              <div className="panel-heading"><div><p className="section-kicker">RECURRING ACTIONS</p><h3>固定任务</h3><p>每天或每隔几天自动出现；每次单独打卡，不会生成一堆重复任务。</p></div><button className="primary-button" onClick={() => setRoutineEditor("new")}>＋ 新建固定任务</button></div>
+              <div className="routine-list">
+                {data.routines.map((routine) => <article className={`routine-row ${routine.active ? "" : "paused"}`} key={routine.id}>
+                  <span className={`routine-symbol ${categoryTone[routine.category]}`}>↻</span>
+                  <button className="routine-row-main" onClick={() => setRoutineEditor(routine)}><strong>{routine.title}</strong><span>{routineFrequencyLabel(routine)} · {routine.time || "全天"} · 从 {formatDate(routine.startDate)} 开始{routine.active ? ` · 下次 ${formatDate(nextRoutineOccurrence(routine, today) || routine.startDate)}` : " · 已暂停"}</span>{routine.details && <small>{routine.details}</small>}</button>
+                  <span className={`category-pill ${categoryTone[routine.category]}`}>{routine.category}</span>
+                  <div className="routine-row-actions"><button onClick={() => toggleRoutineActive(routine.id)}>{routine.active ? "暂停" : "恢复"}</button><button onClick={() => setRoutineEditor(routine)}>编辑</button><button onClick={() => deleteRoutine(routine.id)}>删除</button></div>
+                </article>)}
+                {data.routines.length === 0 && <div className="empty-state">还没有固定任务。可以添加每日刷题，或每隔两天找工作。</div>}
+              </div>
+            </section>
             <div className="planner-toolbar">
               <div className="filter-row">{(["全部", "学业", "求职", "生活", "健康"] as const).map((item) => <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}<span>{item === "全部" ? statusFilteredTasks.length : statusFilteredTasks.filter((task) => task.category === item).length}</span></button>)}</div>
               <div className="planner-controls"><label className="goal-filter"><span>关联目标</span><select value={goalFilter} onChange={(event) => setGoalFilter(event.target.value)}><option value="all">全部目标</option><option value="none">未关联目标</option>{data.goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.title}</option>)}</select></label><div className="status-switch" role="group" aria-label="任务状态筛选"><button className={plannerStatusFilter === "open" ? "active" : ""} onClick={() => setPlannerStatusFilter("open")}>待处理</button><button className={plannerStatusFilter === "done" ? "active" : ""} onClick={() => setPlannerStatusFilter("done")}>已完成</button><button className={plannerStatusFilter === "all" ? "active" : ""} onClick={() => setPlannerStatusFilter("all")}>全部</button></div></div>
@@ -1378,37 +1333,30 @@ export default function Home() {
         )}
 
         {view === "vault" && (
-          <div className="page-content vault-page">
-            {!vaultReady ? <div className="vault-loading">正在检查本机保险箱…</div> : !vaultUnlocked ? (
-              <VaultGate exists={vaultExists} busy={vaultBusy} error={vaultError} onSetup={setupPrivateVault} onUnlock={unlockPrivateVaultSession} onImport={() => vaultImportRef.current?.click()} />
-            ) : (
-              <section className="vault-workbench">
-                <header className="vault-hero">
-                  <div><p className="section-kicker">PRIVATE · DEVICE ENCRYPTED</p><h2>私人保险箱</h2><p>高频使用的密钥、账号、号码、地址和常用文本。内容默认遮挡，复制不需要先显示。</p></div>
-                  <div className="vault-hero-actions"><button className="vault-lock-button" onClick={lockPrivateVault}>锁定</button><button className="primary-button" onClick={() => setVaultEditor("new")}>＋ 新增记录</button></div>
-                </header>
+          <div className="page-content reference-page">
+            <section className="reference-workbench">
+              <aside className="reference-capture">
+                <div><p className="section-kicker">QUICK CAPTURE</p><h2>直接贴进来，<br />不用先整理。</h2></div>
+                <p>不要求先填标题或分类。MAP 会用第一行自动命名，并保存成一张独立资料卡，不会堆成一整篇大文本。</p>
+                <textarea ref={referenceDraftRef} value={referenceDraft} onChange={(event) => setReferenceDraft(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); saveQuickReference(); } }} placeholder={"粘贴网址、学校信息、地址或一段常用资料……\n\n第一行会自动成为标题。"} aria-label="快速记录私人资料" spellCheck={false} />
+                <div className="reference-capture-actions"><span>⌘ / Ctrl + Enter</span><button onClick={saveQuickReference} disabled={!referenceDraft.trim()}>保存成资料卡 →</button></div>
+                <button className="reference-ai-organize" onClick={openReferenceOrganizerAI}><span>✦</span><div><strong>让 MAP AI 批量整理</strong><small>把杂乱备忘录拆成少量可搜索资料卡，预览后再写入</small></div></button>
+                <p className="reference-privacy-note">资料保存在这台设备的浏览器存储中，没有密码和加密。不要把它当密码管理器；只有你明确要求整理“私人速记”时，相关内容才会发送给 MAP AI。</p>
+              </aside>
 
-                <div className="vault-security-strip"><span>本机 AES-GCM 加密</span><span>30 分钟无操作自动锁定</span><strong>不会发送给 MAP AI，也不进入普通 MAP 备份</strong></div>
-                {vaultError && <p className="vault-error" role="alert">{vaultError}</p>}
-
-                <section className="vault-library panel">
-                  <header className="vault-toolbar">
-                    <div><p className="section-kicker">QUICK ACCESS</p><h3>{vaultItems.length} 条私人记录</h3></div>
-                    <div className="vault-toolbar-actions"><label className="vault-search"><span>⌕</span><input value={vaultQuery} onChange={(event) => setVaultQuery(event.target.value)} placeholder="搜索标题、内容或备注" /></label><button onClick={exportEncryptedVault}>导出加密备份</button><button onClick={() => vaultImportRef.current?.click()}>导入</button></div>
-                  </header>
-                  <div className="vault-filter-row" role="group" aria-label="筛选私人记录">{(["全部", ...VAULT_CATEGORIES] as const).map((category) => <button key={category} className={vaultFilter === category ? "active" : ""} onClick={() => setVaultFilter(category)}>{category}<span>{category === "全部" ? vaultItems.length : vaultItems.filter((item) => item.category === category).length}</span></button>)}</div>
-                  {visibleVaultItems.length > 0 ? <div className="vault-list">{visibleVaultItems.map((item) => {
-                    const revealed = revealedVaultIds.has(item.id);
-                    return <article className={`vault-row ${item.pinned ? "pinned" : ""}`} key={item.id}>
-                      <button className="vault-pin" onClick={() => void toggleVaultPin(item)} aria-label={item.pinned ? "取消置顶" : "置顶记录"} title={item.pinned ? "取消置顶" : "置顶"}>{item.pinned ? "●" : "○"}</button>
-                      <div className="vault-row-main"><div className="vault-row-title"><span>{item.category}</span><h3>{item.title}</h3><time>{formatNoteTime(item.updatedAt)}</time></div><code className={revealed ? "revealed" : "masked"}>{revealed ? item.value : "••••••••••••••••"}</code>{item.notes && <p>{item.notes}</p>}</div>
-                      <div className="vault-row-actions"><button className={vaultCopiedId === item.id ? "copied" : ""} onClick={() => void copyVaultValue(item)}>{vaultCopiedId === item.id ? "已复制" : "复制"}</button><button onClick={() => toggleVaultReveal(item.id)}>{revealed ? "隐藏" : "显示"}</button><button onClick={() => setVaultEditor(item)}>编辑</button></div>
-                    </article>;
-                  })}</div> : <div className="vault-empty"><span>{vaultQuery || vaultFilter !== "全部" ? "没有符合条件的记录" : "保险箱还是空的"}</span><p>{vaultQuery || vaultFilter !== "全部" ? "换一个分类或关键词。" : "点击“新增记录”，把第一条常用信息加进来。"}</p><button onClick={() => setVaultEditor("new")}>＋ 新增记录</button></div>}
-                </section>
+              <section className="reference-library panel">
+                <header><div><p className="section-kicker">PERSONAL REFERENCE</p><h2>私人速记</h2><span>{data.references.length} 张资料卡 · 自动标题 · 置顶优先</span></div><label className="reference-search"><span>⌕</span><input value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} placeholder="搜索标题或全部内容" /></label></header>
+                {visibleReferences.length > 0 ? <div className="reference-grid">{visibleReferences.map((reference) => {
+                  const links = extractReferenceLinks(reference.content).slice(0, 3);
+                  return <article className={`reference-card ${reference.pinned ? "pinned" : ""}`} key={reference.id}>
+                    <button className="reference-pin" onClick={() => toggleReferencePin(reference)} aria-label={reference.pinned ? "取消置顶" : "置顶资料"}>{reference.pinned ? "● 已置顶" : "○ 置顶"}</button>
+                    <button className="reference-card-body" onClick={() => setReferenceEditor(reference)}><h3>{reference.title}</h3><p>{referencePreview(reference)}</p><time>{formatNoteTime(reference.updatedAt)}</time></button>
+                    {links.length > 0 && <div className="reference-links">{links.map((link) => <a href={link} target="_blank" rel="noreferrer" key={link}>↗ {referenceLinkLabel(link)}</a>)}</div>}
+                    <div className="reference-card-actions"><button className={referenceCopiedId === reference.id ? "copied" : ""} onClick={() => void copyReference(reference)}>{referenceCopiedId === reference.id ? "已复制" : "复制全文"}</button><button onClick={() => setReferenceEditor(reference)}>编辑</button><button onClick={() => deleteReference(reference)}>删除</button></div>
+                  </article>;
+                })}</div> : <div className="reference-empty"><span>{referenceQuery ? "没有找到相关资料" : "还没有私人速记"}</span><p>{referenceQuery ? "换一个关键词搜索标题和全文。" : "把第一条常用网址或学校信息直接贴到左边。"}</p></div>}
               </section>
-            )}
-            <input ref={vaultImportRef} type="file" accept="application/json" hidden onChange={(event) => { importEncryptedVault(event.target.files?.[0]); event.currentTarget.value = ""; }} />
+            </section>
           </div>
         )}
 
@@ -1459,10 +1407,11 @@ export default function Home() {
           <button type="button" className={`voice-button ${voiceState}`} onClick={() => void toggleVoiceInput()} disabled={aiLoading || voiceState === "transcribing" || !online} aria-label={voiceState === "recording" ? "停止录音" : voiceState === "transcribing" ? "正在转写语音" : "开始语音输入"}>{voiceState === "recording" ? "■" : voiceState === "transcribing" ? "…" : "麦"}</button>
           <button type="submit" className="ai-send-button" disabled={!aiText.trim() || aiLoading || voiceState !== "idle" || !online} aria-label="发送消息">↑</button>
         </form>
-        <p className="ai-privacy">分析会读取 MAP 计划数据，但永远不含私人保险箱；明确的数据修改只发送相关模块。语音会发送至 OpenAI 转写，MAP 不保存录音。</p>
+        <p className="ai-privacy">普通分析不会附带私人速记；只有你明确要求管理私人速记时才发送相关资料。语音会发送至 OpenAI 转写，MAP 不保存录音。</p>
       </aside>}
 
       {taskEditor && <TaskModal value={taskEditor} goals={data.goals} prefill={taskPrefill || undefined} sourceDraft={Boolean(promotingNoteId)} defaultDate={newTaskDate || undefined} defaultGoalId={newTaskGoalId || undefined} onClose={closeTaskEditor} onSave={saveTaskFromEditor} onDelete={taskEditor === "new" ? undefined : () => { deleteTask(taskEditor.id); closeTaskEditor(); }} />}
+      {routineEditor && <RoutineModal value={routineEditor} goals={data.goals} onClose={() => setRoutineEditor(null)} onSave={saveRoutine} onDelete={routineEditor === "new" ? undefined : () => { deleteRoutine(routineEditor.id); setRoutineEditor(null); }} />}
       {phaseEditor && <PhaseModal value={data.phase} goals={data.goals} onClose={() => setPhaseEditor(false)} onSave={(phase) => { setData((current) => ({ ...current, phase })); setCalendarCursor(phase.startDate.slice(0, 7)); setPhaseEditor(false); }} />}
       {scheduleEditor && <ScheduleModal value={scheduleEditor} onClose={() => setScheduleEditor(null)} onSave={(schedule) => { setData((current) => ({ ...current, schedule: scheduleEditor === "new" ? [...current.schedule, schedule] : current.schedule.map((item) => item.id === schedule.id ? schedule : item) })); setScheduleEditor(null); }} onDelete={scheduleEditor === "new" ? undefined : () => { removeRecord("schedule", scheduleEditor.id, `已删除安排「${scheduleEditor.code}」`); setScheduleEditor(null); }} />}
       {goalEditor && <GoalModal value={goalEditor} onClose={() => setGoalEditor(null)} onSave={(goal) => { setData((current) => ({ ...current, goals: goalEditor === "new" ? [...current.goals, goal] : current.goals.map((item) => item.id === goal.id ? goal : item) })); setGoalEditor(null); }} onDelete={goalEditor === "new" ? undefined : () => { deleteGoal(goalEditor.id); setGoalEditor(null); }} />}
@@ -1470,60 +1419,19 @@ export default function Home() {
       {workoutEditor && <WorkoutModal value={workoutEditor} onClose={() => setWorkoutEditor(null)} onSave={(workout) => { setData((current) => ({ ...current, workouts: workoutEditor === "new" ? [...current.workouts, workout] : current.workouts.map((item) => item.id === workout.id ? workout : item) })); setWorkoutEditor(null); }} onDelete={workoutEditor === "new" ? undefined : () => { removeRecord("workouts", workoutEditor.id, `已删除运动「${workoutEditor.title}」`); setWorkoutEditor(null); }} />}
       {applicationEditor && <ApplicationModal value={applicationEditor} onClose={() => setApplicationEditor(null)} onSave={(application) => { setData((current) => ({ ...current, applications: applicationEditor === "new" ? [...current.applications, application] : current.applications.map((item) => item.id === application.id ? application : item) })); setApplicationEditor(null); }} onDelete={applicationEditor === "new" ? undefined : () => { removeRecord("applications", applicationEditor.id, `已删除求职记录「${applicationEditor.company}」`); setApplicationEditor(null); }} />}
       {noteEditor && <NoteModal value={noteEditor} onClose={() => setNoteEditor(null)} onSave={(note) => { setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? note : item) })); setNoteEditor(null); }} onDelete={() => { removeRecord("notes", noteEditor.id, `已删除草稿「${noteTitle(noteEditor)}」`); setNoteEditor(null); }} />}
-      {vaultEditor && vaultUnlocked && <VaultModal value={vaultEditor} onClose={() => setVaultEditor(null)} onSave={(item) => void saveVaultItem(item)} onDelete={vaultEditor === "new" ? undefined : () => void deleteVaultItem(vaultEditor)} />}
-      {installHelp && <ModalFrame title="安装 MAP 到 Mac" subtitle="OFFLINE APP" onClose={() => setInstallHelp(false)}><div className="install-guide"><p>这台浏览器没有提供一键安装按钮。你仍然可以把 MAP 安装成独立的 Mac App：</p><ol><li>使用 Safari 打开 MAP 网站。</li><li>选择菜单栏的“文件”→“添加到程序坞”。</li><li>首次联网打开一次；之后断网也能查看和编辑计划。</li></ol><p className="install-guide-note">MAP AI 需要联网。本地任务、笔记、目标、课表、求职、健康和私人保险箱不需要联网。</p><div className="modal-actions"><button className="primary-button" onClick={() => setInstallHelp(false)}>知道了</button></div></div></ModalFrame>}
+      {referenceEditor && <ReferenceModal value={referenceEditor} onClose={() => setReferenceEditor(null)} onSave={saveReference} onDelete={() => deleteReference(referenceEditor)} />}
+      {installHelp && <ModalFrame title="安装 MAP 到 Mac" subtitle="OFFLINE APP" onClose={() => setInstallHelp(false)}><div className="install-guide"><p>这台浏览器没有提供一键安装按钮。你仍然可以把 MAP 安装成独立的 Mac App：</p><ol><li>使用 Safari 打开 MAP 网站。</li><li>选择菜单栏的“文件”→“添加到程序坞”。</li><li>首次联网打开一次；之后断网也能查看和编辑计划。</li></ol><p className="install-guide-note">MAP AI 需要联网。本地任务、笔记、目标、课表、求职、健康和私人速记不需要联网。</p><div className="modal-actions"><button className="primary-button" onClick={() => setInstallHelp(false)}>知道了</button></div></div></ModalFrame>}
     </main>
   );
 }
 
-function VaultGate({ exists, busy, error, onSetup, onUnlock, onImport }: { exists: boolean; busy: boolean; error: string; onSetup: (passphrase: string) => Promise<void>; onUnlock: (passphrase: string) => Promise<void>; onImport: () => void }) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [passphrase, setPassphrase] = useState("");
-  const [confirmation, setConfirmation] = useState("");
-  const [localError, setLocalError] = useState("");
-  useEffect(() => { inputRef.current?.focus(); }, [exists]);
-
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    setLocalError("");
-    if (exists) {
-      if (!passphrase) return;
-      await onUnlock(passphrase);
-      setPassphrase("");
-      return;
-    }
-    if (passphrase.length < 10) { setLocalError("主密码至少需要 10 个字符。"); return; }
-    if (passphrase !== confirmation) { setLocalError("两次输入的主密码不一致。"); return; }
-    await onSetup(passphrase);
-    setPassphrase("");
-    setConfirmation("");
-  }
-
-  return <section className="vault-gate">
-    <div className="vault-gate-mark" aria-hidden="true"><span>⌁</span><i /></div>
-    <div className="vault-gate-copy"><p className="section-kicker">PRIVATE VAULT · LOCAL ONLY</p><h2>{exists ? "保险箱已锁定" : "创建你的私人保险箱"}</h2><p>{exists ? "输入主密码后即可查看、搜索和复制常用信息。关闭 App 或 30 分钟无操作后会重新锁定。" : "你设置的主密码只在解锁时使用，不会被 MAP 保存。记录会先加密，再存到这台设备。"}</p>
-      <form onSubmit={(event) => void submit(event)}>
-        <label><span>主密码</span><input ref={inputRef} type="password" autoComplete={exists ? "current-password" : "new-password"} value={passphrase} onChange={(event) => setPassphrase(event.target.value)} placeholder={exists ? "输入主密码" : "至少 10 个字符"} /></label>
-        {!exists && <label><span>再次输入</span><input type="password" autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="确认主密码" /></label>}
-        {(localError || error) && <p className="vault-gate-error" role="alert">{localError || error}</p>}
-        <button className="primary-button" type="submit" disabled={busy || !passphrase || (!exists && !confirmation)}>{busy ? "正在处理…" : exists ? "解锁保险箱" : "创建并解锁"}</button>
-      </form>
-      <button className="vault-import-link" onClick={onImport}>从加密备份导入</button>
-    </div>
-    <aside className="vault-gate-notes"><strong>使用前要知道</strong><ul><li>忘记主密码后，MAP 无法帮你找回内容。</li><li>保险箱不会发送给 MAP AI，也不会放进普通 MAP 备份。</li><li>请另外导出加密备份；清除浏览器数据会删除本机副本。</li></ul></aside>
-  </section>;
-}
-
-function VaultModal({ value, onClose, onSave, onDelete }: { value: VaultItem | "new"; onClose: () => void; onSave: (item: VaultItem) => void; onDelete?: () => void }) {
-  const existing = value === "new" ? null : value;
-  const titleInputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => { titleInputRef.current?.focus(); }, []);
-  const [title, setTitle] = useState(existing?.title || "");
-  const [itemValue, setItemValue] = useState(existing?.value || "");
-  const [category, setCategory] = useState<VaultCategory>(existing?.category || "常用文本");
-  const [notes, setNotes] = useState(existing?.notes || "");
-  const [pinned, setPinned] = useState(existing?.pinned || false);
-  return <ModalFrame title={existing ? "编辑私人记录" : "新增私人记录"} subtitle="ENCRYPTED RECORD" onClose={onClose} onDelete={onDelete}><form autoComplete="off" onSubmit={(event) => { event.preventDefault(); if (!title.trim() || !itemValue.trim()) return; const now = new Date().toISOString(); onSave({ id: existing?.id || uid(), title: title.trim(), value: itemValue.trim(), category, notes: notes.trim(), pinned, createdAt: existing?.createdAt || now, updatedAt: now }); }}><div className="form-grid"><Field label="名称" wide><input ref={titleInputRef} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：项目 API Key" required /></Field><Field label="分类"><select value={category} onChange={(event) => setCategory(event.target.value as VaultCategory)}>{VAULT_CATEGORIES.map((item) => <option key={item}>{item}</option>)}</select></Field><Field label="常用程度"><button type="button" className={`pin-toggle ${pinned ? "active" : ""}`} onClick={() => setPinned((current) => !current)}>{pinned ? "● 已置顶" : "○ 置顶，方便经常复制"}</button></Field><Field label="内容" wide><textarea className="vault-value-editor" value={itemValue} onChange={(event) => setItemValue(event.target.value)} placeholder="粘贴需要保存和复制的内容" spellCheck={false} required /></Field><Field label="备注（可选）" wide><textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="用途、关联账号、到期时间或其他说明" /></Field></div><p className="vault-modal-note">保存后只会写入独立的加密保险箱，不会进入草稿箱、MAP AI 或普通备份。</p><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">加密保存</button></div></form></ModalFrame>;
+function ReferenceModal({ value, onClose, onSave, onDelete }: { value: ReferenceNote; onClose: () => void; onSave: (item: ReferenceNote) => void; onDelete: () => void }) {
+  const contentRef = useRef<HTMLTextAreaElement>(null);
+  const [title, setTitle] = useState(value.title);
+  const [content, setContent] = useState(value.content);
+  const [pinned, setPinned] = useState(value.pinned);
+  useEffect(() => { contentRef.current?.focus(); }, []);
+  return <ModalFrame title="编辑私人速记" subtitle="PERSONAL REFERENCE" onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); const trimmed = content.trim(); if (!trimmed) return; onSave({ ...value, title: title.trim() || referenceTitleFromContent(trimmed), content: trimmed, pinned, updatedAt: new Date().toISOString() }); }}><div className="form-grid"><Field label="标题（可修改）" wide><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="留空则使用第一行" /></Field><Field label="资料内容" wide><textarea ref={contentRef} className="reference-value-editor" value={content} onChange={(event) => setContent(event.target.value)} spellCheck={false} required /></Field><Field label="常用程度" wide><button type="button" className={`pin-toggle ${pinned ? "active" : ""}`} onClick={() => setPinned((current) => !current)}>{pinned ? "● 已置顶" : "○ 置顶，放在最前面"}</button></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">保存资料</button></div></form></ModalFrame>;
 }
 
 function NavButton({ active, label, icon, onClick }: { active: boolean; label: string; icon: string; onClick: () => void }) {
@@ -1532,6 +1440,18 @@ function NavButton({ active, label, icon, onClick }: { active: boolean; label: s
 
 function TaskCalendarCheck({ task, onToggle }: { task: Task; onToggle: () => void }) {
   return <button type="button" draggable={false} className={`calendar-task-check ${task.status === "done" ? "checked" : ""}`} onMouseDown={(event) => event.stopPropagation()} onDragStart={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={(event) => { event.stopPropagation(); onToggle(); }} aria-label={task.status === "done" ? `将「${task.title}」标记为未完成` : `完成「${task.title}」`}>{task.status === "done" ? "✓" : ""}</button>;
+}
+
+function RoutineCalendarCheck({ completed, label, onToggle }: { completed: boolean; label: string; onToggle: () => void }) {
+  return <button type="button" draggable={false} className={`calendar-task-check routine-check ${completed ? "checked" : ""}`} onMouseDown={(event) => event.stopPropagation()} onDragStart={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={(event) => { event.stopPropagation(); onToggle(); }} aria-label={completed ? `将「${label}」标记为未完成` : `完成「${label}」`}>{completed ? "✓" : ""}</button>;
+}
+
+function RoutineTodayRow({ routine, occurrenceDate, completed, overdue, goal, onToggle, onEdit }: { routine: Routine; occurrenceDate: string; completed: boolean; overdue: boolean; goal?: Goal; onToggle: () => void; onEdit: () => void }) {
+  return <div className={`task-row compact today-routine-row ${completed ? "done" : ""} ${overdue && !completed ? "overdue" : ""}`}>
+    <button className="task-check" onClick={onToggle} aria-label={completed ? "标记未完成" : "标记完成"}>{completed ? "✓" : ""}</button>
+    <div className="task-main"><strong>{routine.title}</strong>{routine.details && <p className="task-details">{routine.details}</p>}<span><i className={`dot ${categoryTone[routine.category]}`} />固定任务 · {routineFrequencyLabel(routine)}{goal ? <b className="task-goal-label">→ {goal.title}</b> : null}{overdue && !completed && <b className="routine-overdue">上次应做：{formatDate(occurrenceDate)}</b>}</span></div>
+    <time>{routine.time || "今天"}</time><div className="task-actions"><button onClick={onEdit}>编辑规则</button></div>
+  </div>;
 }
 
 function TaskRow({ task, goal, onToggle, onEdit, onDelete, compact = false }: { task: Task; goal?: Goal; onToggle: () => void; onEdit: () => void; onDelete: () => void; compact?: boolean }) {
@@ -1558,6 +1478,22 @@ function TaskModal({ value, goals, prefill, sourceDraft = false, defaultDate, de
   useEffect(() => { titleInputRef.current?.focus(); }, []);
   const [title, setTitle] = useState(existing?.title || prefill?.title || ""); const [details, setDetails] = useState(existing?.details || prefill?.details || ""); const [category, setCategory] = useState<TaskCategory>(existing?.category || prefill?.category || "生活"); const [goalId, setGoalId] = useState(existing?.goalId || defaultGoalId || ""); const [date, setDate] = useState(existing?.date || defaultDate || getTorontoToday()); const [endDate, setEndDate] = useState(existing?.endDate || ""); const [time, setTime] = useState(existing?.time || "09:00"); const [priority, setPriority] = useState<"high" | "normal">(existing?.priority || "normal");
   return <ModalFrame title={existing ? "编辑任务" : sourceDraft ? "安排这个草稿" : "新建任务"} subtitle={sourceDraft ? "DRAFT → TASK" : "TASK"} onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); if (!title.trim()) return; onSave({ id: existing?.id || uid(), title: title.trim(), details: details.trim() || null, category, goalId: goalId || null, date, time, endDate: endDate && endDate > date ? endDate : null, carriedFrom: existing && existing.date === date ? existing.carriedFrom : null, completedAt: existing?.completedAt || null, priority, status: existing?.status || "todo" }); }}><div className="form-grid"><Field label="任务名称" wide><input ref={titleInputRef} value={title} onChange={(e) => setTitle(e.target.value)} required /></Field><Field label="任务细节" wide><textarea value={details} onChange={(e) => setDetails(e.target.value)} placeholder="补充地点、材料、步骤、联系人或任何执行时需要的信息……" /></Field><Field label="类别"><select value={category} onChange={(e) => setCategory(e.target.value as TaskCategory)}><option>学业</option><option>求职</option><option>生活</option><option>健康</option></select></Field><Field label="关联长期目标"><select value={goalId} onChange={(e) => setGoalId(e.target.value)}><option value="">不关联目标</option>{goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.title}</option>)}</select></Field><Field label="优先级"><select value={priority} onChange={(e) => setPriority(e.target.value as "high" | "normal")}><option value="normal">普通</option><option value="high">优先</option></select></Field><Field label="开始日期"><input type="date" value={date} onChange={(e) => { const nextDate = e.target.value; setDate(nextDate); if (endDate && endDate < nextDate) setEndDate(nextDate); }} required /></Field><Field label="结束日期（跨日任务）"><input type="date" value={endDate} min={date} onChange={(e) => setEndDate(e.target.value)} /></Field><Field label="时间"><input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></Field></div>{sourceDraft && <p className="task-source-note">保存后，这条草稿会从草稿箱移除并进入正式任务；你仍然可以立即撤销。</p>}<div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">{sourceDraft ? "安排任务" : "保存任务"}</button></div></form></ModalFrame>;
+}
+
+function RoutineModal({ value, goals, onClose, onSave, onDelete }: { value: Routine | "new"; goals: Goal[]; onClose: () => void; onSave: (routine: Routine) => void; onDelete?: () => void }) {
+  const existing = value === "new" ? null : value;
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { titleInputRef.current?.focus(); }, []);
+  const [title, setTitle] = useState(existing?.title || "");
+  const [details, setDetails] = useState(existing?.details || "");
+  const [category, setCategory] = useState<TaskCategory>(existing?.category || "生活");
+  const [goalId, setGoalId] = useState(existing?.goalId || "");
+  const [startDate, setStartDate] = useState(existing?.startDate || getTorontoToday());
+  const [time, setTime] = useState(existing?.time || "09:00");
+  const [frequency, setFrequency] = useState<RoutineFrequency>(existing?.frequency || "daily");
+  const [intervalDays, setIntervalDays] = useState(existing?.intervalDays || 2);
+  const [active, setActive] = useState(existing?.active ?? true);
+  return <ModalFrame title={existing ? "编辑固定任务" : "新建固定任务"} subtitle="RECURRING ACTION" onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); if (!title.trim() || !startDate) return; onSave({ id: existing?.id || uid(), title: title.trim(), details: details.trim(), category, goalId: goalId || null, startDate, time: time || null, frequency, intervalDays: frequency === "daily" ? 1 : Math.max(2, Math.round(intervalDays || 2)), active, completedDates: existing?.completedDates || [] }); }}><div className="form-grid"><Field label="固定任务名称" wide><input ref={titleInputRef} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：刷题 3 道" required /></Field><Field label="具体要求" wide><textarea value={details} onChange={(event) => setDetails(event.target.value)} placeholder="数量、标准或完成条件……" /></Field><Field label="重复频率"><select value={frequency} onChange={(event) => setFrequency(event.target.value as RoutineFrequency)}><option value="daily">每天</option><option value="interval">每隔几天</option></select></Field>{frequency === "interval" && <Field label="间隔天数"><input type="number" min="2" max="365" value={intervalDays} onChange={(event) => setIntervalDays(Number(event.target.value))} /></Field>}<Field label="开始日期"><input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required /></Field><Field label="提醒时间"><input type="time" value={time} onChange={(event) => setTime(event.target.value)} /></Field><Field label="类别"><select value={category} onChange={(event) => setCategory(event.target.value as TaskCategory)}><option>学业</option><option>求职</option><option>生活</option><option>健康</option></select></Field><Field label="关联长期目标"><select value={goalId} onChange={(event) => setGoalId(event.target.value)}><option value="">不关联目标</option>{goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.title}</option>)}</select></Field><Field label="当前状态" wide><button type="button" className={`pin-toggle ${active ? "active" : ""}`} onClick={() => setActive((current) => !current)}>{active ? "● 正在运行" : "○ 已暂停"}</button></Field></div><p className="task-source-note">每次出现都可独立打卡；修改规则不会生成重复的普通任务。</p><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">保存固定任务</button></div></form></ModalFrame>;
 }
 
 function PhaseModal({ value, goals, onClose, onSave }: { value: ActivePhase; goals: Goal[]; onClose: () => void; onSave: (phase: ActivePhase) => void }) {

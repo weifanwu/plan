@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { applyAIOperations } from "../lib/ai-operations.mjs";
-import { createPrivateVault, sealPrivateVault, unlockPrivateVault } from "../lib/private-vault.mjs";
+import { isRoutineDueOn, nextRoutineOccurrence, routineTodayEntry } from "../lib/routine-schedule.mjs";
 import { isCompletedTaskArchived } from "../lib/task-retention.mjs";
 import { shiftTaskToDate } from "../lib/task-reschedule.mjs";
 import { rollOverTasks } from "../lib/task-rollover.mjs";
@@ -75,7 +75,7 @@ test("week and month task cards expose drag, drop, and completion controls", asy
   assert.match(source, /dropTaskOnDate/);
   assert.match(source, /task-drop-target/);
   assert.match(source, /TaskCalendarCheck/);
-  assert.match(source, /拖动任务到日期格即可改期/);
+  assert.match(source, /拖动普通任务到日期格即可改期/);
 });
 
 test("completed tasks archive from the interface after 60 days", () => {
@@ -106,31 +106,41 @@ test("draft inbox keeps unscheduled work compact and promotes it into dated task
   assert.doesNotMatch(source, /className="note-grid"/);
 });
 
-test("private vault encrypts records and rejects a wrong password or tampering", async () => {
-  const passphrase = "correct horse battery staple";
-  const records = [{ id: "vault-test", title: "Example secret", value: "private-test-value", category: "其他", notes: "", pinned: false }];
-  const created = await createPrivateVault(passphrase, records);
-  const serialized = JSON.stringify(created.envelope);
-  assert.doesNotMatch(serialized, /private-test-value/);
-  assert.doesNotMatch(serialized, /correct horse/);
-  const unlocked = await unlockPrivateVault(passphrase, created.envelope);
-  assert.deepEqual(unlocked.items, records);
-  await assert.rejects(() => unlockPrivateVault("wrong password", created.envelope), /UNLOCK_FAILED/);
-  const resealed = await sealPrivateVault(records, unlocked.key, unlocked.salt);
-  const replacement = resealed.ciphertext.startsWith("A") ? "B" : "A";
-  await assert.rejects(() => unlockPrivateVault(passphrase, { ...resealed, ciphertext: `${replacement}${resealed.ciphertext.slice(1)}` }), /UNLOCK_FAILED/);
+test("private references optimize fast capture, search, copy, links, and focused AI organization", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const appDataType = source.slice(source.indexOf("type AppData ="), source.indexOf("const DAY_ORDER"));
+  assert.match(source, /直接贴进来/);
+  assert.match(source, /保存成资料卡/);
+  assert.match(source, /referenceQuery/);
+  assert.match(source, /extractReferenceLinks/);
+  assert.match(source, /让 MAP AI 批量整理/);
+  assert.match(source, /没有密码和加密/);
+  assert.match(source, /currentData: data/);
+  assert.match(appDataType, /references: ReferenceNote\[\]/);
+  assert.match(worker, /key !== "references"/);
+  assert.match(worker, /HIGH-FREQUENCY PRIVATE REFERENCE CAPTURE/);
+  assert.doesNotMatch(source, /sk-proj-/i);
 });
 
-test("private vault stays separate from MAP data, backups, and AI context", async () => {
+test("fixed tasks support daily and every-N-day occurrences with independent completion", () => {
+  const daily = { active: true, startDate: "2026-08-24", frequency: "daily", intervalDays: 1, completedDates: [] };
+  const everyTwoDays = { active: true, startDate: "2026-08-24", frequency: "interval", intervalDays: 2, completedDates: [] };
+  assert.equal(isRoutineDueOn(daily, "2026-08-25"), true);
+  assert.equal(isRoutineDueOn(everyTwoDays, "2026-08-25"), false);
+  assert.equal(isRoutineDueOn(everyTwoDays, "2026-08-26"), true);
+  assert.deepEqual(routineTodayEntry(everyTwoDays, "2026-08-25"), { occurrenceDate: "2026-08-24", completed: false, overdue: true });
+  assert.equal(nextRoutineOccurrence(everyTwoDays, "2026-08-25"), "2026-08-26");
+});
+
+test("fixed tasks render in today, week, month, and their central manager", async () => {
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const appDataType = source.slice(source.indexOf("type AppData ="), source.indexOf("const DAY_ORDER"));
-  assert.match(source, /VAULT_STORAGE_KEY = "map-private-vault-v1"/);
-  assert.match(source, /不会发送给 MAP AI/);
-  assert.match(source, /导出加密备份/);
-  assert.match(source, /30 分钟无操作自动锁定/);
-  assert.match(source, /currentData: data/);
-  assert.doesNotMatch(appDataType, /vault/i);
-  assert.doesNotMatch(source, /sk-proj-/i);
+  assert.match(source, /todayRoutineEntries/);
+  assert.match(source, /weeklyRoutineCount/);
+  assert.match(source, /visibleRoutineCount/);
+  assert.match(source, /routine-manager/);
+  assert.match(source, /RoutineModal/);
+  assert.match(source, /每隔几天/);
 });
 
 test("current phase is editable and drives the long-term time map", async () => {
@@ -190,7 +200,7 @@ test("voice transcription API forwards audio without persisting it", { concurren
 
 test("MAP AI sends conversation, selected model, app context, and approval schema", { concurrency: false }, async () => {
   const worker = await loadWorker();
-  const currentData = { tasks: [], schedule: [], goals: [], habits: [], workouts: [], applications: [], notes: [], habitDate: "2026-08-23", workoutWeek: "2026-08-17" };
+  const currentData = { tasks: [], routines: [], schedule: [], goals: [], habits: [], workouts: [], applications: [], notes: [], references: [{ id: "private", title: "private-reference-sentinel", content: "not for ordinary analysis" }], habitDate: "2026-08-23", workoutWeek: "2026-08-17" };
   const expected = { reply: "我会先分析，不修改数据。", action: "answer", summary: "", operations: [] };
   const originalFetch = globalThis.fetch;
   let outbound;
@@ -211,11 +221,32 @@ test("MAP AI sends conversation, selected model, app context, and approval schem
     assert.match(outbound.instructions, /one ranged task instead of duplicate daily tasks/);
     assert.match(outbound.instructions, /HIGH-FREQUENCY JOB CAPTURE/);
     assert.match(outbound.instructions, /CURRENT MAP CONTEXT/);
+    assert.doesNotMatch(outbound.instructions, /private-reference-sentinel/);
     assert.deepEqual(outbound.text.format.schema.required, ["reply", "action", "summary", "operations"]);
     assert.equal(outbound.reasoning.effort, "medium");
     assert.equal(outbound.text.verbosity, "low");
     assert.equal(outbound.max_output_tokens, 5000);
     assert.equal(outbound.prompt_cache_key, "map-ai-v4-gpt-5.6-sol-full");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("MAP AI receives private references only when the user explicitly asks for them", { concurrency: false }, async () => {
+  const worker = await loadWorker();
+  const currentData = { tasks: [{ id: "task", title: "ordinary-task-sentinel" }], routines: [], schedule: [], goals: [], habits: [], workouts: [], applications: [], notes: [], references: [{ id: "reference", title: "school portal", content: "private-reference-sentinel" }] };
+  const originalFetch = globalThis.fetch;
+  let outbound;
+  globalThis.fetch = async (_url, init) => {
+    outbound = JSON.parse(init.body);
+    return Response.json({ output_text: JSON.stringify({ reply: "找到这条资料。", action: "answer", summary: "", operations: [] }) });
+  };
+  try {
+    const response = await worker.fetch(new Request("http://localhost/api/ai-chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ currentData, messages: [{ role: "user", content: "帮我分析私人速记里的学校资料" }] }) }), { OPENAI_API_KEY: "test-key" }, { waitUntil() {}, passThroughOnException() {} });
+    assert.equal(response.status, 200);
+    assert.match(outbound.instructions, /private-reference-sentinel/);
+    assert.doesNotMatch(outbound.instructions, /ordinary-task-sentinel/);
+    assert.equal(response.headers.get("x-map-ai-context"), "references");
   } finally {
     globalThis.fetch = originalFetch;
   }

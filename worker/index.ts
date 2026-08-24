@@ -15,23 +15,28 @@ interface Env {
   };
 }
 
-type DataCollection = "tasks" | "schedule" | "goals" | "habits" | "workouts" | "applications" | "notes";
+type DataCollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "applications" | "notes" | "references";
 
-const DATA_COLLECTIONS: DataCollection[] = ["tasks", "schedule", "goals", "habits", "workouts", "applications", "notes"];
+const DATA_COLLECTIONS: DataCollection[] = ["tasks", "routines", "schedule", "goals", "habits", "workouts", "applications", "notes", "references"];
 const MUTATION_PATTERN = /(加入|添加|新增|创建|修改|更新|改成|移动|拖到|完成|删除|移除|取消|重排|调整|安排|记一下|记到|记录一下|记录这|记录该|记录到|保存|提醒我|放到|放进|标记|延期|推迟)|\b(add|create|update|edit|move|complete|delete|remove|reorder|schedule|save|mark|remind)\b/i;
+const REFERENCE_CONTEXT_PATTERN = /(私人速记|私人资料|常用网址|学校信息|参考资料|个人资料|备忘录|personal reference|quick reference)/i;
 const COLLECTION_PATTERNS: Array<[DataCollection, RegExp]> = [
   ["applications", /(求职看板|求职记录|岗位|职位|公司|投递|面试|offer|application|job|role|position|company)/i],
+  ["routines", /(固定任务|重复任务|每日任务|每天|隔天|每隔|每\s*\d+\s*天|recurring|routine|every day)/i],
   ["tasks", /(任务|待办|提醒|截止日期|deadline|todo|task)/i],
   ["schedule", /(课表|课程|固定安排|上课时间|tutorial|class schedule|course schedule|TA\b)/i],
   ["goals", /(目标|优先级|goal)/i],
   ["habits", /(水果|蔬菜|蛋白质|饮水|饮食习惯|nutrition|habit)/i],
   ["workouts", /(健身|运动计划|锻炼|workout|exercise)/i],
   ["notes", /(草稿箱|草稿|笔记|灵感|想法|backlog|draft|notes?)/i],
+  ["references", REFERENCE_CONTEXT_PATTERN],
 ];
 
 function detectFocusedMutation(latestMessage: string, priorContext: string): DataCollection | null {
   if (!MUTATION_PATTERN.test(latestMessage)) return null;
   const directMatches = COLLECTION_PATTERNS.filter(([, pattern]) => pattern.test(latestMessage)).map(([collection]) => collection);
+  if (directMatches.includes("references")) return "references";
+  if (directMatches.includes("routines")) return "routines";
   if (directMatches.length === 1) return directMatches[0];
   if (directMatches.length > 1) return null;
   const contextMatches = COLLECTION_PATTERNS.filter(([, pattern]) => pattern.test(priorContext)).map(([collection]) => collection);
@@ -41,12 +46,14 @@ function detectFocusedMutation(latestMessage: string, priorContext: string): Dat
 function focusedData(data: Record<string, unknown>, collection: DataCollection) {
   const relatedCollections: Record<DataCollection, DataCollection[]> = {
     applications: ["applications"],
-    tasks: ["tasks", "schedule", "goals"],
+    tasks: ["tasks", "routines", "schedule", "goals"],
+    routines: ["routines", "goals"],
     schedule: ["schedule", "tasks"],
     goals: ["goals", "tasks"],
     habits: ["habits"],
     workouts: ["workouts", "schedule"],
     notes: ["notes"],
+    references: ["references"],
   };
   return Object.fromEntries([
     ...relatedCollections[collection].map((key) => [key, Array.isArray(data[key]) ? data[key] : []]),
@@ -104,8 +111,9 @@ async function handleAIChat(request: Request, env: Env): Promise<Response> {
     const latestUserMessage = latestUserIndex >= 0 ? messages[latestUserIndex].content : "";
     const priorUserContext = messages.slice(0, latestUserIndex).filter((message) => message.role === "user").slice(-2).map((message) => message.content).join("\n");
     const focus = detectFocusedMutation(latestUserMessage, priorUserContext);
+    const referenceContext = REFERENCE_CONTEXT_PATTERN.test(latestUserMessage) || REFERENCE_CONTEXT_PATTERN.test(priorUserContext);
     const rawCurrentData = body.currentData && typeof body.currentData === "object" ? body.currentData as Record<string, unknown> : {};
-    const modelData = focus ? focusedData(rawCurrentData, focus) : rawCurrentData;
+    const modelData = focus ? focusedData(rawCurrentData, focus) : referenceContext ? focusedData(rawCurrentData, "references") : Object.fromEntries(Object.entries(rawCurrentData).filter(([key]) => key !== "references"));
     const currentData = JSON.stringify(modelData);
     if (currentData.length > 180000) return Response.json({ error: "当前计划数据过大，暂时无法一次处理。" }, { status: 413 });
     const today = typeof body.today === "string" ? body.today : new Date().toISOString().slice(0, 10);
@@ -124,7 +132,7 @@ async function handleAIChat(request: Request, env: Env): Promise<Response> {
         store: false,
         reasoning: { effort: reasoningEffort },
         max_output_tokens: maxOutputTokens,
-        ...(model.startsWith("gpt-5.6") ? { prompt_cache_key: `map-ai-v4-${model}-${focus || "full"}` } : {}),
+        ...(model.startsWith("gpt-5.6") ? { prompt_cache_key: `map-ai-v4-${model}-${focus || (referenceContext ? "references" : "full")}` } : {}),
         instructions: `You are MAP AI, the conversational copilot inside a private, device-local life management app. Reply in the user's language, normally Chinese. Today is ${today} in America/Toronto.
 
 WHAT MAP IS
@@ -133,9 +141,11 @@ MAP is a long-term personal operating system, not only a graduation planner. It 
 2. 长期目标: ordered life directions. Array order is priority order: first is most important, second is second most important. Goals may cover study, career, health, housing, marriage, or personal projects. Tasks can link to a goal through goalId so each direction has concrete next steps.
 3. 阶段地图: the editable current phase (for example graduation, a new job, moving, or a personal project), recurring weekly schedule, and dated tasks in weekly and monthly calendar views.
 4. 求职记录: a Kanban pipeline with exactly four stages: 已投, 面试, Offer, 拒绝. Each application stores company, role, job link, contact, application date, and notes/next step. The date powers daily application counts and filtering, so preserve the actual application date.
-5. 任务计划: dated actions. A task may be a single-day action or genuine multi-day work with date and endDate. title is concise; details stores execution context such as location, steps, materials, links, or contacts. Unfinished tasks may roll forward automatically.
-6. 草稿箱: a quick inbox for unscheduled task backlogs, rough ideas, and reference material grouped as 待办, 想法, 课程, 项目, 求职, or 生活. Drafts can be searched, filtered, pinned, edited, and manually promoted into dated tasks.
-7. 健康运动: daily nutrition checks and weekly workout plans.
+5. 任务计划: dated actions plus fixed recurring actions. A normal task may be a single-day action or genuine multi-day work with date and endDate. title is concise; details stores execution context. Unfinished normal tasks may roll forward automatically.
+6. 固定任务: recurring actions that appear every day or every N days. A routine stores title, details, category, goalId, startDate, optional time, frequency (daily or interval), intervalDays, active, and completedDates. Each occurrence is checked independently; never create duplicate normal tasks for a recurring rule.
+7. 草稿箱: a quick inbox for unscheduled task backlogs and rough ideas grouped as 待办, 想法, 课程, 项目, 求职, or 生活. Drafts can be searched, filtered, pinned, edited, and manually promoted into dated tasks.
+8. 私人速记: fast device-local reference cards for frequently retrieved URLs, school information, addresses, and other personal reference text. Each card has title, content, pinned, createdAt, and updatedAt. It is deliberately separate from the task backlog.
+9. 健康运动: daily nutrition checks and weekly workout plans.
 
 CONVERSATION BEHAVIOR
 - In full context mode, use all relevant MAP records, especially notes, when answering or analyzing. In focused mutation mode, the supplied JSON intentionally contains only the records relevant to the requested change.
@@ -151,12 +161,18 @@ HIGH-FREQUENCY JOB CAPTURE
 - If the latest user message refers to job information pasted earlier in this conversation, use that earlier information immediately. Do not analyze the job again or ask the user to repeat it.
 - Avoid duplicate applications by checking company, role, and link against existing records. If a likely duplicate exists, explain it and ask whether to update the existing record.
 
+HIGH-FREQUENCY PRIVATE REFERENCE CAPTURE
+- Only read or modify references when the user explicitly mentions 私人速记, 私人资料, 备忘录, 常用网址, or asks to organize personal reference material. Ordinary full-context analysis intentionally omits references.
+- When the user pastes a messy Apple Notes-style block and asks to organize it, split it into the smallest useful set of topic-based reference cards. Preserve every supplied value exactly, never invent missing information, use a clear searchable title, and keep related lines together.
+- Prefer a few coherent cards over one giant card or dozens of one-line cards. New reference records require id, title, content, pinned=false, and valid ISO createdAt/updatedAt timestamps.
+- This data is not encrypted. Do not claim that MAP is a password manager or that storage is risk-free.
+
 DATA RULES
 - Output only the smallest set of operations required by the user's latest instruction. Earlier messages are context or referenced source material, not pending commands. Never output an operation for an unrelated record or collection.
-- Context mode for this request is ${focus ? `FOCUSED MUTATION. The only allowed operation collection is ${focus}. Do not request or modify omitted modules.` : "FULL MAP CONTEXT. Multiple collections are allowed only when the latest instruction explicitly requests them."}
+- Context mode for this request is ${focus ? `FOCUSED MUTATION. The only allowed operation collection is ${focus}. Do not request or modify omitted modules.` : referenceContext ? "FOCUSED PRIVATE REFERENCE ANALYSIS. Only private reference records were supplied; answer without modifying data unless the latest instruction explicitly requests a change." : "FULL MAP CONTEXT. Private references are omitted. Multiple collections are allowed only when the latest instruction explicitly requests them."}
 - The browser applies operations locally to the current data. You never return the complete MAP dataset.
 - For new records create a unique id beginning with ai-. Resolve relative dates against today. Use YYYY-MM-DD dates and 24-hour HH:MM times.
-- Tasks are formal actions with a date; use endDate only when work genuinely spans a date range. When the user asks to work on one outcome throughout a week or from one date through another, create one ranged task instead of duplicate daily tasks. Schedule is only recurring weekly blocks; goals are long-term directions; applications are job opportunities; notes are the unscheduled backlog and rough-idea inbox; habits are daily nutrition checks; workouts are weekly exercise plans.
+- Tasks are formal actions with a date; use endDate only when work genuinely spans a date range. When the user asks to work on one outcome throughout a week or from one date through another, create one ranged task instead of duplicate daily tasks. Use routines for actions repeated daily or every N days. Schedule is only recurring weekly time blocks; goals are long-term directions; applications are job opportunities; notes are the unscheduled backlog and rough-idea inbox; references are reusable personal information; habits are daily nutrition checks; workouts are weekly exercise plans.
 - When the user wants to remember an action but gives no date and does not ask to schedule it now, prefer adding a note with category 待办. Do not invent a task date. Use a dated task only when the user supplies a date, asks to schedule it, or explicitly asks to create a task.
 - Preserve details, goalId, carriedFrom, and completedAt on existing tasks unless explicitly changing them. For a new task, set goalId to the matching existing goal id when the connection is clear; otherwise use null. Use null for missing optional task fields. Preserve note timestamps unless changed; use valid ISO timestamps for new or updated notes.
 - Each operation has collection, operation, recordId, and recordJson. collection is one MAP array. operation is add, update, delete, or reorder.
@@ -220,7 +236,7 @@ ${currentData}`,
     };
     return Response.json(result, { headers: {
       "Server-Timing": `openai;dur=${openAIDuration}`,
-      "X-MAP-AI-Context": focus || "full",
+      "X-MAP-AI-Context": focus || (referenceContext ? "references" : "full"),
       "X-MAP-AI-Cached-Tokens": String(payload.usage?.input_tokens_details?.cached_tokens || 0),
       "X-MAP-AI-Output-Tokens": String(payload.usage?.output_tokens || 0),
     } });
