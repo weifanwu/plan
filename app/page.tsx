@@ -247,6 +247,10 @@ function daysBetween(from: string, to: string) {
   return Math.ceil((Date.parse(`${to}T12:00:00Z`) - Date.parse(`${from}T12:00:00Z`)) / 86400000);
 }
 
+function isMultiDayTask(task: Task) {
+  return Boolean(task.endDate && task.endDate > task.date);
+}
+
 function buildPhaseStops(phase: ActivePhase) {
   const start = new Date(`${phase.startDate}T12:00:00Z`);
   const end = new Date(`${phase.endDate}T12:00:00Z`);
@@ -474,12 +478,14 @@ export default function Home() {
   const weekStart = weekDays[0].key;
   const weekEnd = weekDays[6].key;
   const weeklyTasks = data.tasks.filter((task) => task.date <= weekEnd && (task.endDate || task.date) >= weekStart);
+  const weeklySpanTasks = weeklyTasks.filter(isMultiDayTask).slice().sort((a, b) => a.date.localeCompare(b.date) || (a.endDate || a.date).localeCompare(b.endDate || b.date));
   const calendarMonthLabel = useMemo(() => {
     const [year, month] = calendarCursor.split("-").map(Number);
     return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", timeZone: "UTC" }).format(new Date(Date.UTC(year, month - 1, 1)));
   }, [calendarCursor]);
   const monthStart = `${calendarCursor}-01`;
   const monthEnd = calendarCells.filter((cell) => cell.inMonth).at(-1)?.key || monthStart;
+  const monthlySpanTasks = data.tasks.filter((task) => isMultiDayTask(task) && task.date <= monthEnd && (task.endDate || task.date) >= monthStart).slice().sort((a, b) => a.date.localeCompare(b.date));
   const visibleTaskCount = data.tasks.filter((task) => task.date <= monthEnd && (task.endDate || task.date) >= monthStart).length;
   const visibleScheduleCount = calendarCells.filter((cell) => cell.inMonth && cell.key >= data.phase.startDate && cell.key <= data.phase.endDate).reduce((count, cell) => count + data.schedule.filter((item) => item.days.includes(cell.dayCode)).length, 0);
   const applicationDateCounts = useMemo(() => {
@@ -972,11 +978,19 @@ export default function Home() {
                 <div><p className="section-kicker">CALENDAR</p><h3>{calendarMonthLabel}</h3><span>{visibleTaskCount} 项任务 · {visibleScheduleCount} 次固定安排</span></div>
                 <div className="calendar-nav"><button onClick={() => setCalendarCursor((cursor) => moveMonth(cursor, -1))} aria-label="上个月">←</button><button className="calendar-today" onClick={() => setCalendarCursor(today.slice(0, 7))}>今天</button><button onClick={() => setCalendarCursor((cursor) => moveMonth(cursor, 1))} aria-label="下个月">→</button></div>
               </div>
+              {monthlySpanTasks.length > 0 && <section className="month-span-section">
+                <header><div><strong>本月跨度任务</strong><span>只显示一次，不再每天重复</span></div><i>{monthlySpanTasks.length}</i></header>
+                <div className="month-span-list">{monthlySpanTasks.map((task) => <button key={task.id} className={`month-span-task ${categoryTone[task.category]} ${task.status === "done" ? "done" : ""} ${task.carriedFrom && task.status === "todo" ? "carried" : ""}`} onClick={() => setTaskEditor(task)}>
+                  <span className="month-span-duration">{daysBetween(task.date, task.endDate!) + 1}<small>天</small></span>
+                  <span><strong>{task.title}</strong><small>{formatDate(task.date)} → {formatDate(task.endDate!)}</small></span>
+                  <em>{task.status === "done" ? "已完成" : task.carriedFrom ? "已顺延" : "进行中"}</em>
+                </button>)}</div>
+              </section>}
               <div className="calendar-scroll">
                 <div className="calendar-grid">
                   {CALENDAR_DAY_LABEL.map((label, index) => <div className={`calendar-weekday ${index > 4 ? "weekend" : ""}`} key={label}>{label}</div>)}
                   {calendarCells.map((cell) => {
-                    const tasks = data.tasks.filter((task) => task.date <= cell.key && (task.endDate || task.date) >= cell.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
+                    const tasks = data.tasks.filter((task) => !isMultiDayTask(task) && task.date === cell.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
                     const schedules = cell.key >= data.phase.startDate && cell.key <= data.phase.endDate ? data.schedule.filter((item) => item.days.includes(cell.dayCode)).sort((a, b) => a.start.localeCompare(b.start)) : [];
                     const events = [...tasks.map((task) => ({ type: "task" as const, time: task.date === cell.key ? task.time : "", item: task })), ...schedules.map((item) => ({ type: "schedule" as const, time: item.start, item }))].sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
                     return <article className={`calendar-day ${cell.inMonth ? "" : "outside"} ${cell.key === today ? "today" : ""}`} key={cell.key}>
@@ -988,7 +1002,7 @@ export default function Home() {
                   })}
                 </div>
               </div>
-              <div className="calendar-legend"><span><i className="task" />任务</span><span><i className="schedule" />课程 / TA</span><small>长期任务会持续显示到截止日</small></div>
+              <div className="calendar-legend"><span><i className="task" />当天任务</span><span><i className="schedule" />课程 / TA</span><small>跨度任务在日历上方集中显示</small></div>
             </section> : <section className="panel schedule-panel">
               <div className="panel-heading"><div><p className="section-kicker">THIS WEEK</p><h3>本周安排</h3></div><span className="counter">{formatDate(weekStart)}—{formatDate(weekEnd)} · {weeklyTasks.length} 项任务</span></div>
               <div className="fixed-schedule-heading first"><div><p className="section-kicker">WEEKLY RHYTHM</p><h3>每周固定课程与 TA</h3></div><span>点击安排可编辑</span></div>
@@ -1016,11 +1030,26 @@ export default function Home() {
                 </div>
               </div>
               <div className="week-task-section">
-                <div className="week-task-heading"><strong>本周任务</strong><span>点击任务编辑 · ＋ 直接安排到当天</span></div>
+                <div className="week-task-heading"><strong>本周任务</strong><span>跨度任务只显示一次 · ＋ 直接安排到当天</span></div>
                 <div className="week-task-scroll">
+                  {weeklySpanTasks.length > 0 && <section className="week-span-section">
+                    <div className="week-span-title"><div><strong>持续推进</strong><span>跨日任务按真实周期横跨本周</span></div><i>{weeklySpanTasks.length} 项</i></div>
+                    <div className="week-span-calendar">
+                      <div className="week-span-days">{weekDays.map((day) => <span className={day.key === today ? "today" : ""} key={day.key}>{day.label}<small>{day.date}</small></span>)}</div>
+                      {weeklySpanTasks.map((task) => {
+                        const clippedStart = task.date < weekStart ? weekStart : task.date;
+                        const clippedEnd = (task.endDate || task.date) > weekEnd ? weekEnd : task.endDate || task.date;
+                        const startIndex = weekDays.findIndex((day) => day.key === clippedStart);
+                        const endIndex = weekDays.findIndex((day) => day.key === clippedEnd);
+                        return <div className="week-span-lane" key={task.id}><button className={`week-span-bar ${categoryTone[task.category]} ${task.status === "done" ? "done" : ""} ${task.carriedFrom && task.status === "todo" ? "carried" : ""}`} style={{ gridColumn: `${startIndex + 1} / ${endIndex + 2}` }} onClick={() => setTaskEditor(task)} title={`${task.title} · ${formatDate(task.date)} 至 ${formatDate(task.endDate!)}`}>
+                          <span><strong>{task.title}</strong><small>{formatDate(task.date)} → {formatDate(task.endDate!)}</small></span><i>{task.status === "done" ? "完成" : task.carriedFrom ? "顺延" : "进行中"}</i>
+                        </button></div>;
+                      })}
+                    </div>
+                  </section>}
                   <div className="week-task-grid">
                     {weekDays.map((day) => {
-                      const tasks = data.tasks.filter((task) => task.date <= day.key && (task.endDate || task.date) >= day.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
+                      const tasks = data.tasks.filter((task) => !isMultiDayTask(task) && task.date === day.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
                       return <article className={`week-task-day ${day.key === today ? "today" : ""}`} key={day.key}>
                         <header><div><strong>{day.label}</strong><span>{day.date}</span></div>{day.key === today && <i>今天</i>}</header>
                         <div className="week-task-list">
@@ -1188,7 +1217,7 @@ function TaskModal({ value, goals, prefill, sourceDraft = false, defaultDate, de
   const titleInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => { titleInputRef.current?.focus(); }, []);
   const [title, setTitle] = useState(existing?.title || prefill?.title || ""); const [details, setDetails] = useState(existing?.details || prefill?.details || ""); const [category, setCategory] = useState<TaskCategory>(existing?.category || prefill?.category || "生活"); const [goalId, setGoalId] = useState(existing?.goalId || defaultGoalId || ""); const [date, setDate] = useState(existing?.date || defaultDate || getTorontoToday()); const [endDate, setEndDate] = useState(existing?.endDate || ""); const [time, setTime] = useState(existing?.time || "09:00"); const [priority, setPriority] = useState<"high" | "normal">(existing?.priority || "normal");
-  return <ModalFrame title={existing ? "编辑任务" : sourceDraft ? "安排这个草稿" : "新建任务"} subtitle={sourceDraft ? "DRAFT → TASK" : "TASK"} onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); if (!title.trim()) return; onSave({ id: existing?.id || uid(), title: title.trim(), details: details.trim() || null, category, goalId: goalId || null, date, time, endDate: endDate && endDate > date ? endDate : null, carriedFrom: existing && existing.date === date ? existing.carriedFrom : null, completedAt: existing?.completedAt || null, priority, status: existing?.status || "todo" }); }}><div className="form-grid"><Field label="任务名称" wide><input ref={titleInputRef} value={title} onChange={(e) => setTitle(e.target.value)} required /></Field><Field label="任务细节" wide><textarea value={details} onChange={(e) => setDetails(e.target.value)} placeholder="补充地点、材料、步骤、联系人或任何执行时需要的信息……" /></Field><Field label="类别"><select value={category} onChange={(e) => setCategory(e.target.value as TaskCategory)}><option>学业</option><option>求职</option><option>生活</option><option>健康</option></select></Field><Field label="关联长期目标"><select value={goalId} onChange={(e) => setGoalId(e.target.value)}><option value="">不关联目标</option>{goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.title}</option>)}</select></Field><Field label="优先级"><select value={priority} onChange={(e) => setPriority(e.target.value as "high" | "normal")}><option value="normal">普通</option><option value="high">优先</option></select></Field><Field label="开始日期"><input type="date" value={date} onChange={(e) => { const nextDate = e.target.value; setDate(nextDate); if (endDate && endDate < nextDate) setEndDate(nextDate); }} required /></Field><Field label="结束日期（可选）"><input type="date" value={endDate} min={date} onChange={(e) => setEndDate(e.target.value)} /></Field><Field label="时间"><input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></Field></div>{sourceDraft && <p className="task-source-note">保存后，这条草稿会从草稿箱移除并进入正式任务；你仍然可以立即撤销。</p>}<div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">{sourceDraft ? "安排任务" : "保存任务"}</button></div></form></ModalFrame>;
+  return <ModalFrame title={existing ? "编辑任务" : sourceDraft ? "安排这个草稿" : "新建任务"} subtitle={sourceDraft ? "DRAFT → TASK" : "TASK"} onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); if (!title.trim()) return; onSave({ id: existing?.id || uid(), title: title.trim(), details: details.trim() || null, category, goalId: goalId || null, date, time, endDate: endDate && endDate > date ? endDate : null, carriedFrom: existing && existing.date === date ? existing.carriedFrom : null, completedAt: existing?.completedAt || null, priority, status: existing?.status || "todo" }); }}><div className="form-grid"><Field label="任务名称" wide><input ref={titleInputRef} value={title} onChange={(e) => setTitle(e.target.value)} required /></Field><Field label="任务细节" wide><textarea value={details} onChange={(e) => setDetails(e.target.value)} placeholder="补充地点、材料、步骤、联系人或任何执行时需要的信息……" /></Field><Field label="类别"><select value={category} onChange={(e) => setCategory(e.target.value as TaskCategory)}><option>学业</option><option>求职</option><option>生活</option><option>健康</option></select></Field><Field label="关联长期目标"><select value={goalId} onChange={(e) => setGoalId(e.target.value)}><option value="">不关联目标</option>{goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.title}</option>)}</select></Field><Field label="优先级"><select value={priority} onChange={(e) => setPriority(e.target.value as "high" | "normal")}><option value="normal">普通</option><option value="high">优先</option></select></Field><Field label="开始日期"><input type="date" value={date} onChange={(e) => { const nextDate = e.target.value; setDate(nextDate); if (endDate && endDate < nextDate) setEndDate(nextDate); }} required /></Field><Field label="结束日期（跨日任务）"><input type="date" value={endDate} min={date} onChange={(e) => setEndDate(e.target.value)} /></Field><Field label="时间"><input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></Field></div>{sourceDraft && <p className="task-source-note">保存后，这条草稿会从草稿箱移除并进入正式任务；你仍然可以立即撤销。</p>}<div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">{sourceDraft ? "安排任务" : "保存任务"}</button></div></form></ModalFrame>;
 }
 
 function PhaseModal({ value, goals, onClose, onSave }: { value: ActivePhase; goals: Goal[]; onClose: () => void; onSave: (phase: ActivePhase) => void }) {

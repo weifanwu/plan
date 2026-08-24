@@ -45,9 +45,20 @@ test("multi-day tasks remain visible throughout their active range", () => {
   assert.equal(isTaskVisibleToday({ ...task, status: "done", completedAt: "2026-08-24" }, "2026-08-24"), true);
 });
 
+test("calendar renders ranged work once instead of duplicating it in every day", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /weeklySpanTasks/);
+  assert.match(source, /monthlySpanTasks/);
+  assert.match(source, /week-span-bar/);
+  assert.match(source, /month-span-task/);
+  assert.match(source, /!isMultiDayTask\(task\) && task\.date === day\.key/);
+  assert.match(source, /!isMultiDayTask\(task\) && task\.date === cell\.key/);
+  assert.doesNotMatch(source, /task\.date <= day\.key && \(task\.endDate \|\| task\.date\) >= day\.key/);
+});
+
 test("workflow controls expose ranges, friendly weekdays, status filters, and undo", async () => {
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  assert.match(source, /结束日期（可选）/);
+  assert.match(source, /结束日期（跨日任务）/);
   assert.match(source, /每周重复日期/);
   assert.match(source, /任务状态筛选/);
   assert.match(source, /undoLastAction/);
@@ -141,6 +152,7 @@ test("MAP AI sends conversation, selected model, app context, and approval schem
     assert.match(outbound.instructions, /今日指挥台/);
     assert.match(outbound.instructions, /草稿箱/);
     assert.match(outbound.instructions, /prefer adding a note with category 待办/);
+    assert.match(outbound.instructions, /one ranged task instead of duplicate daily tasks/);
     assert.match(outbound.instructions, /HIGH-FREQUENCY JOB CAPTURE/);
     assert.match(outbound.instructions, /CURRENT MAP CONTEXT/);
     assert.deepEqual(outbound.text.format.schema.required, ["reply", "action", "summary", "operations"]);
