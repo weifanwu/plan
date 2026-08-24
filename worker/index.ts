@@ -17,6 +17,12 @@ interface Env {
 
 type DataCollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "applications" | "notes" | "references";
 
+type SyncRow = {
+  payload_json: string;
+  revision: number;
+  updated_at: string;
+};
+
 const DATA_COLLECTIONS: DataCollection[] = ["tasks", "routines", "schedule", "goals", "habits", "workouts", "applications", "notes", "references"];
 const MUTATION_PATTERN = /(加入|添加|新增|创建|修改|更新|改成|移动|拖到|完成|删除|移除|取消|重排|调整|安排|记一下|记到|记录一下|记录这|记录该|记录到|保存|提醒我|放到|放进|标记|延期|推迟)|\b(add|create|update|edit|move|complete|delete|remove|reorder|schedule|save|mark|remind)\b/i;
 const REFERENCE_CONTEXT_PATTERN = /(私人速记|私人资料|常用网址|学校信息|参考资料|个人资料|备忘录|personal reference|quick reference)/i;
@@ -32,6 +38,90 @@ const COLLECTION_PATTERNS: Array<[DataCollection, RegExp]> = [
   ["notes", /(草稿箱|草稿|笔记|灵感|想法|backlog|draft|notes?)/i],
   ["references", REFERENCE_CONTEXT_PATTERN],
 ];
+
+const SYNC_ARRAY_KEYS = ["tasks", "routines", "schedule", "goals", "habits", "workouts", "applications", "notes"] as const;
+
+function syncResponse(body: Record<string, unknown>, status = 200) {
+  return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
+}
+
+function authenticatedUserId(request: Request) {
+  return request.headers.get("oai-authenticated-user-id")?.trim() || "";
+}
+
+function isValidSyncPayload(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const payload = value as Record<string, unknown>;
+  if ("references" in payload || !payload.phase || typeof payload.phase !== "object") return false;
+  if (typeof payload.habitDate !== "string" || typeof payload.workoutWeek !== "string") return false;
+  return SYNC_ARRAY_KEYS.every((key) => Array.isArray(payload[key]));
+}
+
+function parseSyncRow(row: SyncRow) {
+  const data = JSON.parse(row.payload_json) as unknown;
+  if (!isValidSyncPayload(data)) throw new Error("Stored sync payload is invalid");
+  return { initialized: true, data, revision: row.revision, updatedAt: row.updated_at };
+}
+
+async function handleSync(request: Request, env: Env): Promise<Response> {
+  if (!env.DB) return syncResponse({ error: "云同步数据库尚未连接，本机离线数据仍可正常使用。" }, 503);
+  const userId = authenticatedUserId(request);
+  if (!userId) return syncResponse({ error: "请从已登录的 MAP 站点使用云同步。" }, 401);
+
+  if (request.method === "GET") {
+    try {
+      const row = await env.DB.prepare("SELECT payload_json, revision, updated_at FROM map_user_state WHERE user_id = ?")
+        .bind(userId)
+        .first<SyncRow>();
+      return row ? syncResponse(parseSyncRow(row)) : syncResponse({ initialized: false, revision: 0, data: null, updatedAt: null });
+    } catch {
+      return syncResponse({ error: "暂时无法读取云端计划，本机数据不会丢失。" }, 500);
+    }
+  }
+
+  if (request.method !== "PUT") return syncResponse({ error: "Method not allowed" }, 405);
+
+  try {
+    const rawBody = await request.text();
+    if (rawBody.length > 900_000) return syncResponse({ error: "计划数据过大，无法同步。" }, 413);
+    const body = JSON.parse(rawBody) as { baseRevision?: unknown; data?: unknown };
+    const baseRevision = Number(body.baseRevision);
+    if (!Number.isInteger(baseRevision) || baseRevision < 0 || !isValidSyncPayload(body.data)) {
+      return syncResponse({ error: "同步数据格式无效。" }, 400);
+    }
+
+    const current = await env.DB.prepare("SELECT payload_json, revision, updated_at FROM map_user_state WHERE user_id = ?")
+      .bind(userId)
+      .first<SyncRow>();
+    const currentRevision = current?.revision || 0;
+    if (currentRevision !== baseRevision) {
+      return syncResponse({ error: "云端计划已经更新。", ...(current ? parseSyncRow(current) : { initialized: false, revision: 0, data: null, updatedAt: null }) }, 409);
+    }
+
+    const updatedAt = new Date().toISOString();
+    const payloadJson = JSON.stringify(body.data);
+    if (!current) {
+      await env.DB.prepare("INSERT INTO map_user_state (user_id, payload_json, revision, updated_at) VALUES (?, ?, 1, ?)")
+        .bind(userId, payloadJson, updatedAt)
+        .run();
+      return syncResponse({ initialized: true, data: body.data, revision: 1, updatedAt });
+    }
+
+    const nextRevision = currentRevision + 1;
+    const result = await env.DB.prepare("UPDATE map_user_state SET payload_json = ?, revision = ?, updated_at = ? WHERE user_id = ? AND revision = ?")
+      .bind(payloadJson, nextRevision, updatedAt, userId, currentRevision)
+      .run();
+    if ((result.meta?.changes || 0) === 0) {
+      const latest = await env.DB.prepare("SELECT payload_json, revision, updated_at FROM map_user_state WHERE user_id = ?")
+        .bind(userId)
+        .first<SyncRow>();
+      return syncResponse({ error: "云端计划已经更新。", ...(latest ? parseSyncRow(latest) : { initialized: false, revision: 0, data: null, updatedAt: null }) }, 409);
+    }
+    return syncResponse({ initialized: true, data: body.data, revision: nextRevision, updatedAt });
+  } catch {
+    return syncResponse({ error: "暂时无法写入云端，本机改动已保留，联网后会重试。" }, 500);
+  }
+}
 
 function detectFocusedMutation(latestMessage: string, priorContext: string): DataCollection | null {
   if (!MUTATION_PATTERN.test(latestMessage)) return null;
@@ -279,6 +369,7 @@ const worker = {
       }, allowedWidths);
     }
 
+    if (url.pathname === "/api/sync") return handleSync(request, env);
     if (url.pathname === "/api/ai-chat") return handleAIChat(request, env);
     if (url.pathname === "/api/transcribe") return handleTranscription(request, env);
 

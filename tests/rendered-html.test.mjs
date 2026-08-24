@@ -7,6 +7,7 @@ import { isCompletedTaskArchived } from "../lib/task-retention.mjs";
 import { shiftTaskToDate } from "../lib/task-reschedule.mjs";
 import { rollOverTasks } from "../lib/task-rollover.mjs";
 import { isTaskActiveOn, isTaskVisibleToday } from "../lib/task-visibility.mjs";
+import { mergeSyncPayload, toSyncPayload } from "../lib/sync-state.mjs";
 
 async function render() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -19,6 +20,30 @@ async function loadWorker() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("api-test", `${process.pid}-${Date.now()}-${Math.random()}`);
   return (await import(workerUrl.href)).default;
+}
+
+function createMockD1() {
+  let row = null;
+  return {
+    prepare(sql) {
+      let values = [];
+      return {
+        bind(...nextValues) { values = nextValues; return this; },
+        async first() { return row ? { ...row } : null; },
+        async run() {
+          if (sql.startsWith("INSERT INTO map_user_state")) {
+            row = { user_id: values[0], payload_json: values[1], revision: 1, updated_at: values[2] };
+            return { meta: { changes: 1 } };
+          }
+          if (sql.startsWith("UPDATE map_user_state") && row?.user_id === values[3] && row.revision === values[4]) {
+            row = { ...row, payload_json: values[0], revision: values[1], updated_at: values[2] };
+            return { meta: { changes: 1 } };
+          }
+          return { meta: { changes: 0 } };
+        },
+      };
+    },
+  };
 }
 
 test("server-renders MAP", async () => {
@@ -127,6 +152,58 @@ test("draft inbox keeps unscheduled work compact and promotes it into dated task
   assert.match(source, /sourceDraft/);
   assert.match(styles, /\.draft-row/);
   assert.doesNotMatch(source, /className="note-grid"/);
+});
+
+test("draft inbox reuses online voice transcription without auto-saving", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(source, /toggleVoiceInput\("draft"\)/);
+  assert.match(source, /说完会追加到编辑框，不自动保存/);
+  assert.match(source, /setNoteDraft\(\(current\)/);
+  assert.match(source, /语音转写需要联网，打字仍可离线保存/);
+  assert.match(styles, /\.draft-voice-button/);
+});
+
+test("sync excludes private references and merges independent offline edits", () => {
+  const base = { phase: { title: "A" }, habitDate: "2026-08-24", workoutWeek: "2026-08-24", tasks: [{ id: "t1", title: "base" }], routines: [], schedule: [], goals: [], habits: [], workouts: [], applications: [], notes: [] };
+  const local = structuredClone(base);
+  local.tasks[0].title = "local edit";
+  const remote = structuredClone(base);
+  remote.notes.push({ id: "n1", content: "remote note" });
+  const merged = mergeSyncPayload(base, local, remote);
+  assert.equal(merged.conflicts, 0);
+  assert.equal(merged.data.tasks[0].title, "local edit");
+  assert.equal(merged.data.notes[0].content, "remote note");
+  const payload = toSyncPayload({ ...base, references: [{ id: "secret", content: "local only" }] });
+  assert.equal("references" in payload, false);
+});
+
+test("Sites D1 sync API uses authenticated ownership and revision checks", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const hosting = JSON.parse(await readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"));
+  const migration = await readFile(new URL("../drizzle/0000_tiny_zarda.sql", import.meta.url), "utf8");
+  assert.equal(hosting.d1, "DB");
+  assert.match(worker, /oai-authenticated-user-id/);
+  assert.match(worker, /url\.pathname === "\/api\/sync"/);
+  assert.match(worker, /WHERE user_id = \? AND revision = \?/);
+  assert.match(worker, /"references" in payload/);
+  assert.match(migration, /CREATE TABLE `map_user_state`/);
+});
+
+test("D1 sync API creates user state and rejects a stale revision", async () => {
+  const worker = await loadWorker();
+  const DB = createMockD1();
+  const env = { DB, ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } };
+  const ctx = { waitUntil() {}, passThroughOnException() {} };
+  const headers = { "oai-authenticated-user-id": "user-1", "content-type": "application/json" };
+  const data = { phase: { title: "毕业" }, habitDate: "2026-08-24", workoutWeek: "2026-08-24", tasks: [], routines: [], schedule: [], goals: [], habits: [], workouts: [], applications: [], notes: [] };
+  const created = await worker.fetch(new Request("http://localhost/api/sync", { method: "PUT", headers, body: JSON.stringify({ baseRevision: 0, data }) }), env, ctx);
+  assert.equal(created.status, 200);
+  assert.equal((await created.json()).revision, 1);
+  const loaded = await worker.fetch(new Request("http://localhost/api/sync", { headers }), env, ctx);
+  assert.equal((await loaded.json()).data.phase.title, "毕业");
+  const stale = await worker.fetch(new Request("http://localhost/api/sync", { method: "PUT", headers, body: JSON.stringify({ baseRevision: 0, data }) }), env, ctx);
+  assert.equal(stale.status, 409);
 });
 
 test("private references use a notes-style list and large autosaving editor", async () => {

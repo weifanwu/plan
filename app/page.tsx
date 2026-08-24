@@ -7,6 +7,7 @@ import { isRoutineDueOn, nextRoutineOccurrence, routineFrequencyLabel, routineIn
 import { shiftTaskToDate } from "../lib/task-reschedule.mjs";
 import { isCompletedTaskArchived } from "../lib/task-retention.mjs";
 import { isTaskVisibleToday } from "../lib/task-visibility.mjs";
+import { mergeSyncPayload, syncPayloadEquals, toSyncPayload } from "../lib/sync-state.mjs";
 
 type View = "today" | "goals" | "semester" | "career" | "planner" | "notes" | "vault" | "wellness";
 type TaskCategory = "学业" | "求职" | "生活" | "健康";
@@ -97,6 +98,12 @@ type AppData = {
   workoutWeek: string;
 };
 
+type SyncedAppData = Omit<AppData, "references">;
+type SyncStatus = "local" | "syncing" | "synced" | "pending" | "conflict" | "error";
+type SyncEnvelope = { initialized: boolean; data: SyncedAppData | null; revision: number; updatedAt: string | null; error?: string };
+type SyncMeta = { revision: number; baseData: SyncedAppData };
+type VoiceTarget = "ai" | "draft";
+
 const DAY_ORDER = ["Mo", "Tu", "We", "Th", "Fr"];
 const DAY_LABEL: Record<string, string> = { Mo: "周一", Tu: "周二", We: "周三", Th: "周四", Fr: "周五" };
 const CALENDAR_DAY_ORDER = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
@@ -106,6 +113,8 @@ const NOTE_CATEGORIES: NoteCategory[] = ["待办", "想法", "课程", "项目",
 const BASE_DATE = "2026-08-23";
 const STORAGE_KEY = "map-life-os-v1";
 const SEMESTER_LAYOUT_STORAGE_KEY = "map-semester-week-layout-v1";
+const SYNC_META_KEY = "map-sync-meta-v1";
+const SYNC_DIRTY_KEY = "map-sync-dirty-v1";
 const DEFAULT_SEMESTER_WEEK_ORDER: SemesterWeekModule[] = ["schedule", "tasks"];
 const AI_WELCOME_MESSAGE: AIChatMessage = { id: "welcome", role: "assistant", content: "你好，我是 MAP AI。我能看到你当前阶段、长期目标、任务、固定任务、课表、求职记录、健康计划和草稿，也知道哪些行动正在服务哪个目标。你可以让我分析现状、回答问题，或者一起把一个想法变成计划；任何数据修改都会先给你预览。私人速记只会在你明确要求管理它时加入上下文。" };
 const LEGACY_TASK_GOALS: Record<string, string> = { stephnie: "graduate", leetcode: "career", fees: "graduate", applications: "career", pte: "graduate", irene: "graduate" };
@@ -255,6 +264,31 @@ const initialData: AppData = {
   habitDate: getTorontoToday(),
   workoutWeek: getWeekKey(),
 };
+
+function hydrateAppData(parsed: Partial<AppData>, currentDay: string, deviceReferences: ReferenceNote[] = initialData.references): AppData {
+  const currentWeek = getWeekKey(currentDay);
+  const savedHabits = parsed.habits || initialData.habits;
+  const savedWorkouts = parsed.workouts || initialData.workouts;
+  const savedGoals = parsed.goals || initialData.goals;
+  const savedPhase = { ...initialData.phase, ...(parsed.phase || {}) };
+  if (savedPhase.goalId && !savedGoals.some((goal) => goal.id === savedPhase.goalId)) savedPhase.goalId = null;
+  return {
+    ...initialData,
+    ...parsed,
+    phase: savedPhase,
+    tasks: normalizeTaskGoals(rollOverTasks(parsed.tasks || initialData.tasks, currentDay), savedGoals),
+    routines: normalizeRoutines(parsed.routines || initialData.routines, savedGoals),
+    schedule: normalizeSchedule(parsed.schedule || initialData.schedule),
+    goals: savedGoals,
+    habits: parsed.habitDate === currentDay ? savedHabits : savedHabits.map((habit) => ({ ...habit, done: false })),
+    workouts: parsed.workoutWeek === currentWeek ? savedWorkouts : savedWorkouts.map((workout) => ({ ...workout, done: false })),
+    applications: normalizeApplications(parsed.applications),
+    notes: parsed.notes || initialData.notes,
+    references: normalizeReferences(parsed.references || deviceReferences),
+    habitDate: currentDay,
+    workoutWeek: currentWeek,
+  };
+}
 
 const categoryTone: Record<TaskCategory, string> = { 学业: "lime", 求职: "coral", 生活: "blue", 健康: "lavender" };
 
@@ -426,6 +460,10 @@ export default function Home() {
   const [aiMessages, setAiMessages] = useState<AIChatMessage[]>([AI_WELCOME_MESSAGE]);
   const [aiModel, setAiModel] = useState<AIModel>("gpt-5.6-luna");
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
+  const [voiceTarget, setVoiceTarget] = useState<VoiceTarget | null>(null);
+  const [draftVoiceError, setDraftVoiceError] = useState("");
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>("local");
+  const [syncMessage, setSyncMessage] = useState("仅保存在这台设备");
   const [filter, setFilter] = useState<"全部" | TaskCategory>("全部");
   const [goalFilter, setGoalFilter] = useState("all");
   const [plannerStatusFilter, setPlannerStatusFilter] = useState<PlannerStatusFilter>("open");
@@ -457,6 +495,14 @@ export default function Home() {
   const voiceChunksRef = useRef<Blob[]>([]);
   const voiceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const voiceAbortRef = useRef<AbortController | null>(null);
+  const dataRef = useRef<AppData>(initialData);
+  const syncRevisionRef = useRef(0);
+  const syncBaseRef = useRef<SyncedAppData | null>(null);
+  const syncReadyRef = useRef(false);
+  const hadLocalDataRef = useRef(false);
+  const syncInFlightRef = useRef(false);
+  const skipNextSyncRef = useRef(false);
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const referenceCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const todayLabel = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", weekday: "long", month: "long", day: "numeric" }).format(new Date()).toUpperCase();
@@ -469,31 +515,55 @@ export default function Home() {
   const phaseStops = buildPhaseStops(data.phase);
   const phaseCheckpoints = buildPhaseCheckpoints(data.phase);
   const phaseWeeks = Math.max(1, Math.ceil((phaseDuration + 1) / 7));
+  const aiVoiceState: VoiceState = voiceTarget === "ai" ? voiceState : "idle";
+  const draftVoiceState: VoiceState = voiceTarget === "draft" ? voiceState : "idle";
 
   useEffect(() => {
     const saved = window.localStorage.getItem(STORAGE_KEY);
     const savedSemesterLayout = window.localStorage.getItem(SEMESTER_LAYOUT_STORAGE_KEY);
+    const savedSyncMeta = window.localStorage.getItem(SYNC_META_KEY);
     let parsed: Partial<AppData> = {};
     let parsedSemesterLayout: unknown = null;
     if (saved) try { parsed = JSON.parse(saved) as Partial<AppData>; } catch { /* keep safe defaults */ }
+    hadLocalDataRef.current = Boolean(saved);
     if (savedSemesterLayout) try { parsedSemesterLayout = JSON.parse(savedSemesterLayout); } catch { /* keep the default module order */ }
+    if (savedSyncMeta) try {
+      const meta = JSON.parse(savedSyncMeta) as SyncMeta;
+      if (Number.isInteger(meta.revision) && meta.revision >= 0 && meta.baseData) {
+        syncRevisionRef.current = meta.revision;
+        syncBaseRef.current = meta.baseData;
+      }
+    } catch { /* start a fresh sync handshake */ }
     const currentDay = getTorontoToday();
-    const currentWeek = getWeekKey(currentDay);
-    const savedHabits = parsed.habits || initialData.habits;
-    const savedWorkouts = parsed.workouts || initialData.workouts;
-    const savedGoals = parsed.goals || initialData.goals;
-    const savedPhase = { ...initialData.phase, ...(parsed.phase || {}) };
-    if (savedPhase.goalId && !savedGoals.some((goal) => goal.id === savedPhase.goalId)) savedPhase.goalId = null;
+    const hydratedData = hydrateAppData(parsed, currentDay);
     // Hydrate device-local state after the server-rendered shell mounts.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setToday(currentDay);
     setSemesterWeekOrder(normalizeSemesterWeekOrder(parsedSemesterLayout));
-    setData({ ...initialData, ...parsed, phase: savedPhase, tasks: normalizeTaskGoals(rollOverTasks(parsed.tasks || initialData.tasks, currentDay), savedGoals), routines: normalizeRoutines(parsed.routines || initialData.routines, savedGoals), schedule: normalizeSchedule(parsed.schedule || initialData.schedule), goals: savedGoals, habits: parsed.habitDate === currentDay ? savedHabits : savedHabits.map((habit) => ({ ...habit, done: false })), workouts: parsed.workoutWeek === currentWeek ? savedWorkouts : savedWorkouts.map((workout) => ({ ...workout, done: false })), applications: normalizeApplications(parsed.applications), notes: parsed.notes || initialData.notes, references: normalizeReferences(parsed.references), habitDate: currentDay, workoutWeek: currentWeek });
+    dataRef.current = hydratedData;
+    setData(hydratedData);
+    syncReadyRef.current = true;
     setReady(true);
   }, []);
 
   useEffect(() => {
-    if (ready) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    if (!ready) return;
+    dataRef.current = data;
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    if (!syncReadyRef.current) return;
+    if (skipNextSyncRef.current) { skipNextSyncRef.current = false; return; }
+    window.localStorage.setItem(SYNC_DIRTY_KEY, "1");
+    if (!window.navigator.onLine) {
+      queueMicrotask(() => {
+        setSyncStatus("pending");
+        setSyncMessage("离线改动待同步");
+      });
+      return;
+    }
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(() => { void synchronizeData(); }, 850);
+    // synchronizeData reads current refs; recreating the debounce for every render would be incorrect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, ready]);
 
   useEffect(() => {
@@ -517,6 +587,26 @@ export default function Home() {
     const timer = window.setInterval(refreshDay, 60000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!ready) return;
+    const task = window.setTimeout(() => {
+      if (!online) {
+        if (window.localStorage.getItem(SYNC_DIRTY_KEY)) {
+          setSyncStatus("pending");
+          setSyncMessage("离线改动待同步");
+        } else {
+          setSyncStatus("local");
+          setSyncMessage("离线缓存可用");
+        }
+        return;
+      }
+      void synchronizeData();
+    }, 0);
+    return () => clearTimeout(task);
+    // synchronizeData reads the latest refs and deliberately stays outside the dependency list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [online, ready]);
 
   useEffect(() => {
     if (!ready) return;
@@ -561,6 +651,7 @@ export default function Home() {
   useEffect(() => () => {
     if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
     if (referenceCopyTimerRef.current) clearTimeout(referenceCopyTimerRef.current);
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
   }, []);
 
   const visibleTasks = useMemo(() => data.tasks.filter((task) => !isCompletedTaskArchived(task, today)), [data.tasks, today]);
@@ -892,6 +983,101 @@ export default function Home() {
     reader.readAsText(file);
   }
 
+  function rememberSync(revision: number, baseData: SyncedAppData) {
+    syncRevisionRef.current = revision;
+    syncBaseRef.current = baseData;
+    window.localStorage.setItem(SYNC_META_KEY, JSON.stringify({ revision, baseData } satisfies SyncMeta));
+  }
+
+  async function readSyncState(): Promise<SyncEnvelope> {
+    const response = await fetch("/api/sync", { method: "GET", cache: "no-store" });
+    const result = await response.json() as SyncEnvelope;
+    if (!response.ok) throw new Error(result.error || "暂时无法读取云端计划。");
+    return result;
+  }
+
+  async function writeSyncState(dataToSave: SyncedAppData, baseRevision: number) {
+    const response = await fetch("/api/sync", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ baseRevision, data: dataToSave }) });
+    const result = await response.json() as SyncEnvelope;
+    return { response, result };
+  }
+
+  async function synchronizeData() {
+    if (syncInFlightRef.current || typeof window === "undefined" || !window.navigator.onLine) return;
+    syncInFlightRef.current = true;
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = null;
+    setSyncStatus("syncing");
+    setSyncMessage("正在同步…");
+
+    try {
+      let server = await readSyncState();
+      const localAtMerge = toSyncPayload(dataRef.current) as SyncedAppData;
+      let desired = localAtMerge;
+      let conflicts = 0;
+
+      if (server.initialized && server.data) {
+        if (syncBaseRef.current) {
+          const merged = mergeSyncPayload(syncBaseRef.current, localAtMerge, server.data) as { data: SyncedAppData; conflicts: number };
+          desired = merged.data;
+          conflicts += merged.conflicts;
+        } else if (hadLocalDataRef.current) {
+          const merged = mergeSyncPayload(toSyncPayload(initialData), localAtMerge, server.data) as { data: SyncedAppData; conflicts: number };
+          desired = merged.data;
+          conflicts += merged.conflicts;
+        } else {
+          desired = server.data;
+        }
+      }
+
+      if (!server.initialized || !server.data || !syncPayloadEquals(desired, server.data)) {
+        let write = await writeSyncState(desired, server.revision);
+        if (write.response.status === 409 && write.result.initialized && write.result.data) {
+          const retryMerge = mergeSyncPayload(server.data, desired, write.result.data) as { data: SyncedAppData; conflicts: number };
+          desired = retryMerge.data;
+          conflicts += retryMerge.conflicts;
+          write = await writeSyncState(desired, write.result.revision);
+        }
+        if (!write.response.ok || !write.result.data) throw new Error(write.result.error || "暂时无法写入云端计划。");
+        server = write.result;
+      }
+
+      const latestLocal = toSyncPayload(dataRef.current) as SyncedAppData;
+      let nextPayload = desired;
+      let hasFollowUpChanges = false;
+      if (!syncPayloadEquals(latestLocal, localAtMerge)) {
+        const liveMerge = mergeSyncPayload(localAtMerge, latestLocal, desired) as { data: SyncedAppData; conflicts: number };
+        nextPayload = liveMerge.data;
+        conflicts += liveMerge.conflicts;
+        hasFollowUpChanges = !syncPayloadEquals(nextPayload, server.data);
+      }
+
+      rememberSync(server.revision, server.data || desired);
+      const nextData = hydrateAppData({ ...nextPayload, references: dataRef.current.references }, getTorontoToday(), dataRef.current.references);
+      if (!syncPayloadEquals(toSyncPayload(dataRef.current), nextPayload)) {
+        skipNextSyncRef.current = !hasFollowUpChanges;
+        dataRef.current = nextData;
+        setData(nextData);
+      }
+
+      if (hasFollowUpChanges) {
+        window.localStorage.setItem(SYNC_DIRTY_KEY, "1");
+        setSyncStatus("pending");
+        setSyncMessage("新改动待同步");
+      } else {
+        window.localStorage.removeItem(SYNC_DIRTY_KEY);
+        setSyncStatus(conflicts ? "conflict" : "synced");
+        setSyncMessage(conflicts ? `已合并 · ${conflicts} 处冲突采用本机版本` : "已同步到所有设备");
+      }
+    } catch (error) {
+      window.localStorage.setItem(SYNC_DIRTY_KEY, "1");
+      setSyncStatus("error");
+      setSyncMessage(error instanceof Error ? error.message : "同步暂时不可用");
+    } finally {
+      syncInFlightRef.current = false;
+    }
+  }
+
   async function installMapApp() {
     if (!installPrompt) { setInstallHelp(true); return; }
     await installPrompt.prompt();
@@ -907,19 +1093,22 @@ export default function Home() {
     mediaRecorderRef.current = null;
   }
 
-  async function toggleVoiceInput() {
+  async function toggleVoiceInput(target: VoiceTarget = "ai") {
     if (voiceState === "recording") {
       if (mediaRecorderRef.current?.state !== "inactive") mediaRecorderRef.current?.stop();
       return;
     }
-    if (voiceState !== "idle" || aiLoading || !online) return;
+    if (voiceState !== "idle" || (target === "ai" && aiLoading) || !online) return;
+    const showVoiceError = (message: string) => target === "ai" ? setAiError(message) : setDraftVoiceError(message);
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
-      setAiError("这个浏览器不支持直接录音，请使用最新版 Chrome 或 Safari。");
+      showVoiceError("这个浏览器不支持直接录音，请使用最新版 Chrome 或 Safari。");
       return;
     }
 
     const session = ++voiceSessionRef.current;
-    setAiError("");
+    setVoiceTarget(target);
+    if (target === "ai") setAiError("");
+    else setDraftVoiceError("");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (session !== voiceSessionRef.current) { stream.getTracks().forEach((track) => track.stop()); return; }
@@ -930,9 +1119,10 @@ export default function Home() {
       voiceChunksRef.current = [];
       recorder.ondataavailable = (event) => { if (event.data.size) voiceChunksRef.current.push(event.data); };
       recorder.onerror = () => {
-        if (session === voiceSessionRef.current) setAiError("录音失败，请重新允许麦克风权限后再试。");
+        if (session === voiceSessionRef.current) showVoiceError("录音失败，请重新允许麦克风权限后再试。");
         releaseVoiceResources();
         setVoiceState("idle");
+        setVoiceTarget(null);
       };
       recorder.onstop = async () => {
         const chunks = voiceChunksRef.current;
@@ -940,7 +1130,7 @@ export default function Home() {
         releaseVoiceResources();
         if (session !== voiceSessionRef.current) return;
         const audio = new Blob(chunks, { type: recordedType });
-        if (!audio.size) { setAiError("没有录到声音，请再试一次。"); setVoiceState("idle"); return; }
+        if (!audio.size) { showVoiceError("没有录到声音，请再试一次。"); setVoiceState("idle"); setVoiceTarget(null); return; }
         setVoiceState("transcribing");
         const controller = new AbortController();
         voiceAbortRef.current = controller;
@@ -951,12 +1141,17 @@ export default function Home() {
           const result = await response.json() as { text?: string; error?: string };
           if (!response.ok || !result.text) throw new Error(result.error || "语音暂时无法转写。");
           if (session !== voiceSessionRef.current) return;
-          setAiText((current) => `${current}${current.trim() ? "\n" : ""}${result.text}`);
-          window.requestAnimationFrame(() => aiInputRef.current?.focus());
+          if (target === "draft") {
+            setNoteDraft((current) => `${current}${current.trim() ? "\n" : ""}${result.text}`);
+            window.requestAnimationFrame(() => noteDraftRef.current?.focus());
+          } else {
+            setAiText((current) => `${current}${current.trim() ? "\n" : ""}${result.text}`);
+            window.requestAnimationFrame(() => aiInputRef.current?.focus());
+          }
         } catch (error) {
-          if (session === voiceSessionRef.current && !(error instanceof DOMException && error.name === "AbortError")) setAiError(error instanceof Error ? error.message : "语音暂时无法转写。");
+          if (session === voiceSessionRef.current && !(error instanceof DOMException && error.name === "AbortError")) showVoiceError(error instanceof Error ? error.message : "语音暂时无法转写。");
         } finally {
-          if (session === voiceSessionRef.current) setVoiceState("idle");
+          if (session === voiceSessionRef.current) { setVoiceState("idle"); setVoiceTarget(null); }
           if (voiceAbortRef.current === controller) voiceAbortRef.current = null;
         }
       };
@@ -966,18 +1161,22 @@ export default function Home() {
     } catch (error) {
       releaseVoiceResources();
       setVoiceState("idle");
-      setAiError(error instanceof DOMException && error.name === "NotAllowedError" ? "需要允许麦克风权限才能使用语音输入。" : "无法启动麦克风，请检查浏览器权限。");
+      setVoiceTarget(null);
+      showVoiceError(error instanceof DOMException && error.name === "NotAllowedError" ? "需要允许麦克风权限才能使用语音输入。" : "无法启动麦克风，请检查浏览器权限。");
     }
   }
 
   function closeAIChat() {
     aiSessionRef.current += 1;
-    voiceSessionRef.current += 1;
-    voiceAbortRef.current?.abort();
-    voiceAbortRef.current = null;
-    if (mediaRecorderRef.current?.state !== "inactive") mediaRecorderRef.current?.stop();
-    releaseVoiceResources();
-    setVoiceState("idle");
+    if (voiceTarget === "ai") {
+      voiceSessionRef.current += 1;
+      voiceAbortRef.current?.abort();
+      voiceAbortRef.current = null;
+      if (mediaRecorderRef.current?.state !== "inactive") mediaRecorderRef.current?.stop();
+      releaseVoiceResources();
+      setVoiceState("idle");
+      setVoiceTarget(null);
+    }
     setAiOpen(false);
     setAiText("");
     setAiLoading(false);
@@ -1050,7 +1249,7 @@ export default function Home() {
 
   return (
     <main className="app-shell">
-      {!online && <div className="offline-banner"><strong>离线模式</strong><span>计划仍会保存在这台设备；MAP AI 暂停。</span></div>}
+      {!online && <div className="offline-banner"><strong>离线模式</strong><span>仍可编辑，联网后自动同步；AI 与语音暂停。</span></div>}
       {undoNotice && <div className="undo-toast" role="status"><span>{undoNotice.message}</span><button onClick={undoLastAction}>撤销</button></div>}
       <aside className="sidebar">
         <button className="brand" onClick={() => setView("today")} aria-label="返回今日">
@@ -1083,7 +1282,7 @@ export default function Home() {
           <input ref={importRef} type="file" accept="application/json" hidden onChange={(event) => { importData(event.target.files?.[0]); event.currentTarget.value = ""; }} />
         </div>
         {!standalone && <button className="install-app-button" onClick={installMapApp}><span>↓</span><div><strong>安装 MAP App</strong><small>独立窗口 · 支持离线</small></div></button>}
-        <p className="local-note"><span /> 计划与资料仅保存在这台设备</p>
+        <button className={`sync-note ${syncStatus}`} onClick={() => void synchronizeData()} disabled={!online || syncStatus === "syncing"} title={syncMessage}><span /><div><strong>{syncMessage}</strong><small>私人速记仅保存在本机</small></div></button>
       </aside>
 
       <section className="workspace">
@@ -1353,7 +1552,12 @@ export default function Home() {
               <aside className="draft-capture">
                 <div className="draft-capture-head"><div><p className="section-kicker">QUICK INBOX</p><h2>先记下来，<br />不用现在安排。</h2></div><span><strong>{backlogCount}</strong> 个待办草稿</span></div>
                 <p>未排期任务、突然想到的事情和不成熟的想法都先放这里。准备执行时，再把它安排成正式任务。</p>
-                <textarea ref={noteDraftRef} value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); saveQuickNote(); } }} placeholder={"写一个待办或想法……\n\n例如：研究三家 AI Platform 公司，之后再决定哪天开始。"} aria-label="快速记录草稿" />
+                <div className={`draft-input-shell ${draftVoiceState}`}>
+                  <textarea ref={noteDraftRef} value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); saveQuickNote(); } }} placeholder={draftVoiceState === "recording" ? "正在听…说完后再点一次停止" : draftVoiceState === "transcribing" ? "正在把语音变成文字…" : "写一个待办或想法……\n\n例如：研究三家 AI Platform 公司，之后再决定哪天开始。"} aria-label="快速记录草稿" />
+                  <button type="button" className={`draft-voice-button ${draftVoiceState}`} onClick={() => void toggleVoiceInput("draft")} disabled={!online || draftVoiceState === "transcribing" || (voiceState !== "idle" && voiceTarget !== "draft")} aria-label={draftVoiceState === "recording" ? "停止草稿录音" : draftVoiceState === "transcribing" ? "正在转写草稿语音" : "用语音记录草稿"}><span>{draftVoiceState === "recording" ? "■" : draftVoiceState === "transcribing" ? "…" : "麦"}</span>{draftVoiceState === "recording" ? "停止" : draftVoiceState === "transcribing" ? "转写中" : "语音记录"}</button>
+                </div>
+                <div className="draft-voice-meta"><span>{online ? "说完会追加到编辑框，不自动保存" : "语音转写需要联网，打字仍可离线保存"}</span><strong>最长 2 分钟</strong></div>
+                {draftVoiceError && <p className="draft-voice-error" role="alert">{draftVoiceError}</p>}
                 <div className="draft-type-label">这是什么？</div>
                 <div className="note-category-switch" role="group" aria-label="草稿分类">{NOTE_CATEGORIES.map((category) => <button key={category} className={noteCategory === category ? "active" : ""} onClick={() => setNoteCategory(category)}>{category}</button>)}</div>
                 <div className="draft-save"><span>⌘ / Ctrl + Enter</span><button onClick={saveQuickNote} disabled={!noteDraft.trim()}>放进草稿箱 →</button></div>
@@ -1441,9 +1645,9 @@ export default function Home() {
           </section>}
         </div>
         <form className="ai-composer" onSubmit={(event) => { event.preventDefault(); void sendAIMessage(); }}>
-          <textarea ref={aiInputRef} value={aiText} onChange={(event) => setAiText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendAIMessage(); } }} placeholder={voiceState === "recording" ? "正在听…再次点击麦克风即可停止" : voiceState === "transcribing" ? "正在把语音转成文字…" : online ? "问问题、做分析，或让我修改 MAP…" : "恢复网络后继续对话"} disabled={aiLoading || voiceState !== "idle" || !online} />
-          <button type="button" className={`voice-button ${voiceState}`} onClick={() => void toggleVoiceInput()} disabled={aiLoading || voiceState === "transcribing" || !online} aria-label={voiceState === "recording" ? "停止录音" : voiceState === "transcribing" ? "正在转写语音" : "开始语音输入"}>{voiceState === "recording" ? "■" : voiceState === "transcribing" ? "…" : "麦"}</button>
-          <button type="submit" className="ai-send-button" disabled={!aiText.trim() || aiLoading || voiceState !== "idle" || !online} aria-label="发送消息">↑</button>
+          <textarea ref={aiInputRef} value={aiText} onChange={(event) => setAiText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendAIMessage(); } }} placeholder={aiVoiceState === "recording" ? "正在听…再次点击麦克风即可停止" : aiVoiceState === "transcribing" ? "正在把语音转成文字…" : online ? "问问题、做分析，或让我修改 MAP…" : "恢复网络后继续对话"} disabled={aiLoading || aiVoiceState !== "idle" || voiceTarget === "draft" || !online} />
+          <button type="button" className={`voice-button ${aiVoiceState}`} onClick={() => void toggleVoiceInput("ai")} disabled={aiLoading || aiVoiceState === "transcribing" || voiceTarget === "draft" || !online} aria-label={aiVoiceState === "recording" ? "停止录音" : aiVoiceState === "transcribing" ? "正在转写语音" : "开始语音输入"}>{aiVoiceState === "recording" ? "■" : aiVoiceState === "transcribing" ? "…" : "麦"}</button>
+          <button type="submit" className="ai-send-button" disabled={!aiText.trim() || aiLoading || aiVoiceState !== "idle" || voiceTarget === "draft" || !online} aria-label="发送消息">↑</button>
         </form>
         <p className="ai-privacy">普通分析不会附带私人速记；只有你明确要求管理私人速记时才发送相关资料。语音会发送至 OpenAI 转写，MAP 不保存录音。</p>
       </aside>}
@@ -1457,7 +1661,7 @@ export default function Home() {
       {workoutEditor && <WorkoutModal value={workoutEditor} onClose={() => setWorkoutEditor(null)} onSave={(workout) => { setData((current) => ({ ...current, workouts: workoutEditor === "new" ? [...current.workouts, workout] : current.workouts.map((item) => item.id === workout.id ? workout : item) })); setWorkoutEditor(null); }} onDelete={workoutEditor === "new" ? undefined : () => { removeRecord("workouts", workoutEditor.id, `已删除运动「${workoutEditor.title}」`); setWorkoutEditor(null); }} />}
       {applicationEditor && <ApplicationModal value={applicationEditor} onClose={() => setApplicationEditor(null)} onSave={(application) => { setData((current) => ({ ...current, applications: applicationEditor === "new" ? [...current.applications, application] : current.applications.map((item) => item.id === application.id ? application : item) })); setApplicationEditor(null); }} onDelete={applicationEditor === "new" ? undefined : () => { removeRecord("applications", applicationEditor.id, `已删除求职记录「${applicationEditor.company}」`); setApplicationEditor(null); }} />}
       {noteEditor && <NoteModal value={noteEditor} onClose={() => setNoteEditor(null)} onSave={(note) => { setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? note : item) })); setNoteEditor(null); }} onDelete={() => { removeRecord("notes", noteEditor.id, `已删除草稿「${noteTitle(noteEditor)}」`); setNoteEditor(null); }} />}
-      {installHelp && <ModalFrame title="安装 MAP 到 Mac" subtitle="OFFLINE APP" onClose={() => setInstallHelp(false)}><div className="install-guide"><p>这台浏览器没有提供一键安装按钮。你仍然可以把 MAP 安装成独立的 Mac App：</p><ol><li>使用 Safari 打开 MAP 网站。</li><li>选择菜单栏的“文件”→“添加到程序坞”。</li><li>首次联网打开一次；之后断网也能查看和编辑计划。</li></ol><p className="install-guide-note">MAP AI 需要联网。本地任务、笔记、目标、课表、求职、健康和私人速记不需要联网。</p><div className="modal-actions"><button className="primary-button" onClick={() => setInstallHelp(false)}>知道了</button></div></div></ModalFrame>}
+      {installHelp && <ModalFrame title="安装 MAP 到 Mac" subtitle="OFFLINE APP" onClose={() => setInstallHelp(false)}><div className="install-guide"><p>这台浏览器没有提供一键安装按钮。你仍然可以把 MAP 安装成独立的 Mac App：</p><ol><li>使用 Safari 打开 MAP 网站。</li><li>选择菜单栏的“文件”→“添加到程序坞”。</li><li>首次联网打开一次；之后断网也能查看和编辑计划。</li></ol><p className="install-guide-note">任务、草稿、目标、课表、求职和健康会在联网后跨设备同步；私人速记只留在当前设备。MAP AI 和语音转写需要联网。</p><div className="modal-actions"><button className="primary-button" onClick={() => setInstallHelp(false)}>知道了</button></div></div></ModalFrame>}
     </main>
   );
 }
