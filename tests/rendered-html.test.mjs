@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { applyAIOperations } from "../lib/ai-operations.mjs";
 import { rollOverTasks } from "../lib/task-rollover.mjs";
+import { isTaskActiveOn, isTaskVisibleToday } from "../lib/task-visibility.mjs";
 
 async function render() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -23,7 +24,7 @@ test("server-renders MAP", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   const html = await response.text();
   assert.match(html, /<title>MAP/);
-  assert.match(html, /四个月毕业作战地图/);
+  assert.match(html, /Life Operating System/);
   assert.match(html, /灵感笔记/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
 });
@@ -34,6 +35,23 @@ test("career board includes application-date filtering and daily counts", async 
   assert.match(source, /全部日期 · \{data\.applications\.length\} 份/);
   assert.match(source, /applicationDateCounts/);
   assert.match(source, /visibleApplications\.filter/);
+});
+
+test("multi-day tasks remain visible throughout their active range", () => {
+  const task = { date: "2026-08-23", endDate: "2026-09-04", status: "todo", completedAt: null };
+  assert.equal(isTaskActiveOn(task, "2026-08-24"), true);
+  assert.equal(isTaskVisibleToday(task, "2026-08-24"), true);
+  assert.equal(isTaskVisibleToday(task, "2026-09-05"), false);
+  assert.equal(isTaskVisibleToday({ ...task, status: "done", completedAt: "2026-08-24" }, "2026-08-24"), true);
+});
+
+test("workflow controls expose ranges, friendly weekdays, status filters, and undo", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /结束日期（可选）/);
+  assert.match(source, /每周重复日期/);
+  assert.match(source, /任务状态筛选/);
+  assert.match(source, /undoLastAction/);
+  assert.match(source, /upcomingTask/);
 });
 
 test("voice input is exposed in the MAP AI composer", async () => {

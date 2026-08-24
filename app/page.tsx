@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { applyAIOperations } from "../lib/ai-operations.mjs";
 import { rollOverTasks } from "../lib/task-rollover.mjs";
+import { isTaskVisibleToday } from "../lib/task-visibility.mjs";
 
 type View = "today" | "goals" | "semester" | "career" | "planner" | "notes" | "wellness";
 type TaskCategory = "学业" | "求职" | "生活" | "健康";
@@ -18,6 +19,7 @@ type Task = {
   time?: string | null;
   endDate?: string | null;
   carriedFrom?: string | null;
+  completedAt?: string | null;
   priority: "high" | "normal";
   status: TaskStatus;
 };
@@ -56,6 +58,9 @@ type AICollection = "tasks" | "schedule" | "goals" | "habits" | "workouts" | "ap
 type AIOperation = { collection: AICollection; operation: "add" | "update" | "delete" | "reorder"; recordId: string; recordJson: string };
 type AIChatResponse = { reply: string; action: "answer" | "proposal"; summary: string; operations: AIOperation[]; error?: string };
 type VoiceState = "idle" | "recording" | "transcribing";
+type PlannerStatusFilter = "open" | "done" | "all";
+type RecordCollection = "tasks" | "schedule" | "goals" | "habits" | "workouts" | "applications" | "notes";
+type UndoNotice = { message: string; restore: (current: AppData) => AppData };
 type PWAInstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
 
 type AppData = {
@@ -125,7 +130,7 @@ function normalizeApplications(applications: Application[] = []) {
 }
 
 function normalizeTasks(tasks: Task[] = []) {
-  return tasks.map((task) => ({ ...task, details: task.details ?? null, time: task.time ?? null, endDate: task.endDate ?? null, carriedFrom: task.carriedFrom ?? null }));
+  return tasks.map((task) => ({ ...task, details: task.details ?? null, time: task.time ?? null, endDate: task.endDate ?? null, carriedFrom: task.carriedFrom ?? null, completedAt: task.completedAt ?? null }));
 }
 
 function normalizeSchedule(schedule: ScheduleItem[] = []) {
@@ -205,6 +210,15 @@ function formatDate(date: string) {
   return `${value.getMonth() + 1}月${value.getDate()}日`;
 }
 
+function dateCardParts(date: string) {
+  const value = new Date(`${date}T12:00:00`);
+  return {
+    day: String(value.getDate()),
+    month: new Intl.DateTimeFormat("en-US", { month: "short" }).format(value).toUpperCase(),
+    weekday: new Intl.DateTimeFormat("en-US", { weekday: "short" }).format(value).toUpperCase(),
+  };
+}
+
 function timeToMinutes(time: string) {
   const [hour, minute] = time.split(":").map(Number);
   return hour * 60 + minute;
@@ -256,6 +270,8 @@ export default function Home() {
   const [aiModel, setAiModel] = useState<AIModel>("gpt-5.6-luna");
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const [filter, setFilter] = useState<"全部" | TaskCategory>("全部");
+  const [plannerStatusFilter, setPlannerStatusFilter] = useState<PlannerStatusFilter>("open");
+  const [undoNotice, setUndoNotice] = useState<UndoNotice | null>(null);
   const [semesterMode, setSemesterMode] = useState<"calendar" | "week">("week");
   const [calendarCursor, setCalendarCursor] = useState(() => getTorontoToday().slice(0, 7));
   const [applicationDateFilter, setApplicationDateFilter] = useState("all");
@@ -279,6 +295,7 @@ export default function Home() {
   const voiceChunksRef = useRef<Blob[]>([]);
   const voiceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const voiceAbortRef = useRef<AbortController | null>(null);
+  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const todayLabel = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", weekday: "long", month: "long", day: "numeric" }).format(new Date()).toUpperCase();
   const daysToGraduate = Math.max(0, Math.ceil((Date.parse("2026-12-28T12:00:00-05:00") - Date.parse(`${today}T12:00:00-05:00`)) / 86400000));
   const semesterProgress = Math.max(0, Math.min(100, Math.round(((Date.parse(`${today}T12:00:00-05:00`) - Date.parse("2026-09-01T12:00:00-04:00")) / (Date.parse("2026-12-28T12:00:00-05:00") - Date.parse("2026-09-01T12:00:00-04:00"))) * 100)));
@@ -291,6 +308,8 @@ export default function Home() {
     const currentWeek = getWeekKey(currentDay);
     const savedHabits = parsed.habits || initialData.habits;
     const savedWorkouts = parsed.workouts || initialData.workouts;
+    // Hydrate device-local state after the server-rendered shell mounts.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setToday(currentDay);
     setData({ ...initialData, ...parsed, tasks: normalizeTasks(rollOverTasks(parsed.tasks || initialData.tasks, currentDay)), schedule: normalizeSchedule(parsed.schedule || initialData.schedule), goals: parsed.goals || initialData.goals, habits: parsed.habitDate === currentDay ? savedHabits : savedHabits.map((habit) => ({ ...habit, done: false })), workouts: parsed.workoutWeek === currentWeek ? savedWorkouts : savedWorkouts.map((workout) => ({ ...workout, done: false })), applications: normalizeApplications(parsed.applications), notes: parsed.notes || initialData.notes, habitDate: currentDay, workoutWeek: currentWeek });
     setReady(true);
@@ -319,6 +338,8 @@ export default function Home() {
 
   useEffect(() => {
     if (!ready) return;
+    // The Toronto day boundary is an external clock event that resets daily/weekly state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setData((current) => {
       const tasks = rollOverTasks(current.tasks, today);
       const currentWeek = getWeekKey(today);
@@ -337,6 +358,8 @@ export default function Home() {
   }, [ready, today]);
 
   useEffect(() => {
+    // Browser connectivity and standalone display mode are external environment state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setOnline(window.navigator.onLine);
     setStandalone(window.matchMedia("(display-mode: standalone)").matches || Boolean((window.navigator as Navigator & { standalone?: boolean }).standalone));
     const handleOnline = () => setOnline(true);
@@ -353,8 +376,11 @@ export default function Home() {
     };
   }, []);
 
-  const todayTasks = useMemo(() => data.tasks.filter((task) => task.date === today && task.status === "todo"), [data.tasks, today]);
-  const completedToday = data.tasks.filter((task) => task.date === today && task.status === "done").length;
+  useEffect(() => () => { if (undoTimerRef.current) clearTimeout(undoTimerRef.current); }, []);
+
+  const todayDisplayTasks = useMemo(() => data.tasks.filter((task) => isTaskVisibleToday(task, today)), [data.tasks, today]);
+  const todayTasks = useMemo(() => todayDisplayTasks.filter((task) => task.status === "todo"), [todayDisplayTasks]);
+  const completedToday = todayDisplayTasks.filter((task) => task.status === "done").length;
   const taskProgress = todayTasks.length + completedToday === 0 ? 0 : Math.round((completedToday / (todayTasks.length + completedToday)) * 100);
   const workoutDone = data.workouts.filter((workout) => workout.done).length;
   const habitDone = data.habits.filter((habit) => habit.done).length;
@@ -377,6 +403,12 @@ export default function Home() {
     return [...counts.entries()].sort(([left], [right]) => right.localeCompare(left));
   }, [data.applications]);
   const visibleApplications = applicationDateFilter === "all" ? data.applications : data.applications.filter((application) => application.date === applicationDateFilter);
+  const upcomingTask = useMemo(() => data.tasks.filter((task) => task.status === "todo" && task.date > today).slice().sort((a, b) => a.date.localeCompare(b.date) || (a.time || "99:99").localeCompare(b.time || "99:99"))[0] || null, [data.tasks, today]);
+  const upcomingDate = upcomingTask ? dateCardParts(upcomingTask.date) : null;
+  const courseCount = useMemo(() => new Set(data.schedule.filter((item) => item.kind === "课程").map((item) => item.code)).size, [data.schedule]);
+  const taCount = data.schedule.filter((item) => item.kind === "TA").length;
+  const statusFilteredTasks = useMemo(() => data.tasks.filter((task) => plannerStatusFilter === "all" || (plannerStatusFilter === "done" ? task.status === "done" : task.status === "todo")), [data.tasks, plannerStatusFilter]);
+  const plannerTasks = useMemo(() => statusFilteredTasks.filter((task) => filter === "全部" || task.category === filter).slice().sort((a, b) => Number(a.status === "done") - Number(b.status === "done") || a.date.localeCompare(b.date) || (a.time || "99:99").localeCompare(b.time || "99:99")), [statusFilteredTasks, filter]);
   const visibleNotes = useMemo(() => {
     const query = noteQuery.trim().toLocaleLowerCase();
     return data.notes.filter((note) => !query || note.content.toLocaleLowerCase().includes(query) || note.category.toLocaleLowerCase().includes(query)).slice().sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt));
@@ -402,11 +434,41 @@ export default function Home() {
   }
 
   function toggleTask(id: string) {
-    setData((current) => ({ ...current, tasks: rollOverTasks(current.tasks.map((task) => task.id === id ? { ...task, status: task.status === "done" ? "todo" as const : "done" as const } : task), today) }));
+    setData((current) => ({ ...current, tasks: rollOverTasks(current.tasks.map((task) => task.id === id ? { ...task, status: task.status === "done" ? "todo" as const : "done" as const, completedAt: task.status === "done" ? null : today } : task), today) }));
   }
 
   function deleteTask(id: string) {
-    setData((current) => ({ ...current, tasks: current.tasks.filter((task) => task.id !== id) }));
+    const task = data.tasks.find((item) => item.id === id);
+    removeRecord("tasks", id, task ? `已删除任务「${task.title}」` : "已删除任务");
+  }
+
+  function showUndo(message: string, restore: (current: AppData) => AppData) {
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    setUndoNotice({ message, restore });
+    undoTimerRef.current = setTimeout(() => setUndoNotice(null), 7000);
+  }
+
+  function removeRecord<K extends RecordCollection>(collection: K, id: string, message: string) {
+    const list = data[collection] as unknown as Array<{ id: string }>;
+    const index = list.findIndex((item) => item.id === id);
+    if (index < 0) return;
+    const record = list[index];
+    setData((current) => ({ ...current, [collection]: (current[collection] as unknown as Array<{ id: string }>).filter((item) => item.id !== id) }) as AppData);
+    showUndo(message, (current) => {
+      const currentList = current[collection] as unknown as Array<{ id: string }>;
+      if (currentList.some((item) => item.id === id)) return current;
+      const restored = [...currentList];
+      restored.splice(Math.min(index, restored.length), 0, record);
+      return { ...current, [collection]: restored } as AppData;
+    });
+  }
+
+  function undoLastAction() {
+    if (!undoNotice) return;
+    setData((current) => undoNotice.restore(current));
+    setUndoNotice(null);
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    undoTimerRef.current = null;
   }
 
   function moveApplication(id: string, stage: ApplicationStage) {
@@ -440,7 +502,13 @@ export default function Home() {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      try { const parsed = JSON.parse(String(reader.result)) as AppData; setData({ ...initialData, ...parsed, tasks: normalizeTasks(rollOverTasks(parsed.tasks || [], today)), schedule: normalizeSchedule(parsed.schedule || []), applications: normalizeApplications(parsed.applications), notes: parsed.notes || [] }); } catch { window.alert("这个备份文件无法读取。"); }
+      try {
+        const parsed = JSON.parse(String(reader.result)) as AppData;
+        if (!parsed || !Array.isArray(parsed.tasks) || !Array.isArray(parsed.schedule) || !Array.isArray(parsed.goals)) throw new Error("invalid backup");
+        const previous = data;
+        setData({ ...initialData, ...parsed, tasks: normalizeTasks(rollOverTasks(parsed.tasks, today)), schedule: normalizeSchedule(parsed.schedule), applications: normalizeApplications(parsed.applications), notes: parsed.notes || [] });
+        showUndo("备份已导入", () => previous);
+      } catch { window.alert("这个文件不是有效的 MAP 备份，当前数据没有改变。"); }
     };
     reader.readAsText(file);
   }
@@ -601,6 +669,7 @@ export default function Home() {
   return (
     <main className="app-shell">
       {!online && <div className="offline-banner"><strong>离线模式</strong><span>计划仍会保存在这台设备；MAP AI 暂停。</span></div>}
+      {undoNotice && <div className="undo-toast" role="status"><span>{undoNotice.message}</span><button onClick={undoLastAction}>撤销</button></div>}
       <aside className="sidebar">
         <button className="brand" onClick={() => setView("today")} aria-label="返回今日">
           <span className="brand-mark">M</span>
@@ -627,7 +696,7 @@ export default function Home() {
         <div className="data-tools">
           <button onClick={exportData}>导出备份</button>
           <button onClick={() => importRef.current?.click()}>导入</button>
-          <input ref={importRef} type="file" accept="application/json" hidden onChange={(event) => importData(event.target.files?.[0])} />
+          <input ref={importRef} type="file" accept="application/json" hidden onChange={(event) => { importData(event.target.files?.[0]); event.currentTarget.value = ""; }} />
         </div>
         {!standalone && <button className="install-app-button" onClick={installMapApp}><span>↓</span><div><strong>安装 MAP App</strong><small>独立窗口 · 支持离线</small></div></button>}
         <p className="local-note"><span /> 数据只保存在这台设备</p>
@@ -669,7 +738,7 @@ export default function Home() {
                 </div>
                 <div className="today-progress"><span style={{ width: `${taskProgress}%` }} /></div>
                 <div className="task-stack">
-                  {data.tasks.filter((task) => task.date === today).slice().sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99")).map((task) => (
+                  {todayDisplayTasks.slice().sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99")).map((task) => (
                     <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} onEdit={() => setTaskEditor(task)} onDelete={() => deleteTask(task.id)} compact />
                   ))}
                 </div>
@@ -690,8 +759,7 @@ export default function Home() {
                 </section>
                 <section className="panel next-class">
                   <p className="section-kicker">UP NEXT</p>
-                  <div className="next-class-date"><span>25</span><small>AUG<br />TUE</small></div>
-                  <div><h3>剪头发</h3><p>14:00 · 已排入生活任务</p></div>
+                  {upcomingTask && upcomingDate ? <><div className="next-class-date"><span>{upcomingDate.day}</span><small>{upcomingDate.month}<br />{upcomingDate.weekday}</small></div><div><button className="next-task-title" onClick={() => setTaskEditor(upcomingTask)}>{upcomingTask.title}</button><p>{upcomingTask.time || "全天"} · {upcomingTask.category}</p></div></> : <div className="next-task-empty"><h3>接下来暂未安排</h3><button className="text-link" onClick={() => openNewTask()}>添加任务 →</button></div>}
                 </section>
               </aside>
             </div>
@@ -734,7 +802,7 @@ export default function Home() {
         {view === "semester" && (
           <div className="page-content semester-page">
             <section className="semester-summary">
-              <div><p className="section-kicker">SEMESTER MAP</p><h2>Sep 01 <span>→</span> Dec 28</h2><p>3 门课 · 1 份 TA · 17 周 · 目标：毕业</p></div>
+              <div><p className="section-kicker">SEMESTER MAP</p><h2>Sep 01 <span>→</span> Dec 28</h2><p>{courseCount} 门课 · {taCount} 份 TA · 17 周 · 目标：毕业</p></div>
               <button className="ghost-button" onClick={() => setScheduleEditor("new")}>＋ 添加固定安排</button>
             </section>
 
@@ -838,13 +906,13 @@ export default function Home() {
         {view === "planner" && (
           <div className="page-content planner-page">
             <div className="planner-toolbar">
-              <div className="filter-row">{(["全部", "学业", "求职", "生活", "健康"] as const).map((item) => <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}<span>{item === "全部" ? data.tasks.length : data.tasks.filter((task) => task.category === item).length}</span></button>)}</div>
-              <button className="primary-button" onClick={() => openNewTask()}>＋ 新建任务</button>
+              <div className="filter-row">{(["全部", "学业", "求职", "生活", "健康"] as const).map((item) => <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}<span>{item === "全部" ? statusFilteredTasks.length : statusFilteredTasks.filter((task) => task.category === item).length}</span></button>)}</div>
+              <div className="status-switch" role="group" aria-label="任务状态筛选"><button className={plannerStatusFilter === "open" ? "active" : ""} onClick={() => setPlannerStatusFilter("open")}>待处理</button><button className={plannerStatusFilter === "done" ? "active" : ""} onClick={() => setPlannerStatusFilter("done")}>已完成</button><button className={plannerStatusFilter === "all" ? "active" : ""} onClick={() => setPlannerStatusFilter("all")}>全部</button></div>
             </div>
             <section className="panel task-library">
               <div className="task-table-head"><span>任务</span><span>日期</span><span>类别</span><span>状态</span><span /></div>
-              {data.tasks.filter((task) => filter === "全部" || task.category === filter).slice().sort((a, b) => a.date.localeCompare(b.date)).map((task) => <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} onEdit={() => setTaskEditor(task)} onDelete={() => deleteTask(task.id)} />)}
-              {data.tasks.filter((task) => filter === "全部" || task.category === filter).length === 0 && <div className="empty-state">这个分类还没有任务。</div>}
+              {plannerTasks.map((task) => <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} onEdit={() => setTaskEditor(task)} onDelete={() => deleteTask(task.id)} />)}
+              {plannerTasks.length === 0 && <div className="empty-state">这里暂时没有符合条件的任务。</div>}
             </section>
           </div>
         )}
@@ -862,7 +930,7 @@ export default function Home() {
             <section className="notes-library">
               <header><div><p className="section-kicker">NOTEBOOK</p><h2>所有笔记</h2><span>{data.notes.length} 条记录 · 置顶内容优先显示</span></div><label className="note-search"><span>⌕</span><input value={noteQuery} onChange={(event) => setNoteQuery(event.target.value)} placeholder="搜索内容或分类" /></label></header>
               {visibleNotes.length > 0 ? <div className="note-grid">{visibleNotes.map((note) => <article className={`note-card note-${note.category} ${note.pinned ? "pinned" : ""}`} key={note.id}>
-                <div className="note-card-meta"><span>{note.category}</span><time>{formatNoteTime(note.updatedAt)}</time><div className="note-card-controls"><button className="note-pin" onClick={() => setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? { ...item, pinned: !item.pinned } : item) }))} aria-label={note.pinned ? "取消置顶" : "置顶笔记"} title={note.pinned ? "取消置顶" : "置顶"}>{note.pinned ? "●" : "○"}</button><button className="note-delete" onClick={() => setData((current) => ({ ...current, notes: current.notes.filter((item) => item.id !== note.id) }))} aria-label={`删除笔记：${noteTitle(note)}`} title="删除笔记">×</button></div></div>
+                <div className="note-card-meta"><span>{note.category}</span><time>{formatNoteTime(note.updatedAt)}</time><div className="note-card-controls"><button className="note-pin" onClick={() => setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? { ...item, pinned: !item.pinned } : item) }))} aria-label={note.pinned ? "取消置顶" : "置顶笔记"} title={note.pinned ? "取消置顶" : "置顶"}>{note.pinned ? "●" : "○"}</button><button className="note-delete" onClick={() => removeRecord("notes", note.id, `已删除笔记「${noteTitle(note)}」`)} aria-label={`删除笔记：${noteTitle(note)}`} title="删除笔记">×</button></div></div>
                 <button className="note-card-body" onClick={() => setNoteEditor(note)}><h3>{noteTitle(note)}</h3><p>{notePreview(note)}</p><span>打开编辑 <i>→</i></span></button>
               </article>)}</div> : <div className="notes-empty"><span>{noteQuery ? "没有找到匹配的笔记" : "你的第一条笔记会出现在这里"}</span><p>{noteQuery ? "换一个关键词试试。" : "不用想标题，直接在上方写下第一句话。"}</p></div>}
             </section>
@@ -920,12 +988,12 @@ export default function Home() {
       </aside>}
 
       {taskEditor && <TaskModal value={taskEditor} defaultDate={newTaskDate || undefined} onClose={() => { setTaskEditor(null); setNewTaskDate(null); }} onSave={(task) => { setData((current) => { const tasks = taskEditor === "new" ? [...current.tasks, task] : current.tasks.map((item) => item.id === task.id ? task : item); return { ...current, tasks: rollOverTasks(tasks, today) }; }); setTaskEditor(null); setNewTaskDate(null); }} onDelete={taskEditor === "new" ? undefined : () => { deleteTask(taskEditor.id); setTaskEditor(null); setNewTaskDate(null); }} />}
-      {scheduleEditor && <ScheduleModal value={scheduleEditor} onClose={() => setScheduleEditor(null)} onSave={(schedule) => { setData((current) => ({ ...current, schedule: scheduleEditor === "new" ? [...current.schedule, schedule] : current.schedule.map((item) => item.id === schedule.id ? schedule : item) })); setScheduleEditor(null); }} onDelete={scheduleEditor === "new" ? undefined : () => { setData((current) => ({ ...current, schedule: current.schedule.filter((item) => item.id !== scheduleEditor.id) })); setScheduleEditor(null); }} />}
-      {goalEditor && <GoalModal value={goalEditor} onClose={() => setGoalEditor(null)} onSave={(goal) => { setData((current) => ({ ...current, goals: goalEditor === "new" ? [...current.goals, goal] : current.goals.map((item) => item.id === goal.id ? goal : item) })); setGoalEditor(null); }} onDelete={goalEditor === "new" ? undefined : () => { setData((current) => ({ ...current, goals: current.goals.filter((item) => item.id !== goalEditor.id) })); setGoalEditor(null); }} />}
-      {habitEditor && <HabitModal value={habitEditor} onClose={() => setHabitEditor(null)} onSave={(habit) => { setData((current) => ({ ...current, habits: habitEditor === "new" ? [...current.habits, habit] : current.habits.map((item) => item.id === habit.id ? habit : item) })); setHabitEditor(null); }} onDelete={habitEditor === "new" ? undefined : () => { setData((current) => ({ ...current, habits: current.habits.filter((item) => item.id !== habitEditor.id) })); setHabitEditor(null); }} />}
-      {workoutEditor && <WorkoutModal value={workoutEditor} onClose={() => setWorkoutEditor(null)} onSave={(workout) => { setData((current) => ({ ...current, workouts: workoutEditor === "new" ? [...current.workouts, workout] : current.workouts.map((item) => item.id === workout.id ? workout : item) })); setWorkoutEditor(null); }} onDelete={workoutEditor === "new" ? undefined : () => { setData((current) => ({ ...current, workouts: current.workouts.filter((item) => item.id !== workoutEditor.id) })); setWorkoutEditor(null); }} />}
-      {applicationEditor && <ApplicationModal value={applicationEditor} onClose={() => setApplicationEditor(null)} onSave={(application) => { setData((current) => ({ ...current, applications: applicationEditor === "new" ? [...current.applications, application] : current.applications.map((item) => item.id === application.id ? application : item) })); setApplicationEditor(null); }} onDelete={applicationEditor === "new" ? undefined : () => { setData((current) => ({ ...current, applications: current.applications.filter((item) => item.id !== applicationEditor.id) })); setApplicationEditor(null); }} />}
-      {noteEditor && <NoteModal value={noteEditor} onClose={() => setNoteEditor(null)} onSave={(note) => { setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? note : item) })); setNoteEditor(null); }} onDelete={() => { setData((current) => ({ ...current, notes: current.notes.filter((item) => item.id !== noteEditor.id) })); setNoteEditor(null); }} />}
+      {scheduleEditor && <ScheduleModal value={scheduleEditor} onClose={() => setScheduleEditor(null)} onSave={(schedule) => { setData((current) => ({ ...current, schedule: scheduleEditor === "new" ? [...current.schedule, schedule] : current.schedule.map((item) => item.id === schedule.id ? schedule : item) })); setScheduleEditor(null); }} onDelete={scheduleEditor === "new" ? undefined : () => { removeRecord("schedule", scheduleEditor.id, `已删除安排「${scheduleEditor.code}」`); setScheduleEditor(null); }} />}
+      {goalEditor && <GoalModal value={goalEditor} onClose={() => setGoalEditor(null)} onSave={(goal) => { setData((current) => ({ ...current, goals: goalEditor === "new" ? [...current.goals, goal] : current.goals.map((item) => item.id === goal.id ? goal : item) })); setGoalEditor(null); }} onDelete={goalEditor === "new" ? undefined : () => { removeRecord("goals", goalEditor.id, `已删除目标「${goalEditor.title}」`); setGoalEditor(null); }} />}
+      {habitEditor && <HabitModal value={habitEditor} onClose={() => setHabitEditor(null)} onSave={(habit) => { setData((current) => ({ ...current, habits: habitEditor === "new" ? [...current.habits, habit] : current.habits.map((item) => item.id === habit.id ? habit : item) })); setHabitEditor(null); }} onDelete={habitEditor === "new" ? undefined : () => { removeRecord("habits", habitEditor.id, `已删除健康项目「${habitEditor.label}」`); setHabitEditor(null); }} />}
+      {workoutEditor && <WorkoutModal value={workoutEditor} onClose={() => setWorkoutEditor(null)} onSave={(workout) => { setData((current) => ({ ...current, workouts: workoutEditor === "new" ? [...current.workouts, workout] : current.workouts.map((item) => item.id === workout.id ? workout : item) })); setWorkoutEditor(null); }} onDelete={workoutEditor === "new" ? undefined : () => { removeRecord("workouts", workoutEditor.id, `已删除运动「${workoutEditor.title}」`); setWorkoutEditor(null); }} />}
+      {applicationEditor && <ApplicationModal value={applicationEditor} onClose={() => setApplicationEditor(null)} onSave={(application) => { setData((current) => ({ ...current, applications: applicationEditor === "new" ? [...current.applications, application] : current.applications.map((item) => item.id === application.id ? application : item) })); setApplicationEditor(null); }} onDelete={applicationEditor === "new" ? undefined : () => { removeRecord("applications", applicationEditor.id, `已删除求职记录「${applicationEditor.company}」`); setApplicationEditor(null); }} />}
+      {noteEditor && <NoteModal value={noteEditor} onClose={() => setNoteEditor(null)} onSave={(note) => { setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? note : item) })); setNoteEditor(null); }} onDelete={() => { removeRecord("notes", noteEditor.id, `已删除笔记「${noteTitle(noteEditor)}」`); setNoteEditor(null); }} />}
       {installHelp && <ModalFrame title="安装 MAP 到 Mac" subtitle="OFFLINE APP" onClose={() => setInstallHelp(false)}><div className="install-guide"><p>这台浏览器没有提供一键安装按钮。你仍然可以把 MAP 安装成独立的 Mac App：</p><ol><li>使用 Safari 打开 MAP 网站。</li><li>选择菜单栏的“文件”→“添加到程序坞”。</li><li>首次联网打开一次；之后断网也能查看和编辑计划。</li></ol><p className="install-guide-note">MAP AI 需要联网。本地任务、笔记、目标、课表、求职和健康记录不需要联网。</p><div className="modal-actions"><button className="primary-button" onClick={() => setInstallHelp(false)}>知道了</button></div></div></ModalFrame>}
     </main>
   );
@@ -940,22 +1008,25 @@ function TaskRow({ task, onToggle, onEdit, onDelete, compact = false }: { task: 
   return <div className={`task-row ${task.status === "done" ? "done" : ""} ${carried ? "carried" : ""} ${compact ? "compact" : ""}`}>
     <button className="task-check" onClick={onToggle} aria-label={task.status === "done" ? "标记未完成" : "标记完成"}>{task.status === "done" ? "✓" : ""}</button>
     <div className="task-main"><strong>{task.title}</strong>{task.details && <p className="task-details">{task.details}</p>}{compact && <span><i className={`dot ${categoryTone[task.category]}`} />{task.category}{task.endDate ? ` · 截止 ${formatDate(task.endDate)}` : ""}{carried && <b className="rollover-label">未完成顺延 · 原定 {formatDate(task.carriedFrom!)}</b>}</span>}{!compact && carried && <span className="rollover-meta">未完成顺延 · 原定 {formatDate(task.carriedFrom!)}</span>}</div>
-    {!compact && <><span className="task-date">{formatDate(task.date)}{task.time ? ` · ${task.time}` : ""}</span><span className={`category-pill ${categoryTone[task.category]}`}>{task.category}</span><span className={`status-label ${carried ? "carried" : ""}`}>{task.status === "done" ? "已完成" : carried ? "未完成顺延" : task.priority === "high" ? "优先" : "待处理"}</span></>}
+    {!compact && <><span className="task-date">{formatDate(task.date)}{task.endDate ? ` → ${formatDate(task.endDate)}` : ""}{task.time ? ` · ${task.time}` : ""}</span><span className={`category-pill ${categoryTone[task.category]}`}>{task.category}</span><span className={`status-label ${carried ? "carried" : ""}`}>{task.status === "done" ? "已完成" : carried ? "未完成顺延" : task.priority === "high" ? "优先" : task.endDate ? "进行中" : "待处理"}</span></>}
     {compact && <time>{task.time || "今天"}</time>}
     <div className="task-actions"><button onClick={onEdit}>编辑</button><button onClick={onDelete}>删除</button></div>
   </div>;
 }
 
 function ModalFrame({ title, subtitle, onClose, onDelete, children }: { title: string; subtitle: string; onClose: () => void; onDelete?: () => void; children: React.ReactNode }) {
-  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="modal" role="dialog" aria-modal="true" aria-label={title}><div className="modal-head"><div><p className="section-kicker">{subtitle}</p><h2>{title}</h2></div><button className="modal-close" onClick={onClose}>×</button></div>{children}<div className="modal-danger">{onDelete && <button type="button" onClick={onDelete}>删除这条记录</button>}</div></section></div>;
+  useEffect(() => { const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); }; const previousOverflow = document.body.style.overflow; document.body.style.overflow = "hidden"; window.addEventListener("keydown", onKeyDown); return () => { document.body.style.overflow = previousOverflow; window.removeEventListener("keydown", onKeyDown); }; }, [onClose]);
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="modal" role="dialog" aria-modal="true" aria-label={title}><div className="modal-head"><div><p className="section-kicker">{subtitle}</p><h2>{title}</h2></div><button className="modal-close" onClick={onClose} aria-label={`关闭${title}`}>×</button></div>{children}<div className="modal-danger">{onDelete && <button type="button" onClick={onDelete}>删除这条记录</button>}</div></section></div>;
 }
 
 function Field({ label, children, wide = false }: { label: string; children: React.ReactNode; wide?: boolean }) { return <label className={wide ? "wide" : ""}><span>{label}</span>{children}</label>; }
 
 function TaskModal({ value, defaultDate, onClose, onSave, onDelete }: { value: Task | "new"; defaultDate?: string; onClose: () => void; onSave: (task: Task) => void; onDelete?: () => void }) {
   const existing = value === "new" ? null : value;
-  const [title, setTitle] = useState(existing?.title || ""); const [details, setDetails] = useState(existing?.details || ""); const [category, setCategory] = useState<TaskCategory>(existing?.category || "生活"); const [date, setDate] = useState(existing?.date || defaultDate || getTorontoToday()); const [time, setTime] = useState(existing?.time || "09:00"); const [priority, setPriority] = useState<"high" | "normal">(existing?.priority || "normal");
-  return <ModalFrame title={existing ? "编辑任务" : "新建任务"} subtitle="TASK" onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); if (!title.trim()) return; onSave({ id: existing?.id || uid(), title: title.trim(), details: details.trim() || null, category, date, time, endDate: existing?.endDate, carriedFrom: existing && existing.date === date ? existing.carriedFrom : null, priority, status: existing?.status || "todo" }); }}><div className="form-grid"><Field label="任务名称" wide><input value={title} onChange={(e) => setTitle(e.target.value)} autoFocus required /></Field><Field label="任务细节" wide><textarea value={details} onChange={(e) => setDetails(e.target.value)} placeholder="补充地点、材料、步骤、联系人或任何执行时需要的信息……" /></Field><Field label="类别"><select value={category} onChange={(e) => setCategory(e.target.value as TaskCategory)}><option>学业</option><option>求职</option><option>生活</option><option>健康</option></select></Field><Field label="优先级"><select value={priority} onChange={(e) => setPriority(e.target.value as "high" | "normal")}><option value="normal">普通</option><option value="high">优先</option></select></Field><Field label="日期"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} required /></Field><Field label="时间"><input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">保存任务</button></div></form></ModalFrame>;
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { titleInputRef.current?.focus(); }, []);
+  const [title, setTitle] = useState(existing?.title || ""); const [details, setDetails] = useState(existing?.details || ""); const [category, setCategory] = useState<TaskCategory>(existing?.category || "生活"); const [date, setDate] = useState(existing?.date || defaultDate || getTorontoToday()); const [endDate, setEndDate] = useState(existing?.endDate || ""); const [time, setTime] = useState(existing?.time || "09:00"); const [priority, setPriority] = useState<"high" | "normal">(existing?.priority || "normal");
+  return <ModalFrame title={existing ? "编辑任务" : "新建任务"} subtitle="TASK" onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); if (!title.trim()) return; onSave({ id: existing?.id || uid(), title: title.trim(), details: details.trim() || null, category, date, time, endDate: endDate && endDate > date ? endDate : null, carriedFrom: existing && existing.date === date ? existing.carriedFrom : null, completedAt: existing?.completedAt || null, priority, status: existing?.status || "todo" }); }}><div className="form-grid"><Field label="任务名称" wide><input ref={titleInputRef} value={title} onChange={(e) => setTitle(e.target.value)} required /></Field><Field label="任务细节" wide><textarea value={details} onChange={(e) => setDetails(e.target.value)} placeholder="补充地点、材料、步骤、联系人或任何执行时需要的信息……" /></Field><Field label="类别"><select value={category} onChange={(e) => setCategory(e.target.value as TaskCategory)}><option>学业</option><option>求职</option><option>生活</option><option>健康</option></select></Field><Field label="优先级"><select value={priority} onChange={(e) => setPriority(e.target.value as "high" | "normal")}><option value="normal">普通</option><option value="high">优先</option></select></Field><Field label="开始日期"><input type="date" value={date} onChange={(e) => { const nextDate = e.target.value; setDate(nextDate); if (endDate && endDate < nextDate) setEndDate(nextDate); }} required /></Field><Field label="结束日期（可选）"><input type="date" value={endDate} min={date} onChange={(e) => setEndDate(e.target.value)} /></Field><Field label="时间"><input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">保存任务</button></div></form></ModalFrame>;
 }
 
 function NoteModal({ value, onClose, onSave, onDelete }: { value: Note; onClose: () => void; onSave: (note: Note) => void; onDelete: () => void }) {
@@ -967,8 +1038,8 @@ function NoteModal({ value, onClose, onSave, onDelete }: { value: Note; onClose:
 
 function ScheduleModal({ value, onClose, onSave, onDelete }: { value: ScheduleItem | "new"; onClose: () => void; onSave: (item: ScheduleItem) => void; onDelete?: () => void }) {
   const existing = value === "new" ? null : value;
-  const [code, setCode] = useState(existing?.code || ""); const [title, setTitle] = useState(existing?.title || ""); const [kind, setKind] = useState<ScheduleItem["kind"]>(existing?.kind || "课程"); const [days, setDays] = useState(existing?.days.join(",") || "Mo"); const [start, setStart] = useState(existing?.start || "09:00"); const [end, setEnd] = useState(existing?.end || "10:00"); const [room, setRoom] = useState(existing?.room || "");
-  return <ModalFrame title={existing ? "编辑固定安排" : "添加固定安排"} subtitle="SCHEDULE" onClose={onClose} onDelete={onDelete}><form onSubmit={(e) => { e.preventDefault(); onSave({ id: existing?.id || uid(), code, title, kind, days: days.split(",").map((d) => d.trim()).filter((d) => DAY_ORDER.includes(d)), start, end, room, color: existing?.color || "blue" }); }}><div className="form-grid"><Field label="简称"><input value={code} onChange={(e) => setCode(e.target.value)} required /></Field><Field label="类型"><select value={kind} onChange={(e) => setKind(e.target.value as ScheduleItem["kind"])}><option>课程</option><option>TA</option><option>个人</option></select></Field><Field label="完整名称" wide><input value={title} onChange={(e) => setTitle(e.target.value)} required /></Field><Field label="星期代码（逗号分隔）" wide><input value={days} onChange={(e) => setDays(e.target.value)} placeholder="Mo,We,Fr" /></Field><Field label="开始"><input type="time" value={start} onChange={(e) => setStart(e.target.value)} /></Field><Field label="结束"><input type="time" value={end} onChange={(e) => setEnd(e.target.value)} /></Field><Field label="地点" wide><input value={room} onChange={(e) => setRoom(e.target.value)} /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button">保存安排</button></div></form></ModalFrame>;
+  const [code, setCode] = useState(existing?.code || ""); const [title, setTitle] = useState(existing?.title || ""); const [kind, setKind] = useState<ScheduleItem["kind"]>(existing?.kind || "课程"); const [days, setDays] = useState<string[]>(existing?.days || ["Mo"]); const [start, setStart] = useState(existing?.start || "09:00"); const [end, setEnd] = useState(existing?.end || "10:00"); const [room, setRoom] = useState(existing?.room || "");
+  return <ModalFrame title={existing ? "编辑固定安排" : "添加固定安排"} subtitle="SCHEDULE" onClose={onClose} onDelete={onDelete}><form onSubmit={(e) => { e.preventDefault(); if (!days.length) return; onSave({ id: existing?.id || uid(), code, title, kind, days, start, end, room, color: existing?.color || "blue" }); }}><div className="form-grid"><Field label="简称"><input value={code} onChange={(e) => setCode(e.target.value)} required /></Field><Field label="类型"><select value={kind} onChange={(e) => setKind(e.target.value as ScheduleItem["kind"])}><option>课程</option><option>TA</option><option>个人</option></select></Field><Field label="完整名称" wide><input value={title} onChange={(e) => setTitle(e.target.value)} required /></Field><Field label="每周重复日期" wide><div className="weekday-picker" role="group" aria-label="每周重复日期">{DAY_ORDER.map((day) => <button type="button" key={day} className={days.includes(day) ? "active" : ""} aria-pressed={days.includes(day)} onClick={() => setDays((current) => current.includes(day) ? current.filter((item) => item !== day) : [...current, day].sort((a, b) => DAY_ORDER.indexOf(a) - DAY_ORDER.indexOf(b)))}>{DAY_LABEL[day]}</button>)}</div></Field><Field label="开始"><input type="time" value={start} onChange={(e) => setStart(e.target.value)} /></Field><Field label="结束"><input type="time" value={end} onChange={(e) => setEnd(e.target.value)} /></Field><Field label="地点" wide><input value={room} onChange={(e) => setRoom(e.target.value)} /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!days.length}>保存安排</button></div></form></ModalFrame>;
 }
 
 function GoalModal({ value, onClose, onSave, onDelete }: { value: Goal | "new"; onClose: () => void; onSave: (goal: Goal) => void; onDelete?: () => void }) {

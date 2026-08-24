@@ -156,7 +156,7 @@ DATA RULES
 - The browser applies operations locally to the current data. You never return the complete MAP dataset.
 - For new records create a unique id beginning with ai-. Resolve relative dates against today. Use YYYY-MM-DD dates and 24-hour HH:MM times.
 - Tasks are one-off actions; schedule is only recurring weekly blocks; goals are long-term directions; applications are job opportunities; notes are free-form ideas/reference; habits are daily nutrition checks; workouts are weekly exercise plans.
-- Preserve details and carriedFrom on existing tasks. Use null for missing optional task fields. Preserve note timestamps unless changed; use valid ISO timestamps for new or updated notes.
+- Preserve details, carriedFrom, and completedAt on existing tasks unless explicitly changing completion. Use null for missing optional task fields. Preserve note timestamps unless changed; use valid ISO timestamps for new or updated notes.
 - Each operation has collection, operation, recordId, and recordJson. collection is one MAP array. operation is add, update, delete, or reorder.
 - For add, recordJson is a JSON string containing one complete new record. For update, it is a JSON string containing only the fields explicitly requested to change; the browser merges it into recordId. For delete, recordJson is an empty string. For reorder, recordJson is a JSON string containing the ordered id array.
 - For action=answer: reply conversationally; summary is empty and operations is empty.
