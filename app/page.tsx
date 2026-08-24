@@ -3,13 +3,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { rollOverTasks } from "../lib/task-rollover.mjs";
 
-type View = "today" | "goals" | "semester" | "career" | "planner" | "wellness";
+type View = "today" | "goals" | "semester" | "career" | "planner" | "notes" | "wellness";
 type TaskCategory = "学业" | "求职" | "生活" | "健康";
 type TaskStatus = "todo" | "done";
+type NoteCategory = "课程" | "项目" | "求职" | "生活" | "想法";
 
 type Task = {
   id: string;
   title: string;
+  details?: string | null;
   category: TaskCategory;
   date: string;
   time?: string | null;
@@ -45,6 +47,7 @@ type Habit = { id: string; label: string; done: boolean; icon: string };
 type Workout = { id: string; title: string; day: string; duration: string; done: boolean };
 type ApplicationStage = "已投" | "面试" | "Offer" | "拒绝";
 type Application = { id: string; company: string; role: string; stage: ApplicationStage; link: string; contact: string; date: string; notes: string };
+type Note = { id: string; content: string; category: NoteCategory; pinned: boolean; createdAt: string; updatedAt: string };
 type AIPlanPreview = { summary: string; changes: string[]; nextData: AppData };
 type PWAInstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
 
@@ -55,6 +58,7 @@ type AppData = {
   habits: Habit[];
   workouts: Workout[];
   applications: Application[];
+  notes: Note[];
   habitDate: string;
   workoutWeek: string;
 };
@@ -64,6 +68,7 @@ const DAY_LABEL: Record<string, string> = { Mo: "周一", Tu: "周二", We: "周
 const CALENDAR_DAY_ORDER = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 const CALENDAR_DAY_LABEL = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 const APPLICATION_STAGES: ApplicationStage[] = ["已投", "面试", "Offer", "拒绝"];
+const NOTE_CATEGORIES: NoteCategory[] = ["想法", "课程", "项目", "求职", "生活"];
 const BASE_DATE = "2026-08-23";
 const STORAGE_KEY = "map-life-os-v1";
 
@@ -149,6 +154,7 @@ const initialData: AppData = {
     { id: "w3", title: "力量训练", day: "周六", duration: "45 分钟", done: false },
   ],
   applications: [],
+  notes: [],
   habitDate: getTorontoToday(),
   workoutWeek: getWeekKey(),
 };
@@ -160,9 +166,9 @@ function uid() {
 }
 
 function deriveAIChanges(current: AppData, next: AppData) {
-  const collections: Array<["tasks" | "schedule" | "goals" | "habits" | "workouts" | "applications", string]> = [["tasks", "任务"], ["schedule", "固定安排"], ["goals", "目标"], ["habits", "饮食习惯"], ["workouts", "运动"], ["applications", "求职记录"]];
+  const collections: Array<["tasks" | "schedule" | "goals" | "habits" | "workouts" | "applications" | "notes", string]> = [["tasks", "任务"], ["schedule", "固定安排"], ["goals", "目标"], ["habits", "饮食习惯"], ["workouts", "运动"], ["applications", "求职记录"], ["notes", "笔记"]];
   const changes: string[] = [];
-  const displayName = (item: Record<string, unknown>) => String(item.title || item.company || item.label || item.code || item.id || "未命名记录");
+  const displayName = (item: Record<string, unknown>) => String(item.title || item.company || item.label || item.code || item.content || item.id || "未命名记录").split("\n")[0].slice(0, 60);
   for (const [key, label] of collections) {
     const before = current[key] as unknown as Array<Record<string, unknown> & { id: string }>;
     const after = next[key] as unknown as Array<Record<string, unknown> & { id: string }>;
@@ -195,6 +201,21 @@ function goalPriorityLabel(index: number) {
   return `第 ${index + 1} 顺位`;
 }
 
+function noteTitle(note: Note) {
+  return note.content.split("\n").find((line) => line.trim())?.trim().slice(0, 80) || "无标题笔记";
+}
+
+function notePreview(note: Note) {
+  const lines = note.content.split("\n").filter((line) => line.trim());
+  return (lines.length > 1 ? lines.slice(1).join("\n") : note.content).trim();
+}
+
+function formatNoteTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "刚刚";
+  return new Intl.DateTimeFormat("zh-CN", { timeZone: "America/Toronto", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
 export default function Home() {
   const [view, setView] = useState<View>("today");
   const [data, setData] = useState<AppData>(initialData);
@@ -206,6 +227,10 @@ export default function Home() {
   const [habitEditor, setHabitEditor] = useState<Habit | "new" | null>(null);
   const [workoutEditor, setWorkoutEditor] = useState<Workout | "new" | null>(null);
   const [applicationEditor, setApplicationEditor] = useState<Application | "new" | null>(null);
+  const [noteEditor, setNoteEditor] = useState<Note | null>(null);
+  const [noteDraft, setNoteDraft] = useState("");
+  const [noteCategory, setNoteCategory] = useState<NoteCategory>("想法");
+  const [noteQuery, setNoteQuery] = useState("");
   const [pasteEditor, setPasteEditor] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [aiText, setAiText] = useState("");
@@ -225,6 +250,7 @@ export default function Home() {
   const [standalone, setStandalone] = useState(false);
   const [today, setToday] = useState(() => getTorontoToday());
   const importRef = useRef<HTMLInputElement>(null);
+  const noteDraftRef = useRef<HTMLTextAreaElement>(null);
   const todayLabel = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", weekday: "long", month: "long", day: "numeric" }).format(new Date()).toUpperCase();
   const daysToGraduate = Math.max(0, Math.ceil((Date.parse("2026-12-28T12:00:00-05:00") - Date.parse(`${today}T12:00:00-05:00`)) / 86400000));
   const semesterProgress = Math.max(0, Math.min(100, Math.round(((Date.parse(`${today}T12:00:00-05:00`) - Date.parse("2026-09-01T12:00:00-04:00")) / (Date.parse("2026-12-28T12:00:00-05:00") - Date.parse("2026-09-01T12:00:00-04:00"))) * 100)));
@@ -238,13 +264,17 @@ export default function Home() {
     const savedHabits = parsed.habits || initialData.habits;
     const savedWorkouts = parsed.workouts || initialData.workouts;
     setToday(currentDay);
-    setData({ ...initialData, ...parsed, tasks: rollOverTasks(parsed.tasks || initialData.tasks, currentDay), schedule: parsed.schedule || initialData.schedule, goals: parsed.goals || initialData.goals, habits: parsed.habitDate === currentDay ? savedHabits : savedHabits.map((habit) => ({ ...habit, done: false })), workouts: parsed.workoutWeek === currentWeek ? savedWorkouts : savedWorkouts.map((workout) => ({ ...workout, done: false })), applications: normalizeApplications(parsed.applications), habitDate: currentDay, workoutWeek: currentWeek });
+    setData({ ...initialData, ...parsed, tasks: rollOverTasks(parsed.tasks || initialData.tasks, currentDay), schedule: parsed.schedule || initialData.schedule, goals: parsed.goals || initialData.goals, habits: parsed.habitDate === currentDay ? savedHabits : savedHabits.map((habit) => ({ ...habit, done: false })), workouts: parsed.workoutWeek === currentWeek ? savedWorkouts : savedWorkouts.map((workout) => ({ ...workout, done: false })), applications: normalizeApplications(parsed.applications), notes: parsed.notes || initialData.notes, habitDate: currentDay, workoutWeek: currentWeek });
     setReady(true);
   }, []);
 
   useEffect(() => {
     if (ready) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   }, [data, ready]);
+
+  useEffect(() => {
+    if (view === "notes") window.requestAnimationFrame(() => noteDraftRef.current?.focus());
+  }, [view]);
 
   useEffect(() => {
     const refreshDay = () => setToday(getTorontoToday());
@@ -306,10 +336,28 @@ export default function Home() {
   const monthEnd = calendarCells.filter((cell) => cell.inMonth).at(-1)?.key || monthStart;
   const visibleTaskCount = data.tasks.filter((task) => task.date <= monthEnd && (task.endDate || task.date) >= monthStart).length;
   const visibleScheduleCount = calendarCells.filter((cell) => cell.inMonth && cell.key >= "2026-09-01" && cell.key <= "2026-12-31").reduce((count, cell) => count + data.schedule.filter((item) => item.days.includes(cell.dayCode)).length, 0);
+  const visibleNotes = useMemo(() => {
+    const query = noteQuery.trim().toLocaleLowerCase();
+    return data.notes.filter((note) => !query || note.content.toLocaleLowerCase().includes(query) || note.category.toLocaleLowerCase().includes(query)).slice().sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt));
+  }, [data.notes, noteQuery]);
 
   function openNewTask(date?: string) {
     setNewTaskDate(date || null);
     setTaskEditor("new");
+  }
+
+  function openNotes() {
+    setView("notes");
+    window.requestAnimationFrame(() => noteDraftRef.current?.focus());
+  }
+
+  function saveQuickNote() {
+    const content = noteDraft.trim();
+    if (!content) return;
+    const now = new Date().toISOString();
+    setData((current) => ({ ...current, notes: [{ id: uid(), content, category: noteCategory, pinned: false, createdAt: now, updatedAt: now }, ...current.notes] }));
+    setNoteDraft("");
+    window.requestAnimationFrame(() => noteDraftRef.current?.focus());
   }
 
   function toggleTask(id: string) {
@@ -351,7 +399,7 @@ export default function Home() {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      try { const parsed = JSON.parse(String(reader.result)) as AppData; setData({ ...parsed, tasks: rollOverTasks(parsed.tasks || [], today), applications: normalizeApplications(parsed.applications) }); } catch { window.alert("这个备份文件无法读取。"); }
+      try { const parsed = JSON.parse(String(reader.result)) as AppData; setData({ ...initialData, ...parsed, tasks: rollOverTasks(parsed.tasks || [], today), applications: normalizeApplications(parsed.applications), notes: parsed.notes || [] }); } catch { window.alert("这个备份文件无法读取。"); }
     };
     reader.readAsText(file);
   }
@@ -373,7 +421,7 @@ export default function Home() {
       const response = await fetch("/api/ai-plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ instruction: aiText.trim(), currentData: data, today }) });
       const result = await response.json() as AIPlanPreview & { error?: string };
       if (!response.ok) throw new Error(result.error || "AI 暂时无法创建计划。");
-      if (!result.nextData || !Array.isArray(result.changes) || !Array.isArray(result.nextData.tasks) || !Array.isArray(result.nextData.goals)) throw new Error("AI 返回的数据格式不完整，请再试一次。");
+      if (!result.nextData || !Array.isArray(result.changes) || !Array.isArray(result.nextData.tasks) || !Array.isArray(result.nextData.goals) || !Array.isArray(result.nextData.notes)) throw new Error("AI 返回的数据格式不完整，请再试一次。");
       setAiPreview({ ...result, changes: deriveAIChanges(data, result.nextData) });
     } catch (error) {
       setAiError(error instanceof Error ? error.message : "AI 暂时无法创建计划。");
@@ -406,7 +454,8 @@ export default function Home() {
           <NavButton active={view === "semester"} label="学期地图" icon="03" onClick={() => setView("semester")} />
           <NavButton active={view === "career"} label="求职记录" icon="04" onClick={() => setView("career")} />
           <NavButton active={view === "planner"} label="任务计划" icon="05" onClick={() => setView("planner")} />
-          <NavButton active={view === "wellness"} label="健康运动" icon="06" onClick={() => setView("wellness")} />
+          <NavButton active={view === "notes"} label="灵感笔记" icon="06" onClick={openNotes} />
+          <NavButton active={view === "wellness"} label="健康运动" icon="07" onClick={() => setView("wellness")} />
         </nav>
 
         <div className="sidebar-spacer" />
@@ -429,9 +478,9 @@ export default function Home() {
         <header className="topbar">
           <div>
             <p className="eyebrow">{todayLabel}</p>
-            <h1>{view === "today" ? "今天，先把生活拉回正轨。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "你的四个月毕业路线。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : "健康不是剩余时间。"}</h1>
+            <h1>{view === "today" ? "今天，先把生活拉回正轨。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "你的四个月毕业路线。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : view === "notes" ? "先把想法接住，再慢慢整理。" : "健康不是剩余时间。"}</h1>
           </div>
-          <button className="primary-button" onClick={() => openNewTask()}><span>＋</span> 新建任务</button>
+          <div className="topbar-actions"><button className="quick-note-top" onClick={openNotes}><span>✎</span> 记一笔</button><button className="primary-button" onClick={() => openNewTask()}><span>＋</span> 新建任务</button></div>
         </header>
 
         {view === "today" && (
@@ -550,7 +599,7 @@ export default function Home() {
                     return <article className={`calendar-day ${cell.inMonth ? "" : "outside"} ${cell.key === today ? "today" : ""}`} key={cell.key}>
                       <header><span>{cell.day}</span>{cell.key === today && <strong>今天</strong>}<button onClick={() => openNewTask(cell.key)} aria-label={`在 ${cell.key} 新建任务`}>＋</button></header>
                       <div className="calendar-events">
-                        {events.map((event) => event.type === "task" ? <button key={`task-${event.item.id}`} className={`calendar-event task ${categoryTone[event.item.category]} ${event.item.status === "done" ? "done" : ""} ${event.item.carriedFrom && event.item.status === "todo" ? "carried" : ""}`} onClick={() => setTaskEditor(event.item)} title={`${event.item.title}${event.item.carriedFrom && event.item.status === "todo" ? ` · 未完成顺延，原定 ${formatDate(event.item.carriedFrom)}` : ""}`}><time>{event.time || (event.item.date < cell.key ? "↳" : "")}</time><span>{event.item.title}</span></button> : <button key={`schedule-${event.item.id}`} className={`calendar-event schedule ${event.item.color}`} onClick={() => setScheduleEditor(event.item)} title={`${event.item.title} · ${event.item.room}`}><time>{event.item.start}</time><span>{event.item.code}</span></button>)}
+                        {events.map((event) => event.type === "task" ? <button key={`task-${event.item.id}`} className={`calendar-event task ${categoryTone[event.item.category]} ${event.item.status === "done" ? "done" : ""} ${event.item.carriedFrom && event.item.status === "todo" ? "carried" : ""}`} onClick={() => setTaskEditor(event.item)} title={`${event.item.title}${event.item.details ? ` · ${event.item.details}` : ""}${event.item.carriedFrom && event.item.status === "todo" ? ` · 未完成顺延，原定 ${formatDate(event.item.carriedFrom)}` : ""}`}><time>{event.time || (event.item.date < cell.key ? "↳" : "")}</time><span>{event.item.title}</span></button> : <button key={`schedule-${event.item.id}`} className={`calendar-event schedule ${event.item.color}`} onClick={() => setScheduleEditor(event.item)} title={`${event.item.title} · ${event.item.room}`}><time>{event.item.start}</time><span>{event.item.code}</span></button>)}
                       </div>
                     </article>;
                   })}
@@ -592,7 +641,7 @@ export default function Home() {
                       return <article className={`week-task-day ${day.key === today ? "today" : ""}`} key={day.key}>
                         <header><div><strong>{day.label}</strong><span>{day.date}</span></div>{day.key === today && <i>今天</i>}</header>
                         <div className="week-task-list">
-                          {tasks.map((task) => <button key={task.id} className={`week-task-item ${categoryTone[task.category]} ${task.status === "done" ? "done" : ""} ${task.carriedFrom && task.status === "todo" ? "carried" : ""}`} onClick={() => setTaskEditor(task)}><time>{task.date === day.key ? task.time || "全天" : "持续"}</time><span>{task.title}{task.carriedFrom && task.status === "todo" && <small>未完成顺延 · 原定 {formatDate(task.carriedFrom)}</small>}</span></button>)}
+                          {tasks.map((task) => <button key={task.id} className={`week-task-item ${categoryTone[task.category]} ${task.status === "done" ? "done" : ""} ${task.carriedFrom && task.status === "todo" ? "carried" : ""}`} onClick={() => setTaskEditor(task)}><time>{task.date === day.key ? task.time || "全天" : "持续"}</time><span>{task.title}{task.details && <small className="week-task-detail">{task.details}</small>}{task.carriedFrom && task.status === "todo" && <small>未完成顺延 · 原定 {formatDate(task.carriedFrom)}</small>}</span></button>)}
                           {tasks.length === 0 && <span className="week-task-empty">暂无任务</span>}
                         </div>
                         <button className="week-task-add" onClick={() => openNewTask(day.key)}>＋ 添加</button>
@@ -636,6 +685,26 @@ export default function Home() {
               <div className="task-table-head"><span>任务</span><span>日期</span><span>类别</span><span>状态</span><span /></div>
               {data.tasks.filter((task) => filter === "全部" || task.category === filter).slice().sort((a, b) => a.date.localeCompare(b.date)).map((task) => <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} onEdit={() => setTaskEditor(task)} onDelete={() => deleteTask(task.id)} />)}
               {data.tasks.filter((task) => filter === "全部" || task.category === filter).length === 0 && <div className="empty-state">这个分类还没有任务。</div>}
+            </section>
+          </div>
+        )}
+
+        {view === "notes" && (
+          <div className="page-content notes-page">
+            <section className="quick-note-panel">
+              <div className="quick-note-intro"><p className="section-kicker">QUICK CAPTURE</p><h2>想到什么，<br />现在就写下来。</h2><p>这里不要求完整，也不要求立刻分类清楚。先记录课程项目、求职判断、出行信息或突然冒出的想法，之后再回来整理。</p></div>
+              <div className="quick-note-compose">
+                <textarea ref={noteDraftRef} value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); saveQuickNote(); } }} placeholder={"直接开始写……\n\n例如：CAS 720 project 可以从数据库故障恢复这个方向切入，需要先查三篇 paper。"} aria-label="快速记录笔记" />
+                <div className="quick-note-footer"><div className="note-category-switch" role="group" aria-label="笔记分类">{NOTE_CATEGORIES.map((category) => <button key={category} className={noteCategory === category ? "active" : ""} onClick={() => setNoteCategory(category)}>{category}</button>)}</div><div className="quick-note-save"><span>⌘ / Ctrl + Enter</span><button onClick={saveQuickNote} disabled={!noteDraft.trim()}>保存笔记 →</button></div></div>
+              </div>
+            </section>
+
+            <section className="notes-library">
+              <header><div><p className="section-kicker">NOTEBOOK</p><h2>所有笔记</h2><span>{data.notes.length} 条记录 · 置顶内容优先显示</span></div><label className="note-search"><span>⌕</span><input value={noteQuery} onChange={(event) => setNoteQuery(event.target.value)} placeholder="搜索内容或分类" /></label></header>
+              {visibleNotes.length > 0 ? <div className="note-grid">{visibleNotes.map((note) => <article className={`note-card note-${note.category} ${note.pinned ? "pinned" : ""}`} key={note.id}>
+                <div className="note-card-meta"><span>{note.category}</span><time>{formatNoteTime(note.updatedAt)}</time><button className="note-pin" onClick={() => setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? { ...item, pinned: !item.pinned } : item) }))} aria-label={note.pinned ? "取消置顶" : "置顶笔记"} title={note.pinned ? "取消置顶" : "置顶"}>{note.pinned ? "●" : "○"}</button></div>
+                <button className="note-card-body" onClick={() => setNoteEditor(note)}><h3>{noteTitle(note)}</h3><p>{notePreview(note)}</p><span>打开编辑 <i>→</i></span></button>
+              </article>)}</div> : <div className="notes-empty"><span>{noteQuery ? "没有找到匹配的笔记" : "你的第一条笔记会出现在这里"}</span><p>{noteQuery ? "换一个关键词试试。" : "不用想标题，直接在上方写下第一句话。"}</p></div>}
             </section>
           </div>
         )}
@@ -694,8 +763,9 @@ export default function Home() {
       {habitEditor && <HabitModal value={habitEditor} onClose={() => setHabitEditor(null)} onSave={(habit) => { setData((current) => ({ ...current, habits: habitEditor === "new" ? [...current.habits, habit] : current.habits.map((item) => item.id === habit.id ? habit : item) })); setHabitEditor(null); }} onDelete={habitEditor === "new" ? undefined : () => { setData((current) => ({ ...current, habits: current.habits.filter((item) => item.id !== habitEditor.id) })); setHabitEditor(null); }} />}
       {workoutEditor && <WorkoutModal value={workoutEditor} onClose={() => setWorkoutEditor(null)} onSave={(workout) => { setData((current) => ({ ...current, workouts: workoutEditor === "new" ? [...current.workouts, workout] : current.workouts.map((item) => item.id === workout.id ? workout : item) })); setWorkoutEditor(null); }} onDelete={workoutEditor === "new" ? undefined : () => { setData((current) => ({ ...current, workouts: current.workouts.filter((item) => item.id !== workoutEditor.id) })); setWorkoutEditor(null); }} />}
       {applicationEditor && <ApplicationModal value={applicationEditor} onClose={() => setApplicationEditor(null)} onSave={(application) => { setData((current) => ({ ...current, applications: applicationEditor === "new" ? [...current.applications, application] : current.applications.map((item) => item.id === application.id ? application : item) })); setApplicationEditor(null); }} onDelete={applicationEditor === "new" ? undefined : () => { setData((current) => ({ ...current, applications: current.applications.filter((item) => item.id !== applicationEditor.id) })); setApplicationEditor(null); }} />}
+      {noteEditor && <NoteModal value={noteEditor} onClose={() => setNoteEditor(null)} onSave={(note) => { setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? note : item) })); setNoteEditor(null); }} onDelete={() => { setData((current) => ({ ...current, notes: current.notes.filter((item) => item.id !== noteEditor.id) })); setNoteEditor(null); }} />}
       {pasteEditor && <PasteApplicationModal onClose={() => setPasteEditor(false)} onCreate={(application) => { setData((current) => ({ ...current, applications: [...current.applications, application] })); setPasteEditor(false); setApplicationEditor(application); }} />}
-      {installHelp && <ModalFrame title="安装 MAP 到 Mac" subtitle="OFFLINE APP" onClose={() => setInstallHelp(false)}><div className="install-guide"><p>这台浏览器没有提供一键安装按钮。你仍然可以把 MAP 安装成独立的 Mac App：</p><ol><li>使用 Safari 打开 MAP 网站。</li><li>选择菜单栏的“文件”→“添加到程序坞”。</li><li>首次联网打开一次；之后断网也能查看和编辑计划。</li></ol><p className="install-guide-note">MAP AI 需要联网。本地任务、目标、课表、求职和健康记录不需要联网。</p><div className="modal-actions"><button className="primary-button" onClick={() => setInstallHelp(false)}>知道了</button></div></div></ModalFrame>}
+      {installHelp && <ModalFrame title="安装 MAP 到 Mac" subtitle="OFFLINE APP" onClose={() => setInstallHelp(false)}><div className="install-guide"><p>这台浏览器没有提供一键安装按钮。你仍然可以把 MAP 安装成独立的 Mac App：</p><ol><li>使用 Safari 打开 MAP 网站。</li><li>选择菜单栏的“文件”→“添加到程序坞”。</li><li>首次联网打开一次；之后断网也能查看和编辑计划。</li></ol><p className="install-guide-note">MAP AI 需要联网。本地任务、笔记、目标、课表、求职和健康记录不需要联网。</p><div className="modal-actions"><button className="primary-button" onClick={() => setInstallHelp(false)}>知道了</button></div></div></ModalFrame>}
     </main>
   );
 }
@@ -708,7 +778,7 @@ function TaskRow({ task, onToggle, onEdit, onDelete, compact = false }: { task: 
   const carried = Boolean(task.carriedFrom) && task.status === "todo";
   return <div className={`task-row ${task.status === "done" ? "done" : ""} ${carried ? "carried" : ""} ${compact ? "compact" : ""}`}>
     <button className="task-check" onClick={onToggle} aria-label={task.status === "done" ? "标记未完成" : "标记完成"}>{task.status === "done" ? "✓" : ""}</button>
-    <div className="task-main"><strong>{task.title}</strong>{compact && <span><i className={`dot ${categoryTone[task.category]}`} />{task.category}{task.endDate ? ` · 截止 ${formatDate(task.endDate)}` : ""}{carried && <b className="rollover-label">未完成顺延 · 原定 {formatDate(task.carriedFrom!)}</b>}</span>}{!compact && carried && <span className="rollover-meta">未完成顺延 · 原定 {formatDate(task.carriedFrom!)}</span>}</div>
+    <div className="task-main"><strong>{task.title}</strong>{task.details && <p className="task-details">{task.details}</p>}{compact && <span><i className={`dot ${categoryTone[task.category]}`} />{task.category}{task.endDate ? ` · 截止 ${formatDate(task.endDate)}` : ""}{carried && <b className="rollover-label">未完成顺延 · 原定 {formatDate(task.carriedFrom!)}</b>}</span>}{!compact && carried && <span className="rollover-meta">未完成顺延 · 原定 {formatDate(task.carriedFrom!)}</span>}</div>
     {!compact && <><span className="task-date">{formatDate(task.date)}{task.time ? ` · ${task.time}` : ""}</span><span className={`category-pill ${categoryTone[task.category]}`}>{task.category}</span><span className={`status-label ${carried ? "carried" : ""}`}>{task.status === "done" ? "已完成" : carried ? "未完成顺延" : task.priority === "high" ? "优先" : "待处理"}</span></>}
     {compact && <time>{task.time || "今天"}</time>}
     <div className="task-actions"><button onClick={onEdit}>编辑</button><button onClick={onDelete}>删除</button></div>
@@ -723,8 +793,15 @@ function Field({ label, children, wide = false }: { label: string; children: Rea
 
 function TaskModal({ value, defaultDate, onClose, onSave, onDelete }: { value: Task | "new"; defaultDate?: string; onClose: () => void; onSave: (task: Task) => void; onDelete?: () => void }) {
   const existing = value === "new" ? null : value;
-  const [title, setTitle] = useState(existing?.title || ""); const [category, setCategory] = useState<TaskCategory>(existing?.category || "生活"); const [date, setDate] = useState(existing?.date || defaultDate || getTorontoToday()); const [time, setTime] = useState(existing?.time || "09:00"); const [priority, setPriority] = useState<"high" | "normal">(existing?.priority || "normal");
-  return <ModalFrame title={existing ? "编辑任务" : "新建任务"} subtitle="TASK" onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); if (!title.trim()) return; onSave({ id: existing?.id || uid(), title: title.trim(), category, date, time, endDate: existing?.endDate, carriedFrom: existing && existing.date === date ? existing.carriedFrom : null, priority, status: existing?.status || "todo" }); }}><div className="form-grid"><Field label="任务名称" wide><input value={title} onChange={(e) => setTitle(e.target.value)} autoFocus required /></Field><Field label="类别"><select value={category} onChange={(e) => setCategory(e.target.value as TaskCategory)}><option>学业</option><option>求职</option><option>生活</option><option>健康</option></select></Field><Field label="优先级"><select value={priority} onChange={(e) => setPriority(e.target.value as "high" | "normal")}><option value="normal">普通</option><option value="high">优先</option></select></Field><Field label="日期"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} required /></Field><Field label="时间"><input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">保存任务</button></div></form></ModalFrame>;
+  const [title, setTitle] = useState(existing?.title || ""); const [details, setDetails] = useState(existing?.details || ""); const [category, setCategory] = useState<TaskCategory>(existing?.category || "生活"); const [date, setDate] = useState(existing?.date || defaultDate || getTorontoToday()); const [time, setTime] = useState(existing?.time || "09:00"); const [priority, setPriority] = useState<"high" | "normal">(existing?.priority || "normal");
+  return <ModalFrame title={existing ? "编辑任务" : "新建任务"} subtitle="TASK" onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); if (!title.trim()) return; onSave({ id: existing?.id || uid(), title: title.trim(), details: details.trim() || null, category, date, time, endDate: existing?.endDate, carriedFrom: existing && existing.date === date ? existing.carriedFrom : null, priority, status: existing?.status || "todo" }); }}><div className="form-grid"><Field label="任务名称" wide><input value={title} onChange={(e) => setTitle(e.target.value)} autoFocus required /></Field><Field label="任务细节" wide><textarea value={details} onChange={(e) => setDetails(e.target.value)} placeholder="补充地点、材料、步骤、联系人或任何执行时需要的信息……" /></Field><Field label="类别"><select value={category} onChange={(e) => setCategory(e.target.value as TaskCategory)}><option>学业</option><option>求职</option><option>生活</option><option>健康</option></select></Field><Field label="优先级"><select value={priority} onChange={(e) => setPriority(e.target.value as "high" | "normal")}><option value="normal">普通</option><option value="high">优先</option></select></Field><Field label="日期"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} required /></Field><Field label="时间"><input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">保存任务</button></div></form></ModalFrame>;
+}
+
+function NoteModal({ value, onClose, onSave, onDelete }: { value: Note; onClose: () => void; onSave: (note: Note) => void; onDelete: () => void }) {
+  const [content, setContent] = useState(value.content);
+  const [category, setCategory] = useState<NoteCategory>(value.category);
+  const [pinned, setPinned] = useState(value.pinned);
+  return <ModalFrame title="编辑笔记" subtitle="NOTE" onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); if (!content.trim()) return; onSave({ ...value, content: content.trim(), category, pinned, updatedAt: new Date().toISOString() }); }}><div className="form-grid"><Field label="分类"><select value={category} onChange={(event) => setCategory(event.target.value as NoteCategory)}>{NOTE_CATEGORIES.map((item) => <option key={item}>{item}</option>)}</select></Field><Field label="显示顺序"><button type="button" className={`pin-toggle ${pinned ? "active" : ""}`} onClick={() => setPinned((current) => !current)}>{pinned ? "● 已置顶" : "○ 置顶这条笔记"}</button></Field><Field label="笔记内容" wide><textarea className="note-editor-area" value={content} onChange={(event) => setContent(event.target.value)} /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit" disabled={!content.trim()}>保存笔记</button></div></form></ModalFrame>;
 }
 
 function ScheduleModal({ value, onClose, onSave, onDelete }: { value: ScheduleItem | "new"; onClose: () => void; onSave: (item: ScheduleItem) => void; onDelete?: () => void }) {

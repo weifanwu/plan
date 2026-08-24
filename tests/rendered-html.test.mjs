@@ -16,6 +16,7 @@ test("server-renders MAP", async () => {
   const html = await response.text();
   assert.match(html, /<title>MAP/);
   assert.match(html, /四个月毕业作战地图/);
+  assert.match(html, /灵感笔记/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
 });
 

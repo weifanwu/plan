@@ -1,4 +1,4 @@
-const CACHE_NAME = "map-life-offline-v2";
+const CACHE_NAME = "map-life-offline-v3";
 const SHELL_ASSETS = ["/manifest.webmanifest", "/favicon.svg", "/icon-192.png", "/icon-512.png", "/og.png"];
 
 self.addEventListener("install", (event) => {
