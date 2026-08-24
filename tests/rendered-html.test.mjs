@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { applyAIOperations } from "../lib/ai-operations.mjs";
+import { createPrivateVault, sealPrivateVault, unlockPrivateVault } from "../lib/private-vault.mjs";
 import { isCompletedTaskArchived } from "../lib/task-retention.mjs";
 import { shiftTaskToDate } from "../lib/task-reschedule.mjs";
 import { rollOverTasks } from "../lib/task-rollover.mjs";
@@ -103,6 +104,33 @@ test("draft inbox keeps unscheduled work compact and promotes it into dated task
   assert.match(source, /sourceDraft/);
   assert.match(styles, /\.draft-row/);
   assert.doesNotMatch(source, /className="note-grid"/);
+});
+
+test("private vault encrypts records and rejects a wrong password or tampering", async () => {
+  const passphrase = "correct horse battery staple";
+  const records = [{ id: "vault-test", title: "Example secret", value: "private-test-value", category: "其他", notes: "", pinned: false }];
+  const created = await createPrivateVault(passphrase, records);
+  const serialized = JSON.stringify(created.envelope);
+  assert.doesNotMatch(serialized, /private-test-value/);
+  assert.doesNotMatch(serialized, /correct horse/);
+  const unlocked = await unlockPrivateVault(passphrase, created.envelope);
+  assert.deepEqual(unlocked.items, records);
+  await assert.rejects(() => unlockPrivateVault("wrong password", created.envelope), /UNLOCK_FAILED/);
+  const resealed = await sealPrivateVault(records, unlocked.key, unlocked.salt);
+  const replacement = resealed.ciphertext.startsWith("A") ? "B" : "A";
+  await assert.rejects(() => unlockPrivateVault(passphrase, { ...resealed, ciphertext: `${replacement}${resealed.ciphertext.slice(1)}` }), /UNLOCK_FAILED/);
+});
+
+test("private vault stays separate from MAP data, backups, and AI context", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const appDataType = source.slice(source.indexOf("type AppData ="), source.indexOf("const DAY_ORDER"));
+  assert.match(source, /VAULT_STORAGE_KEY = "map-private-vault-v1"/);
+  assert.match(source, /不会发送给 MAP AI/);
+  assert.match(source, /导出加密备份/);
+  assert.match(source, /30 分钟无操作自动锁定/);
+  assert.match(source, /currentData: data/);
+  assert.doesNotMatch(appDataType, /vault/i);
+  assert.doesNotMatch(source, /sk-proj-/i);
 });
 
 test("current phase is editable and drives the long-term time map", async () => {

@@ -2,15 +2,17 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { applyAIOperations } from "../lib/ai-operations.mjs";
+import { createPrivateVault, PRIVATE_VAULT_ITERATIONS, sealPrivateVault, unlockPrivateVault } from "../lib/private-vault.mjs";
 import { rollOverTasks } from "../lib/task-rollover.mjs";
 import { shiftTaskToDate } from "../lib/task-reschedule.mjs";
 import { isCompletedTaskArchived } from "../lib/task-retention.mjs";
 import { isTaskVisibleToday } from "../lib/task-visibility.mjs";
 
-type View = "today" | "goals" | "semester" | "career" | "planner" | "notes" | "wellness";
+type View = "today" | "goals" | "semester" | "career" | "planner" | "notes" | "vault" | "wellness";
 type TaskCategory = "学业" | "求职" | "生活" | "健康";
 type TaskStatus = "todo" | "done";
 type NoteCategory = "待办" | "想法" | "课程" | "项目" | "求职" | "生活";
+type VaultCategory = "API 密钥" | "登录信息" | "身份号码" | "地址" | "常用文本" | "其他";
 
 type Task = {
   id: string;
@@ -64,6 +66,7 @@ type Workout = { id: string; title: string; day: string; duration: string; done:
 type ApplicationStage = "已投" | "面试" | "Offer" | "拒绝";
 type Application = { id: string; company: string; role: string; stage: ApplicationStage; link: string; contact: string; date: string; notes: string };
 type Note = { id: string; content: string; category: NoteCategory; pinned: boolean; createdAt: string; updatedAt: string };
+type VaultItem = { id: string; title: string; value: string; category: VaultCategory; notes: string; pinned: boolean; createdAt: string; updatedAt: string };
 type AIPlanPreview = { summary: string; changes: string[]; nextData: AppData };
 type AIModel = "gpt-5.6-luna" | "gpt-5.6-terra" | "gpt-5.6-sol" | "gpt-5.4-mini" | "gpt-5.4";
 type AIChatMessage = { id: string; role: "user" | "assistant"; content: string };
@@ -96,8 +99,11 @@ const CALENDAR_DAY_ORDER = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 const CALENDAR_DAY_LABEL = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 const APPLICATION_STAGES: ApplicationStage[] = ["已投", "面试", "Offer", "拒绝"];
 const NOTE_CATEGORIES: NoteCategory[] = ["待办", "想法", "课程", "项目", "求职", "生活"];
+const VAULT_CATEGORIES: VaultCategory[] = ["API 密钥", "登录信息", "身份号码", "地址", "常用文本", "其他"];
 const BASE_DATE = "2026-08-23";
 const STORAGE_KEY = "map-life-os-v1";
+const VAULT_STORAGE_KEY = "map-private-vault-v1";
+const VAULT_AUTO_LOCK_MS = 30 * 60 * 1000;
 const AI_WELCOME_MESSAGE: AIChatMessage = { id: "welcome", role: "assistant", content: "你好，我是 MAP AI。我能看到你当前阶段、长期目标、任务、课表、求职记录、健康计划和全部笔记，也知道哪些任务正在服务哪个目标。你可以让我分析现状、回答问题，或者一起把一个想法变成计划；任何数据修改都会先给你预览。" };
 const LEGACY_TASK_GOALS: Record<string, string> = { stephnie: "graduate", leetcode: "career", fees: "graduate", applications: "career", pte: "graduate", irene: "graduate" };
 
@@ -323,6 +329,26 @@ function formatNoteTime(value: string) {
   return new Intl.DateTimeFormat("zh-CN", { timeZone: "America/Toronto", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
+function normalizeVaultItems(value: unknown): VaultItem[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const item = entry as Partial<VaultItem>;
+    if (typeof item.id !== "string" || typeof item.title !== "string" || typeof item.value !== "string") return [];
+    const now = new Date().toISOString();
+    return [{
+      id: item.id,
+      title: item.title,
+      value: item.value,
+      category: VAULT_CATEGORIES.includes(item.category as VaultCategory) ? item.category as VaultCategory : "其他",
+      notes: typeof item.notes === "string" ? item.notes : "",
+      pinned: Boolean(item.pinned),
+      createdAt: typeof item.createdAt === "string" ? item.createdAt : now,
+      updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : now,
+    }];
+  });
+}
+
 export default function Home() {
   const [view, setView] = useState<View>("today");
   const [data, setData] = useState<AppData>(initialData);
@@ -343,6 +369,20 @@ export default function Home() {
   const [noteCategory, setNoteCategory] = useState<NoteCategory>("待办");
   const [noteFilter, setNoteFilter] = useState<"全部" | NoteCategory>("全部");
   const [noteQuery, setNoteQuery] = useState("");
+  const [vaultReady, setVaultReady] = useState(false);
+  const [vaultExists, setVaultExists] = useState(false);
+  const [vaultUnlocked, setVaultUnlocked] = useState(false);
+  const [vaultKey, setVaultKey] = useState<CryptoKey | null>(null);
+  const [vaultSalt, setVaultSalt] = useState("");
+  const [vaultIterations, setVaultIterations] = useState(PRIVATE_VAULT_ITERATIONS);
+  const [vaultItems, setVaultItems] = useState<VaultItem[]>([]);
+  const [vaultEditor, setVaultEditor] = useState<VaultItem | "new" | null>(null);
+  const [vaultQuery, setVaultQuery] = useState("");
+  const [vaultFilter, setVaultFilter] = useState<"全部" | VaultCategory>("全部");
+  const [vaultBusy, setVaultBusy] = useState(false);
+  const [vaultError, setVaultError] = useState("");
+  const [revealedVaultIds, setRevealedVaultIds] = useState<Set<string>>(() => new Set());
+  const [vaultCopiedId, setVaultCopiedId] = useState<string | null>(null);
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [taskDropDate, setTaskDropDate] = useState<string | null>(null);
   const [aiOpen, setAiOpen] = useState(false);
@@ -370,6 +410,7 @@ export default function Home() {
   const [standalone, setStandalone] = useState(false);
   const [today, setToday] = useState(() => getTorontoToday());
   const importRef = useRef<HTMLInputElement>(null);
+  const vaultImportRef = useRef<HTMLInputElement>(null);
   const noteDraftRef = useRef<HTMLTextAreaElement>(null);
   const aiConversationRef = useRef<HTMLDivElement>(null);
   const aiInputRef = useRef<HTMLTextAreaElement>(null);
@@ -381,6 +422,7 @@ export default function Home() {
   const voiceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const voiceAbortRef = useRef<AbortController | null>(null);
   const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const vaultCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const todayLabel = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", weekday: "long", month: "long", day: "numeric" }).format(new Date()).toUpperCase();
   const phaseTiming = today < data.phase.startDate ? "before" : today > data.phase.endDate ? "after" : "active";
   const phaseDays = phaseTiming === "before" ? Math.max(0, daysBetween(today, data.phase.startDate)) : Math.max(0, daysBetween(today, data.phase.endDate));
@@ -405,6 +447,8 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setToday(currentDay);
     setData({ ...initialData, ...parsed, phase: savedPhase, tasks: normalizeTaskGoals(rollOverTasks(parsed.tasks || initialData.tasks, currentDay), savedGoals), schedule: normalizeSchedule(parsed.schedule || initialData.schedule), goals: savedGoals, habits: parsed.habitDate === currentDay ? savedHabits : savedHabits.map((habit) => ({ ...habit, done: false })), workouts: parsed.workoutWeek === currentWeek ? savedWorkouts : savedWorkouts.map((workout) => ({ ...workout, done: false })), applications: normalizeApplications(parsed.applications), notes: parsed.notes || initialData.notes, habitDate: currentDay, workoutWeek: currentWeek });
+    setVaultExists(Boolean(window.localStorage.getItem(VAULT_STORAGE_KEY)));
+    setVaultReady(true);
     setReady(true);
   }, []);
 
@@ -415,6 +459,38 @@ export default function Home() {
   useEffect(() => {
     if (view === "notes") window.requestAnimationFrame(() => noteDraftRef.current?.focus());
   }, [view]);
+
+  useEffect(() => {
+    if (!vaultUnlocked) return;
+    let timer = window.setTimeout(() => {
+      setVaultUnlocked(false);
+      setVaultKey(null);
+      setVaultSalt("");
+      setVaultIterations(PRIVATE_VAULT_ITERATIONS);
+      setVaultItems([]);
+      setVaultEditor(null);
+      setRevealedVaultIds(new Set());
+    }, VAULT_AUTO_LOCK_MS);
+    const resetTimer = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        setVaultUnlocked(false);
+        setVaultKey(null);
+        setVaultSalt("");
+        setVaultIterations(PRIVATE_VAULT_ITERATIONS);
+        setVaultItems([]);
+        setVaultEditor(null);
+        setRevealedVaultIds(new Set());
+      }, VAULT_AUTO_LOCK_MS);
+    };
+    window.addEventListener("pointerdown", resetTimer);
+    window.addEventListener("keydown", resetTimer);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("pointerdown", resetTimer);
+      window.removeEventListener("keydown", resetTimer);
+    };
+  }, [vaultUnlocked]);
 
   useEffect(() => {
     if (!aiOpen) return;
@@ -469,7 +545,10 @@ export default function Home() {
     };
   }, []);
 
-  useEffect(() => () => { if (undoTimerRef.current) clearTimeout(undoTimerRef.current); }, []);
+  useEffect(() => () => {
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    if (vaultCopyTimerRef.current) clearTimeout(vaultCopyTimerRef.current);
+  }, []);
 
   const visibleTasks = useMemo(() => data.tasks.filter((task) => !isCompletedTaskArchived(task, today)), [data.tasks, today]);
   const todayDisplayTasks = useMemo(() => visibleTasks.filter((task) => isTaskVisibleToday(task, today)), [visibleTasks, today]);
@@ -515,6 +594,10 @@ export default function Home() {
     return data.notes.filter((note) => (noteFilter === "全部" || note.category === noteFilter) && (!query || note.content.toLocaleLowerCase().includes(query) || note.category.toLocaleLowerCase().includes(query))).slice().sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt));
   }, [data.notes, noteFilter, noteQuery]);
   const backlogCount = data.notes.filter((note) => note.category === "待办").length;
+  const visibleVaultItems = useMemo(() => {
+    const query = vaultQuery.trim().toLocaleLowerCase();
+    return vaultItems.filter((item) => (vaultFilter === "全部" || item.category === vaultFilter) && (!query || item.title.toLocaleLowerCase().includes(query) || item.value.toLocaleLowerCase().includes(query) || item.notes.toLocaleLowerCase().includes(query))).slice().sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updatedAt.localeCompare(left.updatedAt));
+  }, [vaultItems, vaultFilter, vaultQuery]);
 
   function openNewTask(date?: string, goalId?: string) {
     setNewTaskDate(date || null);
@@ -568,6 +651,139 @@ export default function Home() {
     setData((current) => ({ ...current, notes: [{ id: uid(), content, category: noteCategory, pinned: false, createdAt: now, updatedAt: now }, ...current.notes] }));
     setNoteDraft("");
     window.requestAnimationFrame(() => noteDraftRef.current?.focus());
+  }
+
+  function openVault() {
+    setView("vault");
+    setVaultError("");
+  }
+
+  async function setupPrivateVault(passphrase: string) {
+    setVaultBusy(true);
+    setVaultError("");
+    try {
+      const result = await createPrivateVault(passphrase, []);
+      window.localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(result.envelope));
+      setVaultKey(result.key);
+      setVaultSalt(result.salt);
+      setVaultIterations(result.iterations);
+      setVaultItems([]);
+      setVaultExists(true);
+      setVaultUnlocked(true);
+    } catch {
+      setVaultError("无法创建保险箱。请确认浏览器允许本地存储后重试。");
+    } finally {
+      setVaultBusy(false);
+    }
+  }
+
+  async function unlockPrivateVaultSession(passphrase: string) {
+    const saved = window.localStorage.getItem(VAULT_STORAGE_KEY);
+    if (!saved) { setVaultExists(false); setVaultError("没有找到本机保险箱，请先创建。"); return; }
+    setVaultBusy(true);
+    setVaultError("");
+    try {
+      const result = await unlockPrivateVault(passphrase, JSON.parse(saved));
+      setVaultKey(result.key);
+      setVaultSalt(result.salt);
+      setVaultIterations(result.iterations);
+      setVaultItems(normalizeVaultItems(result.items));
+      setVaultUnlocked(true);
+    } catch {
+      setVaultError("主密码不正确，或保险箱文件已经损坏。");
+    } finally {
+      setVaultBusy(false);
+    }
+  }
+
+  function lockPrivateVault() {
+    setVaultUnlocked(false);
+    setVaultKey(null);
+    setVaultSalt("");
+    setVaultIterations(PRIVATE_VAULT_ITERATIONS);
+    setVaultItems([]);
+    setVaultEditor(null);
+    setVaultQuery("");
+    setRevealedVaultIds(new Set());
+    setVaultCopiedId(null);
+    setVaultError("");
+  }
+
+  async function persistVaultItems(nextItems: VaultItem[]) {
+    if (!vaultKey || !vaultSalt) { lockPrivateVault(); return false; }
+    try {
+      const envelope = await sealPrivateVault(nextItems, vaultKey, vaultSalt, vaultIterations);
+      window.localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(envelope));
+      setVaultItems(nextItems);
+      return true;
+    } catch {
+      setVaultError("这次修改没有保存，请保持页面打开并重试。");
+      return false;
+    }
+  }
+
+  async function saveVaultItem(item: VaultItem) {
+    const nextItems = vaultEditor === "new" ? [item, ...vaultItems] : vaultItems.map((current) => current.id === item.id ? item : current);
+    if (await persistVaultItems(nextItems)) setVaultEditor(null);
+  }
+
+  async function deleteVaultItem(item: VaultItem) {
+    if (!window.confirm(`确定删除「${item.title}」吗？这个操作无法撤销。`)) return;
+    if (await persistVaultItems(vaultItems.filter((current) => current.id !== item.id))) setVaultEditor(null);
+  }
+
+  async function toggleVaultPin(item: VaultItem) {
+    const updated = { ...item, pinned: !item.pinned, updatedAt: new Date().toISOString() };
+    await persistVaultItems(vaultItems.map((current) => current.id === item.id ? updated : current));
+  }
+
+  async function copyVaultValue(item: VaultItem) {
+    try {
+      await navigator.clipboard.writeText(item.value);
+      setVaultCopiedId(item.id);
+      if (vaultCopyTimerRef.current) clearTimeout(vaultCopyTimerRef.current);
+      vaultCopyTimerRef.current = setTimeout(() => setVaultCopiedId(null), 1800);
+    } catch {
+      setVaultError("浏览器阻止了复制，请点“显示”后手动复制。");
+    }
+  }
+
+  function toggleVaultReveal(id: string) {
+    setRevealedVaultIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function exportEncryptedVault() {
+    const encrypted = window.localStorage.getItem(VAULT_STORAGE_KEY);
+    if (!encrypted) return;
+    const blob = new Blob([encrypted], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "map-private-vault-encrypted.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function importEncryptedVault(file?: File) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const envelope = JSON.parse(String(reader.result)) as { version?: number; kdf?: string; ciphertext?: string };
+        if (envelope.version !== 1 || envelope.kdf !== "PBKDF2-SHA-256" || typeof envelope.ciphertext !== "string") throw new Error("invalid vault");
+        if (vaultExists && !window.confirm("导入会替换这台设备现有的保险箱。确定继续吗？")) return;
+        window.localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(envelope));
+        lockPrivateVault();
+        setVaultExists(true);
+      } catch {
+        setVaultError("这个文件不是有效的 MAP 加密保险箱备份。");
+      }
+    };
+    reader.readAsText(file);
   }
 
   function toggleTask(id: string) {
@@ -874,7 +1090,8 @@ export default function Home() {
           <NavButton active={view === "career"} label="求职记录" icon="04" onClick={() => setView("career")} />
           <NavButton active={view === "planner"} label="任务计划" icon="05" onClick={() => setView("planner")} />
           <NavButton active={view === "notes"} label="草稿箱" icon="06" onClick={openNotes} />
-          <NavButton active={view === "wellness"} label="健康运动" icon="07" onClick={() => setView("wellness")} />
+          <NavButton active={view === "vault"} label="私人保险箱" icon="07" onClick={openVault} />
+          <NavButton active={view === "wellness"} label="健康运动" icon="08" onClick={() => setView("wellness")} />
         </nav>
 
         <div className="sidebar-spacer" />
@@ -891,16 +1108,16 @@ export default function Home() {
           <input ref={importRef} type="file" accept="application/json" hidden onChange={(event) => { importData(event.target.files?.[0]); event.currentTarget.value = ""; }} />
         </div>
         {!standalone && <button className="install-app-button" onClick={installMapApp}><span>↓</span><div><strong>安装 MAP App</strong><small>独立窗口 · 支持离线</small></div></button>}
-        <p className="local-note"><span /> 数据只保存在这台设备</p>
+        <p className="local-note"><span /> 本机保存 · 保险箱单独加密</p>
       </aside>
 
       <section className="workspace">
         <header className="topbar">
           <div>
             <p className="eyebrow">{todayLabel}</p>
-            <h1>{view === "today" ? "今天，先把最重要的事情往前推。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "看清当前阶段的时间与节奏。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : view === "notes" ? "没准备好排期的，先放进草稿箱。" : "健康不是剩余时间。"}</h1>
+            <h1>{view === "today" ? "今天，先把最重要的事情往前推。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "看清当前阶段的时间与节奏。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : view === "notes" ? "没准备好排期的，先放进草稿箱。" : view === "vault" ? "常用的敏感信息，安全地随取随用。" : "健康不是剩余时间。"}</h1>
           </div>
-          <div className="topbar-actions"><button className="quick-note-top" onClick={openNotes}><span>✎</span> 记草稿</button><button className="primary-button" onClick={() => openNewTask()}><span>＋</span> 新建任务</button></div>
+          <div className="topbar-actions"><button className="quick-vault-top" onClick={openVault}><span>⌁</span> 保险箱</button><button className="quick-note-top" onClick={openNotes}><span>✎</span> 记草稿</button><button className="primary-button" onClick={() => openNewTask()}><span>＋</span> 新建任务</button></div>
         </header>
 
         {view === "today" && (
@@ -1160,6 +1377,41 @@ export default function Home() {
           </div>
         )}
 
+        {view === "vault" && (
+          <div className="page-content vault-page">
+            {!vaultReady ? <div className="vault-loading">正在检查本机保险箱…</div> : !vaultUnlocked ? (
+              <VaultGate exists={vaultExists} busy={vaultBusy} error={vaultError} onSetup={setupPrivateVault} onUnlock={unlockPrivateVaultSession} onImport={() => vaultImportRef.current?.click()} />
+            ) : (
+              <section className="vault-workbench">
+                <header className="vault-hero">
+                  <div><p className="section-kicker">PRIVATE · DEVICE ENCRYPTED</p><h2>私人保险箱</h2><p>高频使用的密钥、账号、号码、地址和常用文本。内容默认遮挡，复制不需要先显示。</p></div>
+                  <div className="vault-hero-actions"><button className="vault-lock-button" onClick={lockPrivateVault}>锁定</button><button className="primary-button" onClick={() => setVaultEditor("new")}>＋ 新增记录</button></div>
+                </header>
+
+                <div className="vault-security-strip"><span>本机 AES-GCM 加密</span><span>30 分钟无操作自动锁定</span><strong>不会发送给 MAP AI，也不进入普通 MAP 备份</strong></div>
+                {vaultError && <p className="vault-error" role="alert">{vaultError}</p>}
+
+                <section className="vault-library panel">
+                  <header className="vault-toolbar">
+                    <div><p className="section-kicker">QUICK ACCESS</p><h3>{vaultItems.length} 条私人记录</h3></div>
+                    <div className="vault-toolbar-actions"><label className="vault-search"><span>⌕</span><input value={vaultQuery} onChange={(event) => setVaultQuery(event.target.value)} placeholder="搜索标题、内容或备注" /></label><button onClick={exportEncryptedVault}>导出加密备份</button><button onClick={() => vaultImportRef.current?.click()}>导入</button></div>
+                  </header>
+                  <div className="vault-filter-row" role="group" aria-label="筛选私人记录">{(["全部", ...VAULT_CATEGORIES] as const).map((category) => <button key={category} className={vaultFilter === category ? "active" : ""} onClick={() => setVaultFilter(category)}>{category}<span>{category === "全部" ? vaultItems.length : vaultItems.filter((item) => item.category === category).length}</span></button>)}</div>
+                  {visibleVaultItems.length > 0 ? <div className="vault-list">{visibleVaultItems.map((item) => {
+                    const revealed = revealedVaultIds.has(item.id);
+                    return <article className={`vault-row ${item.pinned ? "pinned" : ""}`} key={item.id}>
+                      <button className="vault-pin" onClick={() => void toggleVaultPin(item)} aria-label={item.pinned ? "取消置顶" : "置顶记录"} title={item.pinned ? "取消置顶" : "置顶"}>{item.pinned ? "●" : "○"}</button>
+                      <div className="vault-row-main"><div className="vault-row-title"><span>{item.category}</span><h3>{item.title}</h3><time>{formatNoteTime(item.updatedAt)}</time></div><code className={revealed ? "revealed" : "masked"}>{revealed ? item.value : "••••••••••••••••"}</code>{item.notes && <p>{item.notes}</p>}</div>
+                      <div className="vault-row-actions"><button className={vaultCopiedId === item.id ? "copied" : ""} onClick={() => void copyVaultValue(item)}>{vaultCopiedId === item.id ? "已复制" : "复制"}</button><button onClick={() => toggleVaultReveal(item.id)}>{revealed ? "隐藏" : "显示"}</button><button onClick={() => setVaultEditor(item)}>编辑</button></div>
+                    </article>;
+                  })}</div> : <div className="vault-empty"><span>{vaultQuery || vaultFilter !== "全部" ? "没有符合条件的记录" : "保险箱还是空的"}</span><p>{vaultQuery || vaultFilter !== "全部" ? "换一个分类或关键词。" : "点击“新增记录”，把第一条常用信息加进来。"}</p><button onClick={() => setVaultEditor("new")}>＋ 新增记录</button></div>}
+                </section>
+              </section>
+            )}
+            <input ref={vaultImportRef} type="file" accept="application/json" hidden onChange={(event) => { importEncryptedVault(event.target.files?.[0]); event.currentTarget.value = ""; }} />
+          </div>
+        )}
+
         {view === "wellness" && (
           <div className="page-content wellness-page">
             <section className="wellness-hero">
@@ -1207,7 +1459,7 @@ export default function Home() {
           <button type="button" className={`voice-button ${voiceState}`} onClick={() => void toggleVoiceInput()} disabled={aiLoading || voiceState === "transcribing" || !online} aria-label={voiceState === "recording" ? "停止录音" : voiceState === "transcribing" ? "正在转写语音" : "开始语音输入"}>{voiceState === "recording" ? "■" : voiceState === "transcribing" ? "…" : "麦"}</button>
           <button type="submit" className="ai-send-button" disabled={!aiText.trim() || aiLoading || voiceState !== "idle" || !online} aria-label="发送消息">↑</button>
         </form>
-        <p className="ai-privacy">分析会读取完整 MAP；明确的数据修改只发送相关模块。语音会发送至 OpenAI 转写，MAP 不保存录音。</p>
+        <p className="ai-privacy">分析会读取 MAP 计划数据，但永远不含私人保险箱；明确的数据修改只发送相关模块。语音会发送至 OpenAI 转写，MAP 不保存录音。</p>
       </aside>}
 
       {taskEditor && <TaskModal value={taskEditor} goals={data.goals} prefill={taskPrefill || undefined} sourceDraft={Boolean(promotingNoteId)} defaultDate={newTaskDate || undefined} defaultGoalId={newTaskGoalId || undefined} onClose={closeTaskEditor} onSave={saveTaskFromEditor} onDelete={taskEditor === "new" ? undefined : () => { deleteTask(taskEditor.id); closeTaskEditor(); }} />}
@@ -1218,9 +1470,60 @@ export default function Home() {
       {workoutEditor && <WorkoutModal value={workoutEditor} onClose={() => setWorkoutEditor(null)} onSave={(workout) => { setData((current) => ({ ...current, workouts: workoutEditor === "new" ? [...current.workouts, workout] : current.workouts.map((item) => item.id === workout.id ? workout : item) })); setWorkoutEditor(null); }} onDelete={workoutEditor === "new" ? undefined : () => { removeRecord("workouts", workoutEditor.id, `已删除运动「${workoutEditor.title}」`); setWorkoutEditor(null); }} />}
       {applicationEditor && <ApplicationModal value={applicationEditor} onClose={() => setApplicationEditor(null)} onSave={(application) => { setData((current) => ({ ...current, applications: applicationEditor === "new" ? [...current.applications, application] : current.applications.map((item) => item.id === application.id ? application : item) })); setApplicationEditor(null); }} onDelete={applicationEditor === "new" ? undefined : () => { removeRecord("applications", applicationEditor.id, `已删除求职记录「${applicationEditor.company}」`); setApplicationEditor(null); }} />}
       {noteEditor && <NoteModal value={noteEditor} onClose={() => setNoteEditor(null)} onSave={(note) => { setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? note : item) })); setNoteEditor(null); }} onDelete={() => { removeRecord("notes", noteEditor.id, `已删除草稿「${noteTitle(noteEditor)}」`); setNoteEditor(null); }} />}
-      {installHelp && <ModalFrame title="安装 MAP 到 Mac" subtitle="OFFLINE APP" onClose={() => setInstallHelp(false)}><div className="install-guide"><p>这台浏览器没有提供一键安装按钮。你仍然可以把 MAP 安装成独立的 Mac App：</p><ol><li>使用 Safari 打开 MAP 网站。</li><li>选择菜单栏的“文件”→“添加到程序坞”。</li><li>首次联网打开一次；之后断网也能查看和编辑计划。</li></ol><p className="install-guide-note">MAP AI 需要联网。本地任务、笔记、目标、课表、求职和健康记录不需要联网。</p><div className="modal-actions"><button className="primary-button" onClick={() => setInstallHelp(false)}>知道了</button></div></div></ModalFrame>}
+      {vaultEditor && vaultUnlocked && <VaultModal value={vaultEditor} onClose={() => setVaultEditor(null)} onSave={(item) => void saveVaultItem(item)} onDelete={vaultEditor === "new" ? undefined : () => void deleteVaultItem(vaultEditor)} />}
+      {installHelp && <ModalFrame title="安装 MAP 到 Mac" subtitle="OFFLINE APP" onClose={() => setInstallHelp(false)}><div className="install-guide"><p>这台浏览器没有提供一键安装按钮。你仍然可以把 MAP 安装成独立的 Mac App：</p><ol><li>使用 Safari 打开 MAP 网站。</li><li>选择菜单栏的“文件”→“添加到程序坞”。</li><li>首次联网打开一次；之后断网也能查看和编辑计划。</li></ol><p className="install-guide-note">MAP AI 需要联网。本地任务、笔记、目标、课表、求职、健康和私人保险箱不需要联网。</p><div className="modal-actions"><button className="primary-button" onClick={() => setInstallHelp(false)}>知道了</button></div></div></ModalFrame>}
     </main>
   );
+}
+
+function VaultGate({ exists, busy, error, onSetup, onUnlock, onImport }: { exists: boolean; busy: boolean; error: string; onSetup: (passphrase: string) => Promise<void>; onUnlock: (passphrase: string) => Promise<void>; onImport: () => void }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [passphrase, setPassphrase] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [localError, setLocalError] = useState("");
+  useEffect(() => { inputRef.current?.focus(); }, [exists]);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setLocalError("");
+    if (exists) {
+      if (!passphrase) return;
+      await onUnlock(passphrase);
+      setPassphrase("");
+      return;
+    }
+    if (passphrase.length < 10) { setLocalError("主密码至少需要 10 个字符。"); return; }
+    if (passphrase !== confirmation) { setLocalError("两次输入的主密码不一致。"); return; }
+    await onSetup(passphrase);
+    setPassphrase("");
+    setConfirmation("");
+  }
+
+  return <section className="vault-gate">
+    <div className="vault-gate-mark" aria-hidden="true"><span>⌁</span><i /></div>
+    <div className="vault-gate-copy"><p className="section-kicker">PRIVATE VAULT · LOCAL ONLY</p><h2>{exists ? "保险箱已锁定" : "创建你的私人保险箱"}</h2><p>{exists ? "输入主密码后即可查看、搜索和复制常用信息。关闭 App 或 30 分钟无操作后会重新锁定。" : "你设置的主密码只在解锁时使用，不会被 MAP 保存。记录会先加密，再存到这台设备。"}</p>
+      <form onSubmit={(event) => void submit(event)}>
+        <label><span>主密码</span><input ref={inputRef} type="password" autoComplete={exists ? "current-password" : "new-password"} value={passphrase} onChange={(event) => setPassphrase(event.target.value)} placeholder={exists ? "输入主密码" : "至少 10 个字符"} /></label>
+        {!exists && <label><span>再次输入</span><input type="password" autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="确认主密码" /></label>}
+        {(localError || error) && <p className="vault-gate-error" role="alert">{localError || error}</p>}
+        <button className="primary-button" type="submit" disabled={busy || !passphrase || (!exists && !confirmation)}>{busy ? "正在处理…" : exists ? "解锁保险箱" : "创建并解锁"}</button>
+      </form>
+      <button className="vault-import-link" onClick={onImport}>从加密备份导入</button>
+    </div>
+    <aside className="vault-gate-notes"><strong>使用前要知道</strong><ul><li>忘记主密码后，MAP 无法帮你找回内容。</li><li>保险箱不会发送给 MAP AI，也不会放进普通 MAP 备份。</li><li>请另外导出加密备份；清除浏览器数据会删除本机副本。</li></ul></aside>
+  </section>;
+}
+
+function VaultModal({ value, onClose, onSave, onDelete }: { value: VaultItem | "new"; onClose: () => void; onSave: (item: VaultItem) => void; onDelete?: () => void }) {
+  const existing = value === "new" ? null : value;
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { titleInputRef.current?.focus(); }, []);
+  const [title, setTitle] = useState(existing?.title || "");
+  const [itemValue, setItemValue] = useState(existing?.value || "");
+  const [category, setCategory] = useState<VaultCategory>(existing?.category || "常用文本");
+  const [notes, setNotes] = useState(existing?.notes || "");
+  const [pinned, setPinned] = useState(existing?.pinned || false);
+  return <ModalFrame title={existing ? "编辑私人记录" : "新增私人记录"} subtitle="ENCRYPTED RECORD" onClose={onClose} onDelete={onDelete}><form autoComplete="off" onSubmit={(event) => { event.preventDefault(); if (!title.trim() || !itemValue.trim()) return; const now = new Date().toISOString(); onSave({ id: existing?.id || uid(), title: title.trim(), value: itemValue.trim(), category, notes: notes.trim(), pinned, createdAt: existing?.createdAt || now, updatedAt: now }); }}><div className="form-grid"><Field label="名称" wide><input ref={titleInputRef} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：项目 API Key" required /></Field><Field label="分类"><select value={category} onChange={(event) => setCategory(event.target.value as VaultCategory)}>{VAULT_CATEGORIES.map((item) => <option key={item}>{item}</option>)}</select></Field><Field label="常用程度"><button type="button" className={`pin-toggle ${pinned ? "active" : ""}`} onClick={() => setPinned((current) => !current)}>{pinned ? "● 已置顶" : "○ 置顶，方便经常复制"}</button></Field><Field label="内容" wide><textarea className="vault-value-editor" value={itemValue} onChange={(event) => setItemValue(event.target.value)} placeholder="粘贴需要保存和复制的内容" spellCheck={false} required /></Field><Field label="备注（可选）" wide><textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="用途、关联账号、到期时间或其他说明" /></Field></div><p className="vault-modal-note">保存后只会写入独立的加密保险箱，不会进入草稿箱、MAP AI 或普通备份。</p><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">加密保存</button></div></form></ModalFrame>;
 }
 
 function NavButton({ active, label, icon, onClick }: { active: boolean; label: string; icon: string; onClick: () => void }) {
