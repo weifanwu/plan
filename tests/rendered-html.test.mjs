@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { applyAIOperations } from "../lib/ai-operations.mjs";
+import { isCompletedTaskArchived } from "../lib/task-retention.mjs";
+import { shiftTaskToDate } from "../lib/task-reschedule.mjs";
 import { rollOverTasks } from "../lib/task-rollover.mjs";
 import { isTaskActiveOn, isTaskVisibleToday } from "../lib/task-visibility.mjs";
 
@@ -54,6 +56,32 @@ test("calendar renders ranged work once instead of duplicating it in every day",
   assert.match(source, /!isMultiDayTask\(task\) && task\.date === day\.key/);
   assert.match(source, /!isMultiDayTask\(task\) && task\.date === cell\.key/);
   assert.doesNotMatch(source, /task\.date <= day\.key && \(task\.endDate \|\| task\.date\) >= day\.key/);
+});
+
+test("calendar task drag keeps time and shifts the whole date range", () => {
+  const task = { id: "range", date: "2026-08-24", endDate: "2026-08-30", time: "09:00", carriedFrom: "2026-08-23" };
+  const shifted = shiftTaskToDate(task, "2026-08-27");
+  assert.equal(shifted.date, "2026-08-27");
+  assert.equal(shifted.endDate, "2026-09-02");
+  assert.equal(shifted.time, "09:00");
+  assert.equal(shifted.carriedFrom, null);
+  assert.equal(task.date, "2026-08-24");
+});
+
+test("week and month task cards expose drag, drop, and completion controls", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /beginTaskDrag/);
+  assert.match(source, /dropTaskOnDate/);
+  assert.match(source, /task-drop-target/);
+  assert.match(source, /TaskCalendarCheck/);
+  assert.match(source, /拖动任务到日期格即可改期/);
+});
+
+test("completed tasks archive from the interface after 60 days", () => {
+  const task = { status: "done", completedAt: "2026-06-25", date: "2026-06-20" };
+  assert.equal(isCompletedTaskArchived(task, "2026-08-23"), false);
+  assert.equal(isCompletedTaskArchived(task, "2026-08-24"), true);
+  assert.equal(isCompletedTaskArchived({ ...task, status: "todo" }, "2027-01-01"), false);
 });
 
 test("workflow controls expose ranges, friendly weekdays, status filters, and undo", async () => {

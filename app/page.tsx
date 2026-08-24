@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { applyAIOperations } from "../lib/ai-operations.mjs";
 import { rollOverTasks } from "../lib/task-rollover.mjs";
+import { shiftTaskToDate } from "../lib/task-reschedule.mjs";
+import { isCompletedTaskArchived } from "../lib/task-retention.mjs";
 import { isTaskVisibleToday } from "../lib/task-visibility.mjs";
 
 type View = "today" | "goals" | "semester" | "career" | "planner" | "notes" | "wellness";
@@ -341,6 +343,8 @@ export default function Home() {
   const [noteCategory, setNoteCategory] = useState<NoteCategory>("待办");
   const [noteFilter, setNoteFilter] = useState<"全部" | NoteCategory>("全部");
   const [noteQuery, setNoteQuery] = useState("");
+  const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
+  const [taskDropDate, setTaskDropDate] = useState<string | null>(null);
   const [aiOpen, setAiOpen] = useState(false);
   const [aiText, setAiText] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
@@ -467,7 +471,8 @@ export default function Home() {
 
   useEffect(() => () => { if (undoTimerRef.current) clearTimeout(undoTimerRef.current); }, []);
 
-  const todayDisplayTasks = useMemo(() => data.tasks.filter((task) => isTaskVisibleToday(task, today)), [data.tasks, today]);
+  const visibleTasks = useMemo(() => data.tasks.filter((task) => !isCompletedTaskArchived(task, today)), [data.tasks, today]);
+  const todayDisplayTasks = useMemo(() => visibleTasks.filter((task) => isTaskVisibleToday(task, today)), [visibleTasks, today]);
   const todayTasks = useMemo(() => todayDisplayTasks.filter((task) => task.status === "todo"), [todayDisplayTasks]);
   const completedToday = todayDisplayTasks.filter((task) => task.status === "done").length;
   const taskProgress = todayTasks.length + completedToday === 0 ? 0 : Math.round((completedToday / (todayTasks.length + completedToday)) * 100);
@@ -477,7 +482,7 @@ export default function Home() {
   const weekDays = useMemo(() => buildWeekDays(today), [today]);
   const weekStart = weekDays[0].key;
   const weekEnd = weekDays[6].key;
-  const weeklyTasks = data.tasks.filter((task) => task.date <= weekEnd && (task.endDate || task.date) >= weekStart);
+  const weeklyTasks = visibleTasks.filter((task) => task.date <= weekEnd && (task.endDate || task.date) >= weekStart);
   const weeklySpanTasks = weeklyTasks.filter(isMultiDayTask).slice().sort((a, b) => a.date.localeCompare(b.date) || (a.endDate || a.date).localeCompare(b.endDate || b.date));
   const calendarMonthLabel = useMemo(() => {
     const [year, month] = calendarCursor.split("-").map(Number);
@@ -485,8 +490,8 @@ export default function Home() {
   }, [calendarCursor]);
   const monthStart = `${calendarCursor}-01`;
   const monthEnd = calendarCells.filter((cell) => cell.inMonth).at(-1)?.key || monthStart;
-  const monthlySpanTasks = data.tasks.filter((task) => isMultiDayTask(task) && task.date <= monthEnd && (task.endDate || task.date) >= monthStart).slice().sort((a, b) => a.date.localeCompare(b.date));
-  const visibleTaskCount = data.tasks.filter((task) => task.date <= monthEnd && (task.endDate || task.date) >= monthStart).length;
+  const monthlySpanTasks = visibleTasks.filter((task) => isMultiDayTask(task) && task.date <= monthEnd && (task.endDate || task.date) >= monthStart).slice().sort((a, b) => a.date.localeCompare(b.date));
+  const visibleTaskCount = visibleTasks.filter((task) => task.date <= monthEnd && (task.endDate || task.date) >= monthStart).length;
   const visibleScheduleCount = calendarCells.filter((cell) => cell.inMonth && cell.key >= data.phase.startDate && cell.key <= data.phase.endDate).reduce((count, cell) => count + data.schedule.filter((item) => item.days.includes(cell.dayCode)).length, 0);
   const applicationDateCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -494,11 +499,11 @@ export default function Home() {
     return [...counts.entries()].sort(([left], [right]) => right.localeCompare(left));
   }, [data.applications]);
   const visibleApplications = applicationDateFilter === "all" ? data.applications : data.applications.filter((application) => application.date === applicationDateFilter);
-  const upcomingTask = useMemo(() => data.tasks.filter((task) => task.status === "todo" && task.date > today).slice().sort((a, b) => a.date.localeCompare(b.date) || (a.time || "99:99").localeCompare(b.time || "99:99"))[0] || null, [data.tasks, today]);
+  const upcomingTask = useMemo(() => visibleTasks.filter((task) => task.status === "todo" && task.date > today).slice().sort((a, b) => a.date.localeCompare(b.date) || (a.time || "99:99").localeCompare(b.time || "99:99"))[0] || null, [visibleTasks, today]);
   const upcomingDate = upcomingTask ? dateCardParts(upcomingTask.date) : null;
   const courseCount = useMemo(() => new Set(data.schedule.filter((item) => item.kind === "课程").map((item) => item.code)).size, [data.schedule]);
   const taCount = data.schedule.filter((item) => item.kind === "TA").length;
-  const statusFilteredTasks = useMemo(() => data.tasks.filter((task) => plannerStatusFilter === "all" || (plannerStatusFilter === "done" ? task.status === "done" : task.status === "todo")), [data.tasks, plannerStatusFilter]);
+  const statusFilteredTasks = useMemo(() => visibleTasks.filter((task) => plannerStatusFilter === "all" || (plannerStatusFilter === "done" ? task.status === "done" : task.status === "todo")), [visibleTasks, plannerStatusFilter]);
   const plannerTasks = useMemo(() => statusFilteredTasks.filter((task) => (filter === "全部" || task.category === filter) && (goalFilter === "all" || (goalFilter === "none" ? !task.goalId : task.goalId === goalFilter))).slice().sort((a, b) => Number(a.status === "done") - Number(b.status === "done") || a.date.localeCompare(b.date) || (a.time || "99:99").localeCompare(b.time || "99:99")), [statusFilteredTasks, filter, goalFilter]);
   const goalById = useMemo(() => new Map(data.goals.map((goal) => [goal.id, goal])), [data.goals]);
   const goalTaskStats = useMemo(() => new Map(data.goals.map((goal) => {
@@ -567,6 +572,36 @@ export default function Home() {
 
   function toggleTask(id: string) {
     setData((current) => ({ ...current, tasks: rollOverTasks(current.tasks.map((task) => task.id === id ? { ...task, status: task.status === "done" ? "todo" as const : "done" as const, completedAt: task.status === "done" ? null : today } : task), today) }));
+  }
+
+  function beginTaskDrag(event: React.DragEvent<HTMLElement>, task: Task) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("application/x-map-task", task.id);
+    event.dataTransfer.setData("text/plain", task.id);
+    setDraggedTaskId(task.id);
+  }
+
+  function endTaskDrag() {
+    setDraggedTaskId(null);
+    setTaskDropDate(null);
+  }
+
+  function allowTaskDrop(event: React.DragEvent<HTMLElement>, date: string) {
+    if (!draggedTaskId) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    if (taskDropDate !== date) setTaskDropDate(date);
+  }
+
+  function dropTaskOnDate(event: React.DragEvent<HTMLElement>, date: string) {
+    event.preventDefault();
+    const id = event.dataTransfer.getData("application/x-map-task") || draggedTaskId;
+    const task = data.tasks.find((item) => item.id === id);
+    endTaskDrag();
+    if (!task || task.date === date) return;
+    const shifted = shiftTaskToDate(task, date) as Task;
+    setData((current) => ({ ...current, tasks: current.tasks.map((item) => item.id === task.id ? shifted : item) }));
+    showUndo(`已将「${task.title}」改到 ${formatDate(date)}`, (current) => ({ ...current, tasks: current.tasks.map((item) => item.id === task.id ? task : item) }));
   }
 
   function deleteTask(id: string) {
@@ -980,29 +1015,28 @@ export default function Home() {
               </div>
               {monthlySpanTasks.length > 0 && <section className="month-span-section">
                 <header><div><strong>本月跨度任务</strong><span>只显示一次，不再每天重复</span></div><i>{monthlySpanTasks.length}</i></header>
-                <div className="month-span-list">{monthlySpanTasks.map((task) => <button key={task.id} className={`month-span-task ${categoryTone[task.category]} ${task.status === "done" ? "done" : ""} ${task.carriedFrom && task.status === "todo" ? "carried" : ""}`} onClick={() => setTaskEditor(task)}>
-                  <span className="month-span-duration">{daysBetween(task.date, task.endDate!) + 1}<small>天</small></span>
-                  <span><strong>{task.title}</strong><small>{formatDate(task.date)} → {formatDate(task.endDate!)}</small></span>
-                  <em>{task.status === "done" ? "已完成" : task.carriedFrom ? "已顺延" : "进行中"}</em>
-                </button>)}</div>
+                <div className="month-span-list">{monthlySpanTasks.map((task) => <article key={task.id} draggable className={`month-span-task ${categoryTone[task.category]} ${task.status === "done" ? "done" : ""} ${task.carriedFrom && task.status === "todo" ? "carried" : ""} ${draggedTaskId === task.id ? "dragging" : ""}`} onDragStart={(event) => beginTaskDrag(event, task)} onDragEnd={endTaskDrag}>
+                  <TaskCalendarCheck task={task} onToggle={() => toggleTask(task.id)} />
+                  <button className="month-span-open" onClick={() => setTaskEditor(task)}><span className="month-span-duration">{daysBetween(task.date, task.endDate!) + 1}<small>天</small></span><span><strong>{task.title}</strong><small>{formatDate(task.date)} → {formatDate(task.endDate!)}</small></span><em>{task.status === "done" ? "已完成" : task.carriedFrom ? "已顺延" : "进行中"}</em></button>
+                </article>)}</div>
               </section>}
               <div className="calendar-scroll">
                 <div className="calendar-grid">
                   {CALENDAR_DAY_LABEL.map((label, index) => <div className={`calendar-weekday ${index > 4 ? "weekend" : ""}`} key={label}>{label}</div>)}
                   {calendarCells.map((cell) => {
-                    const tasks = data.tasks.filter((task) => !isMultiDayTask(task) && task.date === cell.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
+                    const tasks = visibleTasks.filter((task) => !isMultiDayTask(task) && task.date === cell.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
                     const schedules = cell.key >= data.phase.startDate && cell.key <= data.phase.endDate ? data.schedule.filter((item) => item.days.includes(cell.dayCode)).sort((a, b) => a.start.localeCompare(b.start)) : [];
                     const events = [...tasks.map((task) => ({ type: "task" as const, time: task.date === cell.key ? task.time : "", item: task })), ...schedules.map((item) => ({ type: "schedule" as const, time: item.start, item }))].sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
-                    return <article className={`calendar-day ${cell.inMonth ? "" : "outside"} ${cell.key === today ? "today" : ""}`} key={cell.key}>
+                    return <article className={`calendar-day ${cell.inMonth ? "" : "outside"} ${cell.key === today ? "today" : ""} ${taskDropDate === cell.key ? "task-drop-target" : ""}`} key={cell.key} onDragOver={(event) => allowTaskDrop(event, cell.key)} onDrop={(event) => dropTaskOnDate(event, cell.key)}>
                       <header><span>{cell.day}</span>{cell.key === today && <strong>今天</strong>}<button onClick={() => openNewTask(cell.key)} aria-label={`在 ${cell.key} 新建任务`}>＋</button></header>
                       <div className="calendar-events">
-                        {events.map((event) => event.type === "task" ? <button key={`task-${event.item.id}`} className={`calendar-event task ${categoryTone[event.item.category]} ${event.item.status === "done" ? "done" : ""} ${event.item.carriedFrom && event.item.status === "todo" ? "carried" : ""}`} onClick={() => setTaskEditor(event.item)} title={`${event.item.title}${event.item.details ? ` · ${event.item.details}` : ""}${event.item.carriedFrom && event.item.status === "todo" ? ` · 未完成顺延，原定 ${formatDate(event.item.carriedFrom)}` : ""}`}><time>{event.time || (event.item.date < cell.key ? "↳" : "")}</time><span>{event.item.title}</span></button> : <button key={`schedule-${event.item.id}`} className={`calendar-event schedule ${event.item.color}`} onClick={() => setScheduleEditor(event.item)} title={`${event.item.title} · ${event.item.room}`}><time>{event.item.start}</time><span>{event.item.code}</span></button>)}
+                        {events.map((event) => event.type === "task" ? <div key={`task-${event.item.id}`} draggable className={`calendar-event task ${categoryTone[event.item.category]} ${event.item.status === "done" ? "done" : ""} ${event.item.carriedFrom && event.item.status === "todo" ? "carried" : ""} ${draggedTaskId === event.item.id ? "dragging" : ""}`} onDragStart={(dragEvent) => beginTaskDrag(dragEvent, event.item)} onDragEnd={endTaskDrag} title={`${event.item.title} · 拖到其他日期可改期${event.item.details ? ` · ${event.item.details}` : ""}${event.item.carriedFrom && event.item.status === "todo" ? ` · 未完成顺延，原定 ${formatDate(event.item.carriedFrom)}` : ""}`}><TaskCalendarCheck task={event.item} onToggle={() => toggleTask(event.item.id)} /><button className="calendar-task-open" onClick={() => setTaskEditor(event.item)}><time>{event.time || (event.item.date < cell.key ? "↳" : "")}</time><span>{event.item.title}</span></button></div> : <button key={`schedule-${event.item.id}`} className={`calendar-event schedule ${event.item.color}`} onClick={() => setScheduleEditor(event.item)} title={`${event.item.title} · ${event.item.room}`}><time>{event.item.start}</time><span>{event.item.code}</span></button>)}
                       </div>
                     </article>;
                   })}
                 </div>
               </div>
-              <div className="calendar-legend"><span><i className="task" />当天任务</span><span><i className="schedule" />课程 / TA</span><small>跨度任务在日历上方集中显示</small></div>
+              <div className="calendar-legend"><span><i className="task" />当天任务</span><span><i className="schedule" />课程 / TA</span><small>拖动任务到日期格即可改期 · 跨度任务会保留持续天数</small></div>
             </section> : <section className="panel schedule-panel">
               <div className="panel-heading"><div><p className="section-kicker">THIS WEEK</p><h3>本周安排</h3></div><span className="counter">{formatDate(weekStart)}—{formatDate(weekEnd)} · {weeklyTasks.length} 项任务</span></div>
               <div className="fixed-schedule-heading first"><div><p className="section-kicker">WEEKLY RHYTHM</p><h3>每周固定课程与 TA</h3></div><span>点击安排可编辑</span></div>
@@ -1030,30 +1064,28 @@ export default function Home() {
                 </div>
               </div>
               <div className="week-task-section">
-                <div className="week-task-heading"><strong>本周任务</strong><span>跨度任务只显示一次 · ＋ 直接安排到当天</span></div>
+                <div className="week-task-heading"><strong>本周任务</strong><span>拖动任务改日期 · 跨度任务会整体平移</span></div>
                 <div className="week-task-scroll">
                   {weeklySpanTasks.length > 0 && <section className="week-span-section">
                     <div className="week-span-title"><div><strong>持续推进</strong><span>跨日任务按真实周期横跨本周</span></div><i>{weeklySpanTasks.length} 项</i></div>
                     <div className="week-span-calendar">
-                      <div className="week-span-days">{weekDays.map((day) => <span className={day.key === today ? "today" : ""} key={day.key}>{day.label}<small>{day.date}</small></span>)}</div>
+                      <div className="week-span-days">{weekDays.map((day) => <span className={`${day.key === today ? "today" : ""} ${taskDropDate === day.key ? "task-drop-target" : ""}`} key={day.key} onDragOver={(event) => allowTaskDrop(event, day.key)} onDrop={(event) => dropTaskOnDate(event, day.key)}>{day.label}<small>{day.date}</small></span>)}</div>
                       {weeklySpanTasks.map((task) => {
                         const clippedStart = task.date < weekStart ? weekStart : task.date;
                         const clippedEnd = (task.endDate || task.date) > weekEnd ? weekEnd : task.endDate || task.date;
                         const startIndex = weekDays.findIndex((day) => day.key === clippedStart);
                         const endIndex = weekDays.findIndex((day) => day.key === clippedEnd);
-                        return <div className="week-span-lane" key={task.id}><button className={`week-span-bar ${categoryTone[task.category]} ${task.status === "done" ? "done" : ""} ${task.carriedFrom && task.status === "todo" ? "carried" : ""}`} style={{ gridColumn: `${startIndex + 1} / ${endIndex + 2}` }} onClick={() => setTaskEditor(task)} title={`${task.title} · ${formatDate(task.date)} 至 ${formatDate(task.endDate!)}`}>
-                          <span><strong>{task.title}</strong><small>{formatDate(task.date)} → {formatDate(task.endDate!)}</small></span><i>{task.status === "done" ? "完成" : task.carriedFrom ? "顺延" : "进行中"}</i>
-                        </button></div>;
+                        return <div className="week-span-lane" key={task.id}><article draggable className={`week-span-bar ${categoryTone[task.category]} ${task.status === "done" ? "done" : ""} ${task.carriedFrom && task.status === "todo" ? "carried" : ""} ${draggedTaskId === task.id ? "dragging" : ""}`} style={{ gridColumn: `${startIndex + 1} / ${endIndex + 2}` }} onDragStart={(event) => beginTaskDrag(event, task)} onDragEnd={endTaskDrag} title={`${task.title} · ${formatDate(task.date)} 至 ${formatDate(task.endDate!)} · 拖到某天可整体改期`}><TaskCalendarCheck task={task} onToggle={() => toggleTask(task.id)} /><button className="week-span-open" onClick={() => setTaskEditor(task)}><span><strong>{task.title}</strong><small>{formatDate(task.date)} → {formatDate(task.endDate!)}</small></span><i>{task.status === "done" ? "完成" : task.carriedFrom ? "顺延" : "进行中"}</i></button></article></div>;
                       })}
                     </div>
                   </section>}
                   <div className="week-task-grid">
                     {weekDays.map((day) => {
-                      const tasks = data.tasks.filter((task) => !isMultiDayTask(task) && task.date === day.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
-                      return <article className={`week-task-day ${day.key === today ? "today" : ""}`} key={day.key}>
+                      const tasks = visibleTasks.filter((task) => !isMultiDayTask(task) && task.date === day.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
+                      return <article className={`week-task-day ${day.key === today ? "today" : ""} ${taskDropDate === day.key ? "task-drop-target" : ""}`} key={day.key} onDragOver={(event) => allowTaskDrop(event, day.key)} onDrop={(event) => dropTaskOnDate(event, day.key)}>
                         <header><div><strong>{day.label}</strong><span>{day.date}</span></div>{day.key === today && <i>今天</i>}</header>
                         <div className="week-task-list">
-                          {tasks.map((task) => <button key={task.id} className={`week-task-item ${categoryTone[task.category]} ${task.status === "done" ? "done" : ""} ${task.carriedFrom && task.status === "todo" ? "carried" : ""}`} onClick={() => setTaskEditor(task)}><time>{task.date === day.key ? task.time || "全天" : "持续"}</time><span>{task.title}{task.details && <small className="week-task-detail">{task.details}</small>}{task.carriedFrom && task.status === "todo" && <small>未完成顺延 · 原定 {formatDate(task.carriedFrom)}</small>}</span></button>)}
+                          {tasks.map((task) => <article key={task.id} draggable className={`week-task-item ${categoryTone[task.category]} ${task.status === "done" ? "done" : ""} ${task.carriedFrom && task.status === "todo" ? "carried" : ""} ${draggedTaskId === task.id ? "dragging" : ""}`} onDragStart={(event) => beginTaskDrag(event, task)} onDragEnd={endTaskDrag} title="拖到其他日期可改期"><TaskCalendarCheck task={task} onToggle={() => toggleTask(task.id)} /><button className="week-task-open" onClick={() => setTaskEditor(task)}><time>{task.date === day.key ? task.time || "全天" : "持续"}</time><span>{task.title}{task.details && <small className="week-task-detail">{task.details}</small>}{task.carriedFrom && task.status === "todo" && <small>未完成顺延 · 原定 {formatDate(task.carriedFrom)}</small>}</span></button></article>)}
                           {tasks.length === 0 && <span className="week-task-empty">暂无任务</span>}
                         </div>
                         <button className="week-task-add" onClick={() => openNewTask(day.key)}>＋ 添加</button>
@@ -1094,6 +1126,7 @@ export default function Home() {
               <div className="filter-row">{(["全部", "学业", "求职", "生活", "健康"] as const).map((item) => <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}<span>{item === "全部" ? statusFilteredTasks.length : statusFilteredTasks.filter((task) => task.category === item).length}</span></button>)}</div>
               <div className="planner-controls"><label className="goal-filter"><span>关联目标</span><select value={goalFilter} onChange={(event) => setGoalFilter(event.target.value)}><option value="all">全部目标</option><option value="none">未关联目标</option>{data.goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.title}</option>)}</select></label><div className="status-switch" role="group" aria-label="任务状态筛选"><button className={plannerStatusFilter === "open" ? "active" : ""} onClick={() => setPlannerStatusFilter("open")}>待处理</button><button className={plannerStatusFilter === "done" ? "active" : ""} onClick={() => setPlannerStatusFilter("done")}>已完成</button><button className={plannerStatusFilter === "all" ? "active" : ""} onClick={() => setPlannerStatusFilter("all")}>全部</button></div></div>
             </div>
+            <p className="task-retention-note">完成任务会保留 60 天，之后自动从界面归档；导出备份仍会保留历史数据。</p>
             <section className="panel task-library">
               <div className="task-table-head"><span>任务</span><span>日期</span><span>类别</span><span>状态</span><span /></div>
               {plannerTasks.map((task) => <TaskRow key={task.id} task={task} goal={task.goalId ? goalById.get(task.goalId) : undefined} onToggle={() => toggleTask(task.id)} onEdit={() => setTaskEditor(task)} onDelete={() => deleteTask(task.id)} />)}
@@ -1192,6 +1225,10 @@ export default function Home() {
 
 function NavButton({ active, label, icon, onClick }: { active: boolean; label: string; icon: string; onClick: () => void }) {
   return <button className={active ? "active" : ""} onClick={onClick}><span>{icon}</span>{label}<i>→</i></button>;
+}
+
+function TaskCalendarCheck({ task, onToggle }: { task: Task; onToggle: () => void }) {
+  return <button type="button" draggable={false} className={`calendar-task-check ${task.status === "done" ? "checked" : ""}`} onMouseDown={(event) => event.stopPropagation()} onDragStart={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={(event) => { event.stopPropagation(); onToggle(); }} aria-label={task.status === "done" ? `将「${task.title}」标记为未完成` : `完成「${task.title}」`}>{task.status === "done" ? "✓" : ""}</button>;
 }
 
 function TaskRow({ task, goal, onToggle, onEdit, onDelete, compact = false }: { task: Task; goal?: Goal; onToggle: () => void; onEdit: () => void; onDelete: () => void; compact?: boolean }) {
