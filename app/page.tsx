@@ -49,6 +49,9 @@ type ApplicationStage = "已投" | "面试" | "Offer" | "拒绝";
 type Application = { id: string; company: string; role: string; stage: ApplicationStage; link: string; contact: string; date: string; notes: string };
 type Note = { id: string; content: string; category: NoteCategory; pinned: boolean; createdAt: string; updatedAt: string };
 type AIPlanPreview = { summary: string; changes: string[]; nextData: AppData };
+type AIModel = "gpt-5.4-mini" | "gpt-5.4";
+type AIChatMessage = { id: string; role: "user" | "assistant"; content: string };
+type AIChatResponse = AIPlanPreview & { reply: string; action: "answer" | "proposal"; error?: string };
 type PWAInstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
 
 type AppData = {
@@ -71,6 +74,7 @@ const APPLICATION_STAGES: ApplicationStage[] = ["已投", "面试", "Offer", "�
 const NOTE_CATEGORIES: NoteCategory[] = ["想法", "课程", "项目", "求职", "生活"];
 const BASE_DATE = "2026-08-23";
 const STORAGE_KEY = "map-life-os-v1";
+const AI_WELCOME_MESSAGE: AIChatMessage = { id: "welcome", role: "assistant", content: "你好，我是 MAP AI。我能看到你当前的目标、任务、课表、求职记录、健康计划和全部笔记。你可以让我分析现状、回答问题，或者一起把一个想法变成计划；任何数据修改都会先给你预览。" };
 
 function getTorontoToday() {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Toronto", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
@@ -114,6 +118,14 @@ function moveMonth(cursor: string, distance: number) {
 
 function normalizeApplications(applications: Application[] = []) {
   return applications.map((application) => ({ ...application, stage: APPLICATION_STAGES.includes(application.stage as ApplicationStage) ? application.stage as ApplicationStage : "已投" as ApplicationStage }));
+}
+
+function normalizeTasks(tasks: Task[] = []) {
+  return tasks.map((task) => ({ ...task, details: task.details ?? null, time: task.time ?? null, endDate: task.endDate ?? null, carriedFrom: task.carriedFrom ?? null }));
+}
+
+function normalizeSchedule(schedule: ScheduleItem[] = []) {
+  return schedule.map((item) => ({ ...item, detail: item.detail ?? null }));
 }
 
 const initialData: AppData = {
@@ -231,12 +243,13 @@ export default function Home() {
   const [noteDraft, setNoteDraft] = useState("");
   const [noteCategory, setNoteCategory] = useState<NoteCategory>("想法");
   const [noteQuery, setNoteQuery] = useState("");
-  const [pasteEditor, setPasteEditor] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [aiText, setAiText] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
   const [aiPreview, setAiPreview] = useState<AIPlanPreview | null>(null);
+  const [aiMessages, setAiMessages] = useState<AIChatMessage[]>([AI_WELCOME_MESSAGE]);
+  const [aiModel, setAiModel] = useState<AIModel>("gpt-5.4-mini");
   const [filter, setFilter] = useState<"全部" | TaskCategory>("全部");
   const [semesterMode, setSemesterMode] = useState<"calendar" | "week">("week");
   const [calendarCursor, setCalendarCursor] = useState(() => getTorontoToday().slice(0, 7));
@@ -251,6 +264,9 @@ export default function Home() {
   const [today, setToday] = useState(() => getTorontoToday());
   const importRef = useRef<HTMLInputElement>(null);
   const noteDraftRef = useRef<HTMLTextAreaElement>(null);
+  const aiConversationRef = useRef<HTMLDivElement>(null);
+  const aiInputRef = useRef<HTMLTextAreaElement>(null);
+  const aiSessionRef = useRef(0);
   const todayLabel = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", weekday: "long", month: "long", day: "numeric" }).format(new Date()).toUpperCase();
   const daysToGraduate = Math.max(0, Math.ceil((Date.parse("2026-12-28T12:00:00-05:00") - Date.parse(`${today}T12:00:00-05:00`)) / 86400000));
   const semesterProgress = Math.max(0, Math.min(100, Math.round(((Date.parse(`${today}T12:00:00-05:00`) - Date.parse("2026-09-01T12:00:00-04:00")) / (Date.parse("2026-12-28T12:00:00-05:00") - Date.parse("2026-09-01T12:00:00-04:00"))) * 100)));
@@ -264,7 +280,7 @@ export default function Home() {
     const savedHabits = parsed.habits || initialData.habits;
     const savedWorkouts = parsed.workouts || initialData.workouts;
     setToday(currentDay);
-    setData({ ...initialData, ...parsed, tasks: rollOverTasks(parsed.tasks || initialData.tasks, currentDay), schedule: parsed.schedule || initialData.schedule, goals: parsed.goals || initialData.goals, habits: parsed.habitDate === currentDay ? savedHabits : savedHabits.map((habit) => ({ ...habit, done: false })), workouts: parsed.workoutWeek === currentWeek ? savedWorkouts : savedWorkouts.map((workout) => ({ ...workout, done: false })), applications: normalizeApplications(parsed.applications), notes: parsed.notes || initialData.notes, habitDate: currentDay, workoutWeek: currentWeek });
+    setData({ ...initialData, ...parsed, tasks: normalizeTasks(rollOverTasks(parsed.tasks || initialData.tasks, currentDay)), schedule: normalizeSchedule(parsed.schedule || initialData.schedule), goals: parsed.goals || initialData.goals, habits: parsed.habitDate === currentDay ? savedHabits : savedHabits.map((habit) => ({ ...habit, done: false })), workouts: parsed.workoutWeek === currentWeek ? savedWorkouts : savedWorkouts.map((workout) => ({ ...workout, done: false })), applications: normalizeApplications(parsed.applications), notes: parsed.notes || initialData.notes, habitDate: currentDay, workoutWeek: currentWeek });
     setReady(true);
   }, []);
 
@@ -275,6 +291,13 @@ export default function Home() {
   useEffect(() => {
     if (view === "notes") window.requestAnimationFrame(() => noteDraftRef.current?.focus());
   }, [view]);
+
+  useEffect(() => {
+    if (!aiOpen) return;
+    window.requestAnimationFrame(() => {
+      if (aiConversationRef.current) aiConversationRef.current.scrollTop = aiConversationRef.current.scrollHeight;
+    });
+  }, [aiMessages, aiLoading, aiOpen, aiPreview]);
 
   useEffect(() => {
     const refreshDay = () => setToday(getTorontoToday());
@@ -399,7 +422,7 @@ export default function Home() {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      try { const parsed = JSON.parse(String(reader.result)) as AppData; setData({ ...initialData, ...parsed, tasks: rollOverTasks(parsed.tasks || [], today), applications: normalizeApplications(parsed.applications), notes: parsed.notes || [] }); } catch { window.alert("这个备份文件无法读取。"); }
+      try { const parsed = JSON.parse(String(reader.result)) as AppData; setData({ ...initialData, ...parsed, tasks: normalizeTasks(rollOverTasks(parsed.tasks || [], today)), schedule: normalizeSchedule(parsed.schedule || []), applications: normalizeApplications(parsed.applications), notes: parsed.notes || [] }); } catch { window.alert("这个备份文件无法读取。"); }
     };
     reader.readAsText(file);
   }
@@ -411,32 +434,65 @@ export default function Home() {
     if (result.outcome === "accepted") setInstallPrompt(null);
   }
 
-  async function createAIPlan() {
-    if (!aiText.trim() || aiLoading) return;
-    if (!online) { setAiError("当前处于离线模式。计划仍可编辑，MAP AI 会在恢复网络后继续使用。"); return; }
+  function closeAIChat() {
+    aiSessionRef.current += 1;
+    setAiOpen(false);
+    setAiText("");
+    setAiLoading(false);
+    setAiError("");
+    setAiPreview(null);
+    setAiMessages([AI_WELCOME_MESSAGE]);
+  }
+
+  function toggleAIChat() {
+    if (aiOpen) { closeAIChat(); return; }
+    setAiOpen(true);
+    window.requestAnimationFrame(() => aiInputRef.current?.focus());
+  }
+
+  function openJobCaptureAI() {
+    setAiOpen(true);
+    setAiText("请把我接下来粘贴的职位信息加入求职看板：\n");
+    window.requestAnimationFrame(() => aiInputRef.current?.focus());
+  }
+
+  async function sendAIMessage(text = aiText) {
+    const content = text.trim();
+    if (!content || aiLoading) return;
+    if (!online) { setAiError("当前处于离线模式。MAP 的其他功能仍可使用，恢复网络后再继续对话。"); return; }
+    const userMessage: AIChatMessage = { id: uid(), role: "user", content };
+    const nextMessages = [...aiMessages, userMessage];
+    const session = aiSessionRef.current;
+    setAiMessages(nextMessages);
+    setAiText("");
     setAiLoading(true);
     setAiError("");
     setAiPreview(null);
     try {
-      const response = await fetch("/api/ai-plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ instruction: aiText.trim(), currentData: data, today }) });
-      const result = await response.json() as AIPlanPreview & { error?: string };
-      if (!response.ok) throw new Error(result.error || "AI 暂时无法创建计划。");
+      const response = await fetch("/api/ai-chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: nextMessages.map(({ role, content: messageContent }) => ({ role, content: messageContent })), currentData: data, today, model: aiModel }) });
+      const result = await response.json() as AIChatResponse;
+      if (!response.ok) throw new Error(result.error || "MAP AI 暂时无法回复。");
       if (!result.nextData || !Array.isArray(result.changes) || !Array.isArray(result.nextData.tasks) || !Array.isArray(result.nextData.goals) || !Array.isArray(result.nextData.notes)) throw new Error("AI 返回的数据格式不完整，请再试一次。");
-      setAiPreview({ ...result, changes: deriveAIChanges(data, result.nextData) });
+      if (session !== aiSessionRef.current) return;
+      setAiMessages((current) => [...current, { id: uid(), role: "assistant", content: result.reply }]);
+      if (result.action === "proposal") {
+        const changes = deriveAIChanges(data, result.nextData);
+        if (!(changes.length === 1 && changes[0] === "没有检测到实际数据变化。")) setAiPreview({ summary: result.summary, changes, nextData: result.nextData });
+      }
     } catch (error) {
-      setAiError(error instanceof Error ? error.message : "AI 暂时无法创建计划。");
+      if (session !== aiSessionRef.current) return;
+      setAiError(error instanceof Error ? error.message : "MAP AI 暂时无法回复。");
     } finally {
-      setAiLoading(false);
+      if (session === aiSessionRef.current) setAiLoading(false);
     }
   }
 
   function applyAIPlan() {
     if (!aiPreview) return;
     setData({ ...aiPreview.nextData, tasks: rollOverTasks(aiPreview.nextData.tasks, today), habitDate: today, workoutWeek: getWeekKey(today) });
-    setAiText("");
+    setAiMessages((current) => [...current, { id: uid(), role: "assistant", content: `已经应用：${aiPreview.summary}` }]);
     setAiPreview(null);
     setAiError("");
-    setAiOpen(false);
   }
 
   return (
@@ -662,7 +718,7 @@ export default function Home() {
           <div className="page-content career-page">
             <section className="career-summary">
               <div><p className="section-kicker">OPPORTUNITY PIPELINE</p><h2>{data.applications.length}</h2><p>个机会正在记录 · 现有一年实习 Offer 作为保底</p></div>
-              <div className="career-actions"><button className="ghost-button" onClick={() => setPasteEditor(true)}>粘贴职位信息</button><button className="primary-button" onClick={() => setApplicationEditor("new")}>＋ 添加公司</button></div>
+              <div className="career-actions"><button className="primary-button" onClick={() => setApplicationEditor("new")}>＋ 添加公司</button></div>
             </section>
             <div className="pipeline-guide"><span>拖动卡片即可更新进度</span><i>已投 → 面试 → Offer / 拒绝</i></div>
             <section className="pipeline">
@@ -671,7 +727,7 @@ export default function Home() {
                 return <div className={`pipeline-column ${dragOverStage === stage ? "drag-over" : ""}`} key={stage} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverStage(stage); }} onDrop={(event) => { event.preventDefault(); const id = event.dataTransfer.getData("text/plain") || draggedApplicationId; if (id) moveApplication(id, stage); setDraggedApplicationId(null); setDragOverStage(null); }}><header><strong>{stage}</strong><span>{applications.length}</span></header><div className="pipeline-stack">{applications.map((application) => <button draggable className={`application-card ${draggedApplicationId === application.id ? "dragging" : ""}`} key={application.id} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", application.id); setDraggedApplicationId(application.id); }} onDragEnd={() => { setDraggedApplicationId(null); setDragOverStage(null); }} onClick={() => setApplicationEditor(application)}><span className="company-initial">{application.company.slice(0, 1).toUpperCase()}</span><strong>{application.company}</strong><p>{application.role}</p>{application.date && <small>{formatDate(application.date)}</small>}<i className="drag-handle" aria-hidden="true">⋮⋮</i></button>)}<button className="pipeline-add" onClick={() => setApplicationEditor("new")}>＋ 添加</button></div></div>;
               })}
             </section>
-            {data.applications.length === 0 && <section className="career-empty"><span>先从一个值得关注的公司开始</span><h3>不用海投。把真正比现有 Offer 更好的机会留下来，持续推进。</h3><button className="text-link" onClick={() => setPasteEditor(true)}>粘贴一段职位信息快速创建 →</button></section>}
+            {data.applications.length === 0 && <section className="career-empty"><span>先从一个值得关注的公司开始</span><h3>不用海投。把真正比现有 Offer 更好的机会留下来，持续推进。</h3><button className="text-link" onClick={openJobCaptureAI}>打开 MAP AI 添加职位 →</button></section>}
           </div>
         )}
 
@@ -735,26 +791,27 @@ export default function Home() {
         )}
       </section>
 
-      <button className={`ai-launcher ${aiOpen ? "active" : ""} ${!online ? "offline" : ""}`} onClick={() => setAiOpen((open) => !open)} aria-label={aiOpen ? "关闭 MAP AI" : "打开 MAP AI"}><span>✦</span><strong>{online ? "MAP AI" : "AI 离线"}</strong></button>
-      {aiOpen && <aside className="ai-panel" aria-label="MAP AI 计划助手">
-        <header><div><p className="section-kicker">INTENT → PLAN</p><h2>告诉我你想怎么安排。</h2></div><button onClick={() => setAiOpen(false)} aria-label="关闭">×</button></header>
-        {!aiPreview ? <>
-          <p className="ai-intro">直接粘贴课程通知、职位描述、旅行安排，或者用一句话告诉我你想新增、修改或删除什么。</p>
-          <div className="ai-prompts">
-            {["把这周的待办按优先级安排好", "明天下午安排一次 45 分钟力量训练", "把这段职位信息加入求职看板"].map((prompt) => <button key={prompt} onClick={() => setAiText(prompt)}>{prompt}</button>)}
-          </div>
-          <textarea value={aiText} onChange={(event) => setAiText(event.target.value)} placeholder="例如：下周一开始，每周一三五晚上 7 点刷题一小时；再加一个目标，年底前完成 100 道题……" autoFocus />
+      <button className={`ai-launcher ${aiOpen ? "active" : ""} ${!online ? "offline" : ""}`} onClick={toggleAIChat} aria-label={aiOpen ? "关闭 MAP AI" : "打开 MAP AI"}><span>✦</span><strong>{online ? "MAP AI" : "AI 离线"}</strong></button>
+      {aiOpen && <aside className="ai-panel ai-chat-panel" aria-label="MAP AI 对话助手">
+        <header><div><p className="section-kicker">YOUR LIFE · IN CONTEXT</p><h2>MAP AI</h2></div><div className="ai-header-actions"><label><span>模型</span><select value={aiModel} onChange={(event) => setAiModel(event.target.value as AIModel)} disabled={aiLoading}><option value="gpt-5.4-mini">快速 · GPT-5.4 mini</option><option value="gpt-5.4">深度 · GPT-5.4</option></select></label><button onClick={closeAIChat} aria-label="关闭并清空本次对话">×</button></div></header>
+        <div className="ai-quick-prompts" aria-label="快捷提问">{["分析我这周最需要注意什么", "帮我梳理当前所有课程项目", "把这段职业信息加入求职看板"].map((prompt) => <button key={prompt} onClick={() => void sendAIMessage(prompt)} disabled={aiLoading || !online}>{prompt}</button>)}</div>
+        <div className="ai-conversation" ref={aiConversationRef}>
+          {aiMessages.map((message) => <div className={`ai-message ${message.role}`} key={message.id}><span>{message.role === "assistant" ? "✦" : "你"}</span><div><p>{message.content}</p></div></div>)}
+          {aiLoading && <div className="ai-message assistant loading"><span>✦</span><div><i /><i /><i /></div></div>}
           {aiError && <p className="ai-error">{aiError}</p>}
-          <p className="ai-privacy">发送时，这段文字和当前计划数据会传给 OpenAI。API key 只在服务端使用，不会进入浏览器。</p>
-          <button className="ai-submit" onClick={createAIPlan} disabled={!aiText.trim() || aiLoading || !online}>{aiLoading ? <><i /> 正在整理你的计划…</> : !online ? <>恢复网络后使用 MAP AI</> : <>生成修改预览 <span>→</span></>}</button>
-        </> : <div className="ai-preview">
-          <div className="ai-preview-mark">✓</div>
-          <p className="section-kicker">READY TO APPLY</p>
-          <h3>{aiPreview.summary}</h3>
-          <div className="ai-change-list">{aiPreview.changes.map((change, index) => <div key={`${change}-${index}`}><span>{String(index + 1).padStart(2, "0")}</span><p>{change}</p></div>)}</div>
-          <p className="ai-confirm-note">这些改动尚未写入。确认后才会更新当前电脑里的 MAP 数据。</p>
-          <div className="ai-preview-actions"><button className="ghost-button" onClick={() => setAiPreview(null)}>返回修改</button><button className="primary-button" onClick={applyAIPlan}>确认并应用</button></div>
-        </div>}
+          {aiPreview && <section className="ai-preview">
+            <div className="ai-preview-head"><span>等待你确认</span><strong>尚未写入</strong></div>
+            <h3>{aiPreview.summary}</h3>
+            <div className="ai-change-list">{aiPreview.changes.map((change, index) => <div key={`${change}-${index}`}><span>{String(index + 1).padStart(2, "0")}</span><p>{change}</p></div>)}</div>
+            <p className="ai-confirm-note">确认后才会更新这台电脑里的 MAP 数据。你也可以继续聊天，让我调整方案。</p>
+            <div className="ai-preview-actions"><button className="ghost-button" onClick={() => { setAiText("请调整这个方案："); window.requestAnimationFrame(() => aiInputRef.current?.focus()); }}>继续调整</button><button className="primary-button" onClick={applyAIPlan}>确认并应用</button></div>
+          </section>}
+        </div>
+        <form className="ai-composer" onSubmit={(event) => { event.preventDefault(); void sendAIMessage(); }}>
+          <textarea ref={aiInputRef} value={aiText} onChange={(event) => setAiText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendAIMessage(); } }} placeholder={online ? "问问题、做分析，或让我修改 MAP…" : "恢复网络后继续对话"} disabled={aiLoading || !online} />
+          <button type="submit" disabled={!aiText.trim() || aiLoading || !online} aria-label="发送消息">↑</button>
+        </form>
+        <p className="ai-privacy">每轮会发送当前 MAP 全部数据和本次对话上下文；聊天不保存，关闭面板即清空。</p>
       </aside>}
 
       {taskEditor && <TaskModal value={taskEditor} defaultDate={newTaskDate || undefined} onClose={() => { setTaskEditor(null); setNewTaskDate(null); }} onSave={(task) => { setData((current) => { const tasks = taskEditor === "new" ? [...current.tasks, task] : current.tasks.map((item) => item.id === task.id ? task : item); return { ...current, tasks: rollOverTasks(tasks, today) }; }); setTaskEditor(null); setNewTaskDate(null); }} onDelete={taskEditor === "new" ? undefined : () => { deleteTask(taskEditor.id); setTaskEditor(null); setNewTaskDate(null); }} />}
@@ -764,7 +821,6 @@ export default function Home() {
       {workoutEditor && <WorkoutModal value={workoutEditor} onClose={() => setWorkoutEditor(null)} onSave={(workout) => { setData((current) => ({ ...current, workouts: workoutEditor === "new" ? [...current.workouts, workout] : current.workouts.map((item) => item.id === workout.id ? workout : item) })); setWorkoutEditor(null); }} onDelete={workoutEditor === "new" ? undefined : () => { setData((current) => ({ ...current, workouts: current.workouts.filter((item) => item.id !== workoutEditor.id) })); setWorkoutEditor(null); }} />}
       {applicationEditor && <ApplicationModal value={applicationEditor} onClose={() => setApplicationEditor(null)} onSave={(application) => { setData((current) => ({ ...current, applications: applicationEditor === "new" ? [...current.applications, application] : current.applications.map((item) => item.id === application.id ? application : item) })); setApplicationEditor(null); }} onDelete={applicationEditor === "new" ? undefined : () => { setData((current) => ({ ...current, applications: current.applications.filter((item) => item.id !== applicationEditor.id) })); setApplicationEditor(null); }} />}
       {noteEditor && <NoteModal value={noteEditor} onClose={() => setNoteEditor(null)} onSave={(note) => { setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? note : item) })); setNoteEditor(null); }} onDelete={() => { setData((current) => ({ ...current, notes: current.notes.filter((item) => item.id !== noteEditor.id) })); setNoteEditor(null); }} />}
-      {pasteEditor && <PasteApplicationModal onClose={() => setPasteEditor(false)} onCreate={(application) => { setData((current) => ({ ...current, applications: [...current.applications, application] })); setPasteEditor(false); setApplicationEditor(application); }} />}
       {installHelp && <ModalFrame title="安装 MAP 到 Mac" subtitle="OFFLINE APP" onClose={() => setInstallHelp(false)}><div className="install-guide"><p>这台浏览器没有提供一键安装按钮。你仍然可以把 MAP 安装成独立的 Mac App：</p><ol><li>使用 Safari 打开 MAP 网站。</li><li>选择菜单栏的“文件”→“添加到程序坞”。</li><li>首次联网打开一次；之后断网也能查看和编辑计划。</li></ol><p className="install-guide-note">MAP AI 需要联网。本地任务、笔记、目标、课表、求职和健康记录不需要联网。</p><div className="modal-actions"><button className="primary-button" onClick={() => setInstallHelp(false)}>知道了</button></div></div></ModalFrame>}
     </main>
   );
@@ -828,15 +884,4 @@ function WorkoutModal({ value, onClose, onSave, onDelete }: { value: Workout | "
 function ApplicationModal({ value, onClose, onSave, onDelete }: { value: Application | "new"; onClose: () => void; onSave: (application: Application) => void; onDelete?: () => void }) {
   const existing = value === "new" ? null : value; const [company, setCompany] = useState(existing?.company || ""); const [role, setRole] = useState(existing?.role || ""); const [stage, setStage] = useState<ApplicationStage>(existing?.stage || "已投"); const [link, setLink] = useState(existing?.link || ""); const [contact, setContact] = useState(existing?.contact || ""); const [date, setDate] = useState(existing?.date || getTorontoToday()); const [notes, setNotes] = useState(existing?.notes || "");
   return <ModalFrame title={existing ? "编辑求职记录" : "添加求职记录"} subtitle="APPLICATION" onClose={onClose} onDelete={onDelete}><form onSubmit={(e) => { e.preventDefault(); onSave({ id: existing?.id || uid(), company, role, stage, link, contact, date, notes }); }}><div className="form-grid"><Field label="公司"><input value={company} onChange={(e) => setCompany(e.target.value)} required /></Field><Field label="岗位"><input value={role} onChange={(e) => setRole(e.target.value)} required /></Field><Field label="阶段"><select value={stage} onChange={(e) => setStage(e.target.value as ApplicationStage)}>{APPLICATION_STAGES.map((item) => <option key={item}>{item}</option>)}</select></Field><Field label="记录日期"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field><Field label="职位链接" wide><input type="url" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://" /></Field><Field label="联系人" wide><input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="姓名、邮箱或 LinkedIn" /></Field><Field label="备注 / 下一步" wide><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="为什么值得投？下一步是什么？" /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button>{link && <button type="button" className="ghost-button" onClick={() => window.open(link, "_blank", "noopener,noreferrer")}>打开职位</button>}<button className="primary-button">保存记录</button></div></form></ModalFrame>;
-}
-
-function PasteApplicationModal({ onClose, onCreate }: { onClose: () => void; onCreate: (application: Application) => void }) {
-  const [raw, setRaw] = useState("");
-  function parse() {
-    const lines = raw.split("\n").map((line) => line.trim()).filter(Boolean);
-    const url = raw.match(/https?:\/\/[^\s]+/)?.[0] || "";
-    const clean = lines.filter((line) => !line.startsWith("http"));
-    onCreate({ id: uid(), company: clean[0]?.slice(0, 80) || "待填写公司", role: clean[1]?.slice(0, 120) || "待填写岗位", stage: "已投", link: url, contact: "", date: getTorontoToday(), notes: raw.slice(0, 2500) });
-  }
-  return <ModalFrame title="粘贴职位信息" subtitle="QUICK CAPTURE" onClose={onClose}><div className="paste-explainer">把 LinkedIn、公司官网或聊天里的职位信息直接贴进来。首版会提取前两行和链接，再打开完整表单让你确认；不会上传任何内容。</div><textarea className="paste-area" value={raw} onChange={(e) => setRaw(e.target.value)} placeholder={"Company name\nRole title\nhttps://company.com/job\n其他职位描述……"} autoFocus /><div className="modal-actions"><button className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" onClick={parse} disabled={!raw.trim()}>提取并继续</button></div></ModalFrame>;
 }

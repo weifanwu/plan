@@ -33,38 +33,83 @@ const mapDataSchema = {
   },
 } as const;
 
-async function handleAIPlan(request: Request, env: Env): Promise<Response> {
+async function handleAIChat(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return Response.json({ error: "Method not allowed" }, { status: 405 });
   if (!env.OPENAI_API_KEY) return Response.json({ error: "AI 功能尚未配置。" }, { status: 503 });
 
   try {
-    const body = await request.json() as { instruction?: unknown; currentData?: unknown; today?: unknown };
-    const instruction = typeof body.instruction === "string" ? body.instruction.trim().slice(0, 16000) : "";
-    if (!instruction) return Response.json({ error: "请先写下你想安排的事情。" }, { status: 400 });
+    const body = await request.json() as { messages?: unknown; currentData?: unknown; today?: unknown; model?: unknown };
+    const rawMessages = Array.isArray(body.messages) ? body.messages : [];
+    const messages = rawMessages.slice(-30).flatMap((message) => {
+      if (!message || typeof message !== "object") return [];
+      const item = message as { role?: unknown; content?: unknown };
+      if ((item.role !== "user" && item.role !== "assistant") || typeof item.content !== "string") return [];
+      const content = item.content.trim().slice(0, 12000);
+      return content ? [{ role: item.role, content }] : [];
+    });
+    if (!messages.some((message) => message.role === "user")) return Response.json({ error: "请先发送一条消息。" }, { status: 400 });
+    if (messages.reduce((total, message) => total + message.content.length, 0) > 90000) return Response.json({ error: "本次对话太长了，请关闭 MAP AI 后开始一个新会话。" }, { status: 413 });
 
     const currentData = JSON.stringify(body.currentData ?? {});
     if (currentData.length > 180000) return Response.json({ error: "当前计划数据过大，暂时无法一次处理。" }, { status: 413 });
     const today = typeof body.today === "string" ? body.today : new Date().toISOString().slice(0, 10);
+    const model = body.model === "gpt-5.4" ? "gpt-5.4" : "gpt-5.4-mini";
 
     const openAIResponse = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: { "Authorization": `Bearer ${env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: env.OPENAI_MODEL || "gpt-5.4-mini",
+        model,
         store: false,
-        reasoning: { effort: "low" },
-        instructions: `You are MAP's careful personal planning engine. Convert the user's Chinese or English instruction into an updated copy of their structured personal planning data. Today is ${today} in America/Toronto. Preserve every existing record and every existing id unless the user explicitly requests a change or deletion. Never delete, complete, or rewrite unrelated records. For new records create a unique id beginning with ai-. Resolve relative dates such as today, tomorrow, and this Friday against the supplied date. Use 24-hour HH:MM times and YYYY-MM-DD dates. Tasks are for one-off actions and their details field stores execution context; schedule is only for recurring weekly blocks; goals are long-term directions; applications are job opportunities; notes are free-form ideas or reference information that do not need a date; habits are daily nutrition checks; workouts are weekly exercise plans. Preserve details and carriedFrom on existing tasks, and use null for either missing field on ordinary new tasks. Preserve note timestamps unless the note is changed; for new notes use a valid ISO timestamp. If a detail is missing, choose a conservative useful default and mention it in changes. Return a concise Chinese summary, a Chinese list of concrete changes, and the complete resulting data.`,
-        input: `用户指令：\n${instruction}\n\n当前 MAP 数据：\n${currentData}`,
+        reasoning: { effort: model === "gpt-5.4" ? "high" : "low" },
+        instructions: `You are MAP AI, the conversational copilot inside a private, device-local life management app. Reply in the user's language, normally Chinese. Today is ${today} in America/Toronto.
+
+WHAT MAP IS
+MAP is a long-term personal operating system, not only a graduation planner. It helps the user connect life directions to schedules and concrete actions. The app has these modules:
+1. 今日指挥台: today's unfinished tasks, completion progress, daily nutrition checks, and current top goals.
+2. 长期目标: ordered life directions. Array order is priority order: first is most important, second is second most important. Goals may cover study, career, health, housing, marriage, or personal projects.
+3. 学期地图: recurring weekly course/TA schedule plus dated tasks in weekly and monthly calendar views.
+4. 求职记录: a Kanban pipeline with exactly four stages: 已投, 面试, Offer, 拒绝. Each application stores company, role, job link, contact, record date, and notes/next step.
+5. 任务计划: one-off dated actions. title is concise; details stores execution context such as location, steps, materials, links, or contacts. Unfinished tasks may roll forward automatically.
+6. 灵感笔记: free-form ideas and reference material grouped as 课程, 项目, 求职, 生活, or 想法. Notes can be searched and pinned.
+7. 健康运动: daily nutrition checks and weekly workout plans.
+
+CONVERSATION BEHAVIOR
+- You receive the complete current MAP JSON on every turn. Use all relevant records, especially notes, when answering questions or analyzing the user's situation.
+- You are a chatbot, not merely a command parser. You can answer questions, compare options, summarize notes, identify conflicts, analyze workload, and suggest next steps without changing data.
+- If a requested change is ambiguous or important information is missing, ask one concise follow-up question. In that case action must be answer and nextData must equal current data.
+- Never claim that a change has already been applied. The UI requires the user to approve every proposal.
+- Use action=proposal only when the user clearly asks to add, edit, move, complete, reorder, or delete MAP data and the requested change is sufficiently clear. For analysis, discussion, suggestions, or clarification, use action=answer.
+
+HIGH-FREQUENCY JOB CAPTURE
+- A core workflow is: the user pastes a company name, job URL, company URL, role title, or job description and asks to add it to the job board.
+- Extract company, role, the most relevant job link, useful context, requirements, and a concrete next step. Put supporting detail in application.notes. Preserve supplied URLs exactly.
+- When the user explicitly says to add the pasted job information, create one application record. Default its stage to 已投 because MAP intentionally has no saved/preparing stage. If it is genuinely unclear whether the user has applied, ask before proposing instead of inventing status.
+- Avoid duplicate applications by checking company, role, and link against existing records. If a likely duplicate exists, explain it and ask whether to update the existing record.
+
+DATA RULES
+- Preserve every existing record, field, and id unless the user explicitly requests a related change. Never rewrite, complete, reorder, or delete unrelated data.
+- For new records create a unique id beginning with ai-. Resolve relative dates against today. Use YYYY-MM-DD dates and 24-hour HH:MM times.
+- Tasks are one-off actions; schedule is only recurring weekly blocks; goals are long-term directions; applications are job opportunities; notes are free-form ideas/reference; habits are daily nutrition checks; workouts are weekly exercise plans.
+- Preserve details and carriedFrom on existing tasks. Use null for missing optional task fields. Preserve note timestamps unless changed; use valid ISO timestamps for new or updated notes.
+- For action=answer: reply conversationally, summary must be an empty string, changes must be empty, and nextData must exactly equal CURRENT MAP DATA.
+- For action=proposal: reply conversationally that a preview is ready, summary briefly names the intended outcome, changes lists concrete proposed edits, and nextData is the complete resulting MAP data.
+
+CURRENT MAP DATA (authoritative):
+${currentData}`,
+        input: messages,
         text: {
           format: {
             type: "json_schema",
-            name: "map_plan_update",
+            name: "map_chat_turn",
             strict: true,
             schema: {
               type: "object",
               additionalProperties: false,
-              required: ["summary", "changes", "nextData"],
+              required: ["reply", "action", "summary", "changes", "nextData"],
               properties: {
+                reply: { type: "string" },
+                action: { enum: ["answer", "proposal"] },
                 summary: { type: "string" },
                 changes: { type: "array", items: { type: "string" } },
                 nextData: mapDataSchema,
@@ -78,10 +123,10 @@ async function handleAIPlan(request: Request, env: Env): Promise<Response> {
     const payload = await openAIResponse.json() as { output_text?: string; output?: Array<{ content?: Array<{ type?: string; text?: string }> }>; error?: { message?: string } };
     if (!openAIResponse.ok) return Response.json({ error: payload.error?.message || "AI 暂时无法处理这个请求。" }, { status: openAIResponse.status });
     const outputText = payload.output_text || payload.output?.flatMap((item) => item.content || []).find((item) => item.type === "output_text")?.text;
-    if (!outputText) return Response.json({ error: "AI 没有返回可用的计划。" }, { status: 502 });
+    if (!outputText) return Response.json({ error: "MAP AI 没有返回可用的回复。" }, { status: 502 });
     return Response.json(JSON.parse(outputText));
   } catch {
-    return Response.json({ error: "AI 计划解析失败，请缩短内容后再试。" }, { status: 500 });
+    return Response.json({ error: "MAP AI 回复解析失败，请缩短内容后再试。" }, { status: 500 });
   }
 }
 
@@ -111,7 +156,7 @@ const worker = {
       }, allowedWidths);
     }
 
-    if (url.pathname === "/api/ai-plan") return handleAIPlan(request, env);
+    if (url.pathname === "/api/ai-chat") return handleAIChat(request, env);
 
     return handler.fetch(request, env, ctx);
   },
