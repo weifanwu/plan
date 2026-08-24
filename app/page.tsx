@@ -54,7 +54,7 @@ type AIModel = "gpt-5.6-luna" | "gpt-5.6-terra" | "gpt-5.6-sol" | "gpt-5.4-mini"
 type AIChatMessage = { id: string; role: "user" | "assistant"; content: string };
 type AICollection = "tasks" | "schedule" | "goals" | "habits" | "workouts" | "applications" | "notes";
 type AIOperation = { collection: AICollection; operation: "add" | "update" | "delete" | "reorder"; recordId: string; recordJson: string };
-type AIChatResponse = { reply: string; action: "answer" | "proposal"; summary: string; changes: string[]; operations: AIOperation[]; error?: string };
+type AIChatResponse = { reply: string; action: "answer" | "proposal"; summary: string; operations: AIOperation[]; error?: string };
 type PWAInstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
 
 type AppData = {
@@ -256,6 +256,7 @@ export default function Home() {
   const [filter, setFilter] = useState<"全部" | TaskCategory>("全部");
   const [semesterMode, setSemesterMode] = useState<"calendar" | "week">("week");
   const [calendarCursor, setCalendarCursor] = useState(() => getTorontoToday().slice(0, 7));
+  const [applicationDateFilter, setApplicationDateFilter] = useState("all");
   const [draggedApplicationId, setDraggedApplicationId] = useState<string | null>(null);
   const [dragOverStage, setDragOverStage] = useState<ApplicationStage | null>(null);
   const [draggedGoalId, setDraggedGoalId] = useState<string | null>(null);
@@ -362,6 +363,12 @@ export default function Home() {
   const monthEnd = calendarCells.filter((cell) => cell.inMonth).at(-1)?.key || monthStart;
   const visibleTaskCount = data.tasks.filter((task) => task.date <= monthEnd && (task.endDate || task.date) >= monthStart).length;
   const visibleScheduleCount = calendarCells.filter((cell) => cell.inMonth && cell.key >= "2026-09-01" && cell.key <= "2026-12-31").reduce((count, cell) => count + data.schedule.filter((item) => item.days.includes(cell.dayCode)).length, 0);
+  const applicationDateCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const application of data.applications) if (application.date) counts.set(application.date, (counts.get(application.date) || 0) + 1);
+    return [...counts.entries()].sort(([left], [right]) => right.localeCompare(left));
+  }, [data.applications]);
+  const visibleApplications = applicationDateFilter === "all" ? data.applications : data.applications.filter((application) => application.date === applicationDateFilter);
   const visibleNotes = useMemo(() => {
     const query = noteQuery.trim().toLocaleLowerCase();
     return data.notes.filter((note) => !query || note.content.toLocaleLowerCase().includes(query) || note.category.toLocaleLowerCase().includes(query)).slice().sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt));
@@ -728,16 +735,17 @@ export default function Home() {
         {view === "career" && (
           <div className="page-content career-page">
             <section className="career-summary">
-              <div><p className="section-kicker">OPPORTUNITY PIPELINE</p><h2>{data.applications.length}</h2><p>个机会正在记录 · 现有一年实习 Offer 作为保底</p></div>
-              <div className="career-actions"><button className="primary-button" onClick={() => setApplicationEditor("new")}>＋ 添加公司</button></div>
+              <div><p className="section-kicker">OPPORTUNITY PIPELINE</p><h2>{visibleApplications.length}</h2><p>{applicationDateFilter === "all" ? "个机会正在记录 · 现有一年实习 Offer 作为保底" : `${formatDate(applicationDateFilter)} 投递 · 全部共 ${data.applications.length} 个机会`}</p></div>
+              <div className="career-actions"><label className="application-date-filter"><span>投递日期</span><select value={applicationDateFilter} onChange={(event) => setApplicationDateFilter(event.target.value)}><option value="all">全部日期 · {data.applications.length} 份</option>{applicationDateCounts.map(([date, count]) => <option value={date} key={date}>{formatDate(date)} · {count} 份</option>)}</select></label><button className="primary-button" onClick={() => setApplicationEditor("new")}>＋ 添加公司</button></div>
             </section>
-            <div className="pipeline-guide"><span>拖动卡片即可更新进度</span><i>已投 → 面试 → Offer / 拒绝</i></div>
+            <div className="pipeline-guide"><span>{applicationDateFilter === "all" ? "拖动卡片即可更新进度" : `正在查看 ${formatDate(applicationDateFilter)} 的 ${visibleApplications.length} 份投递`}</span><i>已投 → 面试 → Offer / 拒绝</i></div>
             <section className="pipeline">
               {APPLICATION_STAGES.map((stage) => {
-                const applications = data.applications.filter((application) => application.stage === stage);
+                const applications = visibleApplications.filter((application) => application.stage === stage);
                 return <div className={`pipeline-column ${dragOverStage === stage ? "drag-over" : ""}`} key={stage} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverStage(stage); }} onDrop={(event) => { event.preventDefault(); const id = event.dataTransfer.getData("text/plain") || draggedApplicationId; if (id) moveApplication(id, stage); setDraggedApplicationId(null); setDragOverStage(null); }}><header><strong>{stage}</strong><span>{applications.length}</span></header><div className="pipeline-stack">{applications.map((application) => <button draggable className={`application-card ${draggedApplicationId === application.id ? "dragging" : ""}`} key={application.id} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", application.id); setDraggedApplicationId(application.id); }} onDragEnd={() => { setDraggedApplicationId(null); setDragOverStage(null); }} onClick={() => setApplicationEditor(application)}><span className="company-initial">{application.company.slice(0, 1).toUpperCase()}</span><strong>{application.company}</strong><p>{application.role}</p>{application.date && <small>{formatDate(application.date)}</small>}<i className="drag-handle" aria-hidden="true">⋮⋮</i></button>)}<button className="pipeline-add" onClick={() => setApplicationEditor("new")}>＋ 添加</button></div></div>;
               })}
             </section>
+            {data.applications.length > 0 && visibleApplications.length === 0 && <section className="career-filter-empty"><span>这个日期没有投递记录。</span><button className="text-link" onClick={() => setApplicationDateFilter("all")}>查看全部日期 →</button></section>}
             {data.applications.length === 0 && <section className="career-empty"><span>先从一个值得关注的公司开始</span><h3>不用海投。把真正比现有 Offer 更好的机会留下来，持续推进。</h3><button className="text-link" onClick={openJobCaptureAI}>打开 MAP AI 添加职位 →</button></section>}
           </div>
         )}
@@ -822,7 +830,7 @@ export default function Home() {
           <textarea ref={aiInputRef} value={aiText} onChange={(event) => setAiText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendAIMessage(); } }} placeholder={online ? "问问题、做分析，或让我修改 MAP…" : "恢复网络后继续对话"} disabled={aiLoading || !online} />
           <button type="submit" disabled={!aiText.trim() || aiLoading || !online} aria-label="发送消息">↑</button>
         </form>
-        <p className="ai-privacy">每轮会发送当前 MAP 全部数据和本次对话上下文；聊天不保存，关闭面板即清空。</p>
+        <p className="ai-privacy">分析会读取完整 MAP；明确的数据修改只发送相关模块。聊天不保存，关闭面板即清空。</p>
       </aside>}
 
       {taskEditor && <TaskModal value={taskEditor} defaultDate={newTaskDate || undefined} onClose={() => { setTaskEditor(null); setNewTaskDate(null); }} onSave={(task) => { setData((current) => { const tasks = taskEditor === "new" ? [...current.tasks, task] : current.tasks.map((item) => item.id === task.id ? task : item); return { ...current, tasks: rollOverTasks(tasks, today) }; }); setTaskEditor(null); setNewTaskDate(null); }} onDelete={taskEditor === "new" ? undefined : () => { deleteTask(taskEditor.id); setTaskEditor(null); setNewTaskDate(null); }} />}
@@ -894,5 +902,5 @@ function WorkoutModal({ value, onClose, onSave, onDelete }: { value: Workout | "
 
 function ApplicationModal({ value, onClose, onSave, onDelete }: { value: Application | "new"; onClose: () => void; onSave: (application: Application) => void; onDelete?: () => void }) {
   const existing = value === "new" ? null : value; const [company, setCompany] = useState(existing?.company || ""); const [role, setRole] = useState(existing?.role || ""); const [stage, setStage] = useState<ApplicationStage>(existing?.stage || "已投"); const [link, setLink] = useState(existing?.link || ""); const [contact, setContact] = useState(existing?.contact || ""); const [date, setDate] = useState(existing?.date || getTorontoToday()); const [notes, setNotes] = useState(existing?.notes || "");
-  return <ModalFrame title={existing ? "编辑求职记录" : "添加求职记录"} subtitle="APPLICATION" onClose={onClose} onDelete={onDelete}><form onSubmit={(e) => { e.preventDefault(); onSave({ id: existing?.id || uid(), company, role, stage, link, contact, date, notes }); }}><div className="form-grid"><Field label="公司"><input value={company} onChange={(e) => setCompany(e.target.value)} required /></Field><Field label="岗位"><input value={role} onChange={(e) => setRole(e.target.value)} required /></Field><Field label="阶段"><select value={stage} onChange={(e) => setStage(e.target.value as ApplicationStage)}>{APPLICATION_STAGES.map((item) => <option key={item}>{item}</option>)}</select></Field><Field label="记录日期"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field><Field label="职位链接" wide><input type="url" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://" /></Field><Field label="联系人" wide><input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="姓名、邮箱或 LinkedIn" /></Field><Field label="备注 / 下一步" wide><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="为什么值得投？下一步是什么？" /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button>{link && <button type="button" className="ghost-button" onClick={() => window.open(link, "_blank", "noopener,noreferrer")}>打开职位</button>}<button className="primary-button">保存记录</button></div></form></ModalFrame>;
+  return <ModalFrame title={existing ? "编辑求职记录" : "添加求职记录"} subtitle="APPLICATION" onClose={onClose} onDelete={onDelete}><form onSubmit={(e) => { e.preventDefault(); onSave({ id: existing?.id || uid(), company, role, stage, link, contact, date, notes }); }}><div className="form-grid"><Field label="公司"><input value={company} onChange={(e) => setCompany(e.target.value)} required /></Field><Field label="岗位"><input value={role} onChange={(e) => setRole(e.target.value)} required /></Field><Field label="阶段"><select value={stage} onChange={(e) => setStage(e.target.value as ApplicationStage)}>{APPLICATION_STAGES.map((item) => <option key={item}>{item}</option>)}</select></Field><Field label="投递日期"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field><Field label="职位链接" wide><input type="url" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://" /></Field><Field label="联系人" wide><input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="姓名、邮箱或 LinkedIn" /></Field><Field label="备注 / 下一步" wide><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="为什么值得投？下一步是什么？" /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button>{link && <button type="button" className="ghost-button" onClick={() => window.open(link, "_blank", "noopener,noreferrer")}>打开职位</button>}<button className="primary-button">保存记录</button></div></form></ModalFrame>;
 }

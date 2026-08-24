@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { applyAIOperations } from "../lib/ai-operations.mjs";
 import { rollOverTasks } from "../lib/task-rollover.mjs";
@@ -27,10 +28,18 @@ test("server-renders MAP", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
 });
 
+test("career board includes application-date filtering and daily counts", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /投递日期/);
+  assert.match(source, /全部日期 · \{data\.applications\.length\} 份/);
+  assert.match(source, /applicationDateCounts/);
+  assert.match(source, /visibleApplications\.filter/);
+});
+
 test("MAP AI sends conversation, selected model, app context, and approval schema", { concurrency: false }, async () => {
   const worker = await loadWorker();
   const currentData = { tasks: [], schedule: [], goals: [], habits: [], workouts: [], applications: [], notes: [], habitDate: "2026-08-23", workoutWeek: "2026-08-17" };
-  const expected = { reply: "我会先分析，不修改数据。", action: "answer", summary: "", changes: [], operations: [] };
+  const expected = { reply: "我会先分析，不修改数据。", action: "answer", summary: "", operations: [] };
   const originalFetch = globalThis.fetch;
   let outbound;
   globalThis.fetch = async (_url, init) => {
@@ -46,10 +55,12 @@ test("MAP AI sends conversation, selected model, app context, and approval schem
     assert.deepEqual(outbound.input, [{ role: "user", content: "分析我的计划" }]);
     assert.match(outbound.instructions, /今日指挥台/);
     assert.match(outbound.instructions, /HIGH-FREQUENCY JOB CAPTURE/);
-    assert.match(outbound.instructions, /CURRENT MAP DATA/);
-    assert.deepEqual(outbound.text.format.schema.required, ["reply", "action", "summary", "changes", "operations"]);
+    assert.match(outbound.instructions, /CURRENT MAP CONTEXT/);
+    assert.deepEqual(outbound.text.format.schema.required, ["reply", "action", "summary", "operations"]);
     assert.equal(outbound.reasoning.effort, "medium");
     assert.equal(outbound.text.verbosity, "low");
+    assert.equal(outbound.max_output_tokens, 5000);
+    assert.equal(outbound.prompt_cache_key, "map-ai-v4-gpt-5.6-sol-full");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -71,20 +82,37 @@ test("AI job operation changes only the applications collection", () => {
 
 test("job capture API strips unrelated model operations before preview", { concurrency: false }, async () => {
   const worker = await loadWorker();
+  const currentData = {
+    tasks: [{ id: "task-private", title: "unrelated-task-sentinel" }], schedule: [], goals: [], habits: [], workouts: [],
+    applications: [{ id: "existing", company: "Existing company", role: "Engineer", stage: "已投", link: "", contact: "", date: "2026-08-23", notes: "" }],
+    notes: [{ id: "note-private", content: "unrelated-note-sentinel" }], habitDate: "2026-08-23", workoutWeek: "2026-08-17",
+  };
   const proposed = {
-    reply: "预览已准备好。", action: "proposal", summary: "添加 EvenUp 岗位", changes: ["新增岗位", "修改任务"],
+    reply: "预览已准备好。", action: "proposal", summary: "添加 EvenUp 岗位",
     operations: [
       { collection: "applications", operation: "add", recordId: "ai-evenup", recordJson: "{}" },
       { collection: "tasks", operation: "update", recordId: "task-1", recordJson: "{\"title\":\"不应修改\"}" },
     ],
   };
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => Response.json({ output_text: JSON.stringify(proposed) });
+  let outbound;
+  globalThis.fetch = async (_url, init) => {
+    outbound = JSON.parse(init.body);
+    return Response.json({ output_text: JSON.stringify(proposed), usage: { input_tokens_details: { cached_tokens: 120 }, output_tokens: 80 } });
+  };
   try {
-    const response = await worker.fetch(new Request("http://localhost/api/ai-chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messages: [{ role: "user", content: "把这段职业信息加入求职看板" }] }) }), { OPENAI_API_KEY: "test-key" }, { waitUntil() {}, passThroughOnException() {} });
+    const response = await worker.fetch(new Request("http://localhost/api/ai-chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ currentData, messages: [{ role: "user", content: "EvenUp Software Engineer https://example.com/job" }, { role: "assistant", content: "我看到了这个岗位。" }, { role: "user", content: "把这段职业信息加入求职看板" }] }) }), { OPENAI_API_KEY: "test-key" }, { waitUntil() {}, passThroughOnException() {} });
     const result = await response.json();
     assert.equal(result.operations.length, 1);
     assert.equal(result.operations[0].collection, "applications");
+    assert.equal(outbound.model, "gpt-5.6-luna");
+    assert.equal(outbound.max_output_tokens, 1600);
+    assert.equal(outbound.prompt_cache_key, "map-ai-v4-gpt-5.6-luna-applications");
+    assert.deepEqual(outbound.text.format.schema.properties.operations.items.properties.collection.enum, ["applications"]);
+    assert.match(outbound.instructions, /Existing company/);
+    assert.doesNotMatch(outbound.instructions, /unrelated-task-sentinel|unrelated-note-sentinel/);
+    assert.equal(response.headers.get("x-map-ai-context"), "applications");
+    assert.equal(response.headers.get("x-map-ai-cached-tokens"), "120");
   } finally {
     globalThis.fetch = originalFetch;
   }
