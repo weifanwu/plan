@@ -32,6 +32,16 @@ test("server-renders MAP", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
 });
 
+test("current phase shows both start and end countdowns before it begins", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(source, /const phaseStartsIn = Math\.max\(0, daysBetween\(today, data\.phase\.startDate\)\)/);
+  assert.match(source, /const phaseEndsIn = Math\.max\(0, daysBetween\(today, data\.phase\.endDate\)\)/);
+  assert.match(source, /<small>天后开始<\/small>/);
+  assert.match(source, /<small>天后结束<\/small>/);
+  assert.match(styles, /phase-countdown-display/);
+});
+
 test("career board includes application-date filtering and daily counts", async () => {
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(source, /投递日期/);

@@ -461,7 +461,9 @@ export default function Home() {
   const referenceCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const todayLabel = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", weekday: "long", month: "long", day: "numeric" }).format(new Date()).toUpperCase();
   const phaseTiming = today < data.phase.startDate ? "before" : today > data.phase.endDate ? "after" : "active";
-  const phaseDays = phaseTiming === "before" ? Math.max(0, daysBetween(today, data.phase.startDate)) : Math.max(0, daysBetween(today, data.phase.endDate));
+  const phaseStartsIn = Math.max(0, daysBetween(today, data.phase.startDate));
+  const phaseEndsIn = Math.max(0, daysBetween(today, data.phase.endDate));
+  const phaseDays = phaseTiming === "before" ? phaseStartsIn : phaseEndsIn;
   const phaseDuration = Math.max(1, daysBetween(data.phase.startDate, data.phase.endDate));
   const phaseProgress = Math.max(0, Math.min(100, Math.round((daysBetween(data.phase.startDate, today) / phaseDuration) * 100)));
   const phaseStops = buildPhaseStops(data.phase);
@@ -1098,7 +1100,7 @@ export default function Home() {
             <section className="countdown-hero">
               <div className="countdown-copy">
                 <p className="section-kicker">CURRENT PHASE · {data.phase.label}</p>
-                <h2>{phaseTiming === "before" ? <><span>{phaseDays}</span> 天后开始</> : phaseTiming === "active" ? <><span>{phaseDays}</span> 天后{data.phase.outcome}</> : <>设置你的<br />下一阶段</>}</h2>
+                <h2 className={phaseTiming === "before" ? "phase-countdown-display" : undefined}>{phaseTiming === "before" ? <><span className="phase-countdown-item"><strong>{phaseStartsIn}</strong><small>天后开始</small></span><span className="phase-countdown-item"><strong>{phaseEndsIn}</strong><small>天后结束</small></span></> : phaseTiming === "active" ? <><span>{phaseEndsIn}</span> 天后结束</> : <>设置你的<br />下一阶段</>}</h2>
                 <p>{data.phase.description}</p>
                 <button className="text-link" onClick={() => phaseTiming === "after" ? setPhaseEditor(true) : setView("semester")}>{phaseTiming === "after" ? "设置新的当前阶段" : "查看完整阶段地图"} <span>→</span></button>
               </div>
