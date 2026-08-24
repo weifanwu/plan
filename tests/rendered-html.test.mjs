@@ -168,6 +168,20 @@ test("weekly fixed schedule remains visible outside the phase date range", async
   assert.doesNotMatch(source, /weekDays\.find\(\(weekDay\) => weekDay\.dayCode === day\)/);
 });
 
+test("semester week modules can be dragged into a persisted local order", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(source, /SEMESTER_LAYOUT_STORAGE_KEY/);
+  assert.match(source, /DEFAULT_SEMESTER_WEEK_ORDER/);
+  assert.match(source, /moveSemesterModule/);
+  assert.match(source, /拖动每周固定课程区块排序/);
+  assert.match(source, /拖动本周任务区块排序/);
+  assert.match(source, /semesterWeekOrder\.indexOf\("schedule"\)/);
+  assert.match(source, /semesterWeekOrder\.indexOf\("tasks"\)/);
+  assert.match(styles, /\.semester-week-module\.drag-over/);
+  assert.match(styles, /\.semester-module-meta button/);
+});
+
 test("tasks can link to goals and be filtered by that execution path", async () => {
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(source, /goalId\?: string \| null/);

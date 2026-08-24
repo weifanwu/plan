@@ -76,6 +76,7 @@ type AIOperation = { collection: AICollection; operation: "add" | "update" | "de
 type AIChatResponse = { reply: string; action: "answer" | "proposal"; summary: string; operations: AIOperation[]; error?: string };
 type VoiceState = "idle" | "recording" | "transcribing";
 type PlannerStatusFilter = "open" | "done" | "all";
+type SemesterWeekModule = "schedule" | "tasks";
 type RecordCollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "applications" | "notes" | "references";
 type UndoNotice = { message: string; restore: (current: AppData) => AppData };
 type PWAInstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
@@ -104,6 +105,8 @@ const APPLICATION_STAGES: ApplicationStage[] = ["已投", "面试", "Offer", "�
 const NOTE_CATEGORIES: NoteCategory[] = ["待办", "想法", "课程", "项目", "求职", "生活"];
 const BASE_DATE = "2026-08-23";
 const STORAGE_KEY = "map-life-os-v1";
+const SEMESTER_LAYOUT_STORAGE_KEY = "map-semester-week-layout-v1";
+const DEFAULT_SEMESTER_WEEK_ORDER: SemesterWeekModule[] = ["schedule", "tasks"];
 const AI_WELCOME_MESSAGE: AIChatMessage = { id: "welcome", role: "assistant", content: "你好，我是 MAP AI。我能看到你当前阶段、长期目标、任务、固定任务、课表、求职记录、健康计划和草稿，也知道哪些行动正在服务哪个目标。你可以让我分析现状、回答问题，或者一起把一个想法变成计划；任何数据修改都会先给你预览。私人速记只会在你明确要求管理它时加入上下文。" };
 const LEGACY_TASK_GOALS: Record<string, string> = { stephnie: "graduate", leetcode: "career", fees: "graduate", applications: "career", pte: "graduate", irene: "graduate" };
 
@@ -145,6 +148,12 @@ function moveMonth(cursor: string, distance: number) {
   const [year, month] = cursor.split("-").map(Number);
   const next = new Date(Date.UTC(year, month - 1 + distance, 1));
   return `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function normalizeSemesterWeekOrder(value: unknown): SemesterWeekModule[] {
+  if (!Array.isArray(value)) return DEFAULT_SEMESTER_WEEK_ORDER;
+  const order = value.filter((item): item is SemesterWeekModule => item === "schedule" || item === "tasks");
+  return order.length === DEFAULT_SEMESTER_WEEK_ORDER.length && new Set(order).size === DEFAULT_SEMESTER_WEEK_ORDER.length ? order : DEFAULT_SEMESTER_WEEK_ORDER;
 }
 
 function normalizeApplications(applications: Application[] = []) {
@@ -422,6 +431,9 @@ export default function Home() {
   const [plannerStatusFilter, setPlannerStatusFilter] = useState<PlannerStatusFilter>("open");
   const [undoNotice, setUndoNotice] = useState<UndoNotice | null>(null);
   const [semesterMode, setSemesterMode] = useState<"calendar" | "week">("week");
+  const [semesterWeekOrder, setSemesterWeekOrder] = useState<SemesterWeekModule[]>(DEFAULT_SEMESTER_WEEK_ORDER);
+  const [draggedSemesterModule, setDraggedSemesterModule] = useState<SemesterWeekModule | null>(null);
+  const [dragOverSemesterModule, setDragOverSemesterModule] = useState<SemesterWeekModule | null>(null);
   const [calendarCursor, setCalendarCursor] = useState(() => getTorontoToday().slice(0, 7));
   const [applicationDateFilter, setApplicationDateFilter] = useState("all");
   const [draggedApplicationId, setDraggedApplicationId] = useState<string | null>(null);
@@ -458,8 +470,11 @@ export default function Home() {
 
   useEffect(() => {
     const saved = window.localStorage.getItem(STORAGE_KEY);
+    const savedSemesterLayout = window.localStorage.getItem(SEMESTER_LAYOUT_STORAGE_KEY);
     let parsed: Partial<AppData> = {};
+    let parsedSemesterLayout: unknown = null;
     if (saved) try { parsed = JSON.parse(saved) as Partial<AppData>; } catch { /* keep safe defaults */ }
+    if (savedSemesterLayout) try { parsedSemesterLayout = JSON.parse(savedSemesterLayout); } catch { /* keep the default module order */ }
     const currentDay = getTorontoToday();
     const currentWeek = getWeekKey(currentDay);
     const savedHabits = parsed.habits || initialData.habits;
@@ -470,6 +485,7 @@ export default function Home() {
     // Hydrate device-local state after the server-rendered shell mounts.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setToday(currentDay);
+    setSemesterWeekOrder(normalizeSemesterWeekOrder(parsedSemesterLayout));
     setData({ ...initialData, ...parsed, phase: savedPhase, tasks: normalizeTaskGoals(rollOverTasks(parsed.tasks || initialData.tasks, currentDay), savedGoals), routines: normalizeRoutines(parsed.routines || initialData.routines, savedGoals), schedule: normalizeSchedule(parsed.schedule || initialData.schedule), goals: savedGoals, habits: parsed.habitDate === currentDay ? savedHabits : savedHabits.map((habit) => ({ ...habit, done: false })), workouts: parsed.workoutWeek === currentWeek ? savedWorkouts : savedWorkouts.map((workout) => ({ ...workout, done: false })), applications: normalizeApplications(parsed.applications), notes: parsed.notes || initialData.notes, references: normalizeReferences(parsed.references), habitDate: currentDay, workoutWeek: currentWeek });
     setReady(true);
   }, []);
@@ -477,6 +493,10 @@ export default function Home() {
   useEffect(() => {
     if (ready) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   }, [data, ready]);
+
+  useEffect(() => {
+    if (ready) window.localStorage.setItem(SEMESTER_LAYOUT_STORAGE_KEY, JSON.stringify(semesterWeekOrder));
+  }, [ready, semesterWeekOrder]);
 
   useEffect(() => {
     if (view === "notes") window.requestAnimationFrame(() => noteDraftRef.current?.focus());
@@ -807,6 +827,17 @@ export default function Home() {
       const [moved] = goals.splice(sourceIndex, 1);
       goals.splice(targetIndex, 0, moved);
       return { ...current, goals };
+    });
+  }
+
+  function moveSemesterModule(source: SemesterWeekModule, target: SemesterWeekModule) {
+    if (source === target) return;
+    setSemesterWeekOrder((current) => {
+      const targetIndex = current.indexOf(target);
+      if (targetIndex < 0 || !current.includes(source)) return current;
+      const next = current.filter((module) => module !== source);
+      next.splice(targetIndex, 0, source);
+      return next;
     });
   }
 
@@ -1164,7 +1195,7 @@ export default function Home() {
 
             <div className="semester-viewbar">
               <div className="view-switch" role="group" aria-label="阶段地图视图"><button className={semesterMode === "week" ? "active" : ""} onClick={() => setSemesterMode("week")}>周课表</button><button className={semesterMode === "calendar" ? "active" : ""} onClick={() => setSemesterMode("calendar")}>月历</button></div>
-              <p>周课表集中显示本周任务与固定课程；月历显示整个月的全部安排。</p>
+              <p>{semesterMode === "week" ? "抓住区块右上角的排序手柄，直接调整固定课程与本周任务的先后。" : "月历显示整个月的全部安排。"}</p>
             </div>
 
             {semesterMode === "calendar" ? <section className="panel calendar-panel">
@@ -1198,8 +1229,10 @@ export default function Home() {
               </div>
               <div className="calendar-legend"><span><i className="task" />当天任务</span><span><i className="routine" />固定任务</span><span><i className="schedule" />课程 / TA</span><small>拖动普通任务到日期格即可改期 · 固定任务在任务计划中调整规则</small></div>
             </section> : <section className="panel schedule-panel">
-              <div className="panel-heading"><div><p className="section-kicker">THIS WEEK</p><h3>本周安排</h3></div><span className="counter">{formatDate(weekStart)}—{formatDate(weekEnd)} · {weeklyTasks.length} 项任务 · {weeklyRoutineCount} 次固定任务</span></div>
-              <div className="fixed-schedule-heading first"><div><p className="section-kicker">WEEKLY RHYTHM</p><h3>每周固定课程与 TA</h3></div><span>点击安排可编辑</span></div>
+              <div className="panel-heading"><div><p className="section-kicker">THIS WEEK</p><h3>本周总览</h3></div><span className="counter">{formatDate(weekStart)}—{formatDate(weekEnd)} · {weeklyTasks.length} 项任务 · {weeklyRoutineCount} 次固定任务</span></div>
+              <div className="semester-week-modules">
+              <section className={`semester-week-module schedule-module ${draggedSemesterModule === "schedule" ? "dragging" : ""} ${dragOverSemesterModule === "schedule" ? "drag-over" : ""}`} style={{ order: semesterWeekOrder.indexOf("schedule") }} onDragOver={(event) => { if (!draggedSemesterModule) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverSemesterModule("schedule"); }} onDrop={(event) => { if (!draggedSemesterModule) return; event.preventDefault(); event.stopPropagation(); moveSemesterModule(draggedSemesterModule, "schedule"); setDraggedSemesterModule(null); setDragOverSemesterModule(null); }}>
+              <div className="fixed-schedule-heading first"><div><p className="section-kicker">WEEKLY RHYTHM</p><h3>每周固定课程与 TA</h3></div><div className="semester-module-meta"><span>点击安排可编辑</span><button type="button" draggable onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-map-semester-module", "schedule"); setDraggedSemesterModule("schedule"); }} onDragEnd={() => { setDraggedSemesterModule(null); setDragOverSemesterModule(null); }} aria-label="拖动每周固定课程区块排序" title="拖动区块排序">⋮⋮ 拖动排序</button></div></div>
               <div className="schedule-scroll">
                 <div className="schedule-grid">
                   <div className="time-column">
@@ -1223,8 +1256,9 @@ export default function Home() {
                   ))}
                 </div>
               </div>
-              <div className="week-task-section">
-                <div className="week-task-heading"><strong>本周任务</strong><span>拖动任务改日期 · 跨度任务会整体平移</span></div>
+              </section>
+              <section className={`semester-week-module week-task-section ${draggedSemesterModule === "tasks" ? "dragging" : ""} ${dragOverSemesterModule === "tasks" ? "drag-over" : ""}`} style={{ order: semesterWeekOrder.indexOf("tasks") }} onDragOver={(event) => { if (!draggedSemesterModule) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverSemesterModule("tasks"); }} onDrop={(event) => { if (!draggedSemesterModule) return; event.preventDefault(); event.stopPropagation(); moveSemesterModule(draggedSemesterModule, "tasks"); setDraggedSemesterModule(null); setDragOverSemesterModule(null); }}>
+                <div className="week-task-heading"><strong>本周任务</strong><div className="semester-module-meta"><span>拖动任务改日期 · 跨度任务会整体平移</span><button type="button" draggable onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-map-semester-module", "tasks"); setDraggedSemesterModule("tasks"); }} onDragEnd={() => { setDraggedSemesterModule(null); setDragOverSemesterModule(null); }} aria-label="拖动本周任务区块排序" title="拖动区块排序">⋮⋮ 拖动排序</button></div></div>
                 <div className="week-task-scroll">
                   {weeklySpanTasks.length > 0 && <section className="week-span-section">
                     <div className="week-span-title"><div><strong>持续推进</strong><span>跨日任务按真实周期横跨本周</span></div><i>{weeklySpanTasks.length} 项</i></div>
@@ -1255,6 +1289,7 @@ export default function Home() {
                     })}
                   </div>
                 </div>
+              </section>
               </div>
             </section>}
 
