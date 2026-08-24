@@ -16,7 +16,7 @@ export const metadata: Metadata = {
   twitter: { card: "summary", title: "MAP — Life Operating System", description: "管理目标，也管理每天怎样生活。" },
 };
 
-export const viewport: Viewport = { themeColor: "#171914", colorScheme: "light" };
+export const viewport: Viewport = { themeColor: "#171914", colorScheme: "light", viewportFit: "cover" };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return <html lang="zh-CN"><body className={`${geistSans.variable} ${geistMono.variable}`}>{children}</body></html>;

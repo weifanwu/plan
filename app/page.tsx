@@ -320,6 +320,10 @@ function formatDate(date: string) {
   return `${value.getMonth() + 1}月${value.getDate()}日`;
 }
 
+function formatWeekday(date: string) {
+  return new Intl.DateTimeFormat("zh-CN", { weekday: "long", timeZone: "UTC" }).format(new Date(`${date}T12:00:00Z`));
+}
+
 function formatShortDate(date: string) {
   const value = new Date(`${date}T12:00:00Z`);
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "2-digit", timeZone: "UTC" }).format(value);
@@ -473,6 +477,8 @@ export default function Home() {
   const [draggedSemesterModule, setDraggedSemesterModule] = useState<SemesterWeekModule | null>(null);
   const [dragOverSemesterModule, setDragOverSemesterModule] = useState<SemesterWeekModule | null>(null);
   const [calendarCursor, setCalendarCursor] = useState(() => getTorontoToday().slice(0, 7));
+  const [mobileCalendarDate, setMobileCalendarDate] = useState(() => getTorontoToday());
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [applicationDateFilter, setApplicationDateFilter] = useState("all");
   const [draggedApplicationId, setDraggedApplicationId] = useState<string | null>(null);
   const [dragOverStage, setDragOverStage] = useState<ApplicationStage | null>(null);
@@ -573,6 +579,7 @@ export default function Home() {
   useEffect(() => {
     if (view === "notes") window.requestAnimationFrame(() => noteDraftRef.current?.focus());
     if (view === "vault") window.requestAnimationFrame(() => referenceDocumentRef.current?.focus());
+    window.scrollTo({ top: 0, behavior: "auto" });
   }, [view]);
 
   useEffect(() => {
@@ -687,6 +694,16 @@ export default function Home() {
   const visibleTaskCount = calendarTasks.filter((task) => task.date <= monthEnd && (task.endDate || task.date) >= monthStart).length;
   const visibleRoutineCount = calendarCells.filter((cell) => cell.inMonth).reduce((count, cell) => count + data.routines.filter((routine) => isRoutineDueOn(routine, cell.key) && !routine.completedDates.includes(cell.key)).length, 0);
   const visibleScheduleCount = calendarCells.filter((cell) => cell.inMonth && cell.key >= data.phase.startDate && cell.key <= data.phase.endDate).reduce((count, cell) => count + data.schedule.filter((item) => item.days.includes(cell.dayCode)).length, 0);
+  const mobileCalendarCounts = useMemo(() => new Map(calendarCells.map((cell) => {
+    const taskCount = calendarTasks.filter((task) => task.date <= cell.key && (task.endDate || task.date) >= cell.key).length;
+    const routineCount = data.routines.filter((routine) => isRoutineDueOn(routine, cell.key) && !routine.completedDates.includes(cell.key)).length;
+    const scheduleCount = cell.key >= data.phase.startDate && cell.key <= data.phase.endDate ? data.schedule.filter((item) => item.days.includes(cell.dayCode)).length : 0;
+    return [cell.key, { taskCount, routineCount, scheduleCount, total: taskCount + routineCount + scheduleCount }];
+  })), [calendarCells, calendarTasks, data.phase.endDate, data.phase.startDate, data.routines, data.schedule]);
+  const mobileSelectedCell = calendarCells.find((cell) => cell.key === mobileCalendarDate) || calendarCells.find((cell) => cell.inMonth) || calendarCells[0];
+  const mobileSelectedTasks = calendarTasks.filter((task) => task.date <= mobileCalendarDate && (task.endDate || task.date) >= mobileCalendarDate).slice().sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
+  const mobileSelectedRoutines = data.routines.filter((routine) => isRoutineDueOn(routine, mobileCalendarDate) && !routine.completedDates.includes(mobileCalendarDate)).slice().sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
+  const mobileSelectedSchedules = mobileSelectedCell && mobileCalendarDate >= data.phase.startDate && mobileCalendarDate <= data.phase.endDate ? data.schedule.filter((item) => item.days.includes(mobileSelectedCell.dayCode)).slice().sort((a, b) => a.start.localeCompare(b.start)) : [];
   const applicationDateCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const application of data.applications) if (application.date) counts.set(application.date, (counts.get(application.date) || 0) + 1);
@@ -713,6 +730,7 @@ export default function Home() {
     const query = referenceQuery.trim().toLocaleLowerCase();
     return data.references.filter((reference) => !query || reference.title.toLocaleLowerCase().includes(query) || reference.content.toLocaleLowerCase().includes(query)).slice().sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updatedAt.localeCompare(left.updatedAt));
   }, [data.references, referenceQuery]);
+  const mobileViewTitle: Record<View, string> = { today: "今天", goals: "长期目标", semester: "阶段地图", career: "求职记录", planner: "任务计划", notes: "草稿箱", vault: "私人速记", wellness: "健康运动" };
 
   function openNewTask(date?: string, goalId?: string) {
     setNewTaskDate(date || null);
@@ -720,6 +738,17 @@ export default function Home() {
     setTaskPrefill(null);
     setPromotingNoteId(null);
     setTaskEditor("new");
+  }
+
+  function moveCalendar(distance: number) {
+    const next = moveMonth(calendarCursor, distance);
+    setCalendarCursor(next);
+    setMobileCalendarDate(`${next}-01`);
+  }
+
+  function moveCalendarToToday() {
+    setCalendarCursor(today.slice(0, 7));
+    setMobileCalendarDate(today);
   }
 
   function promoteNoteToTask(note: Note) {
@@ -770,6 +799,10 @@ export default function Home() {
 
   function openVault() {
     setView("vault");
+    if (window.matchMedia("(max-width: 760px)").matches) {
+      setReferenceEditor(null);
+      return;
+    }
     const selected = referenceEditor || visibleReferences[0] || null;
     if (selected && !referenceEditor) setReferenceEditor(selected);
     if (selected) window.requestAnimationFrame(() => referenceDocumentRef.current?.focus());
@@ -918,6 +951,18 @@ export default function Home() {
       const sourceIndex = goals.findIndex((goal) => goal.id === sourceId);
       const targetIndex = goals.findIndex((goal) => goal.id === targetId);
       if (sourceIndex < 0 || targetIndex < 0) return current;
+      const [moved] = goals.splice(sourceIndex, 1);
+      goals.splice(targetIndex, 0, moved);
+      return { ...current, goals };
+    });
+  }
+
+  function moveGoalByOffset(id: string, offset: number) {
+    setData((current) => {
+      const goals = [...current.goals];
+      const sourceIndex = goals.findIndex((goal) => goal.id === id);
+      const targetIndex = Math.max(0, Math.min(goals.length - 1, sourceIndex + offset));
+      if (sourceIndex < 0 || sourceIndex === targetIndex) return current;
       const [moved] = goals.splice(sourceIndex, 1);
       goals.splice(targetIndex, 0, moved);
       return { ...current, goals };
@@ -1289,7 +1334,8 @@ export default function Home() {
         <header className="topbar">
           <div>
             <p className="eyebrow">{todayLabel}</p>
-            <h1>{view === "today" ? "今天，先把最重要的事情往前推。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "看清当前阶段的时间与节奏。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : view === "notes" ? "没准备好排期的，先放进草稿箱。" : view === "vault" ? "零散资料，随手记下，一秒找到。" : "健康不是剩余时间。"}</h1>
+            <h1 className="desktop-page-title">{view === "today" ? "今天，先把最重要的事情往前推。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "看清当前阶段的时间与节奏。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : view === "notes" ? "没准备好排期的，先放进草稿箱。" : view === "vault" ? "零散资料，随手记下，一秒找到。" : "健康不是剩余时间。"}</h1>
+            <div className="mobile-page-title"><small>MAP</small><strong>{mobileViewTitle[view]}</strong></div>
           </div>
           <div className="topbar-actions"><button className="quick-vault-top" onClick={openVault}><span>⌁</span> 私人速记</button><button className="quick-note-top" onClick={openNotes}><span>✎</span> 记草稿</button><button className="primary-button" onClick={() => openNewTask()}><span>＋</span> 新建任务</button></div>
         </header>
@@ -1354,7 +1400,7 @@ export default function Home() {
                 {data.goals.slice(0, 3).map((goal, index) => {
                   const stats = goalTaskStats.get(goal.id) || { open: 0, done: 0 };
                   return <article draggable className={`goal-card ${goal.tone} ${draggedGoalId === goal.id ? "dragging" : ""} ${dragOverGoalId === goal.id ? "drag-over" : ""}`} key={goal.id} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", goal.id); setDraggedGoalId(goal.id); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverGoalId(goal.id); }} onDrop={(event) => { event.preventDefault(); const sourceId = event.dataTransfer.getData("text/plain") || draggedGoalId; if (sourceId) moveGoal(sourceId, goal.id); setDraggedGoalId(null); setDragOverGoalId(null); }} onDragEnd={() => { setDraggedGoalId(null); setDragOverGoalId(null); }}>
-                    <div className="goal-number">0{index + 1} · {goalPriorityLabel(index)}</div><span className="goal-drag-handle" aria-hidden="true">⋮⋮</span>
+                    <div className="goal-number">0{index + 1} · {goalPriorityLabel(index)}</div><span className="goal-drag-handle" aria-hidden="true">⋮⋮</span><div className="mobile-goal-order"><button disabled={index === 0} onClick={(event) => { event.stopPropagation(); moveGoalByOffset(goal.id, -1); }} aria-label={`提高${goal.title}的优先级`}>↑</button><button disabled={index === data.goals.length - 1} onClick={(event) => { event.stopPropagation(); moveGoalByOffset(goal.id, 1); }} aria-label={`降低${goal.title}的优先级`}>↓</button></div>
                     <button className="more-button" onClick={() => setGoalEditor(goal)} aria-label={`编辑${goal.title}`}>•••</button>
                     <h3>{goal.title}</h3><p>{goal.description}</p>
                     <div className={`goal-next-step ${stats.open === 0 ? "empty" : ""}`}><span>{stats.open > 0 ? `${stats.open} 个待完成下一步` : "还没有可执行的下一步"}{stats.done > 0 ? ` · ${stats.done} 已完成` : ""}</span><button onClick={(event) => { event.stopPropagation(); openNewTask(today, goal.id); }}>＋ 添加下一步</button></div>
@@ -1379,7 +1425,7 @@ export default function Home() {
               <div className="goal-grid expanded">
                 {data.goals.map((goal, index) => {
                   const stats = goalTaskStats.get(goal.id) || { open: 0, done: 0 };
-                  return <article draggable className={`goal-card ${goal.tone} ${draggedGoalId === goal.id ? "dragging" : ""} ${dragOverGoalId === goal.id ? "drag-over" : ""}`} key={goal.id} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", goal.id); setDraggedGoalId(goal.id); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverGoalId(goal.id); }} onDrop={(event) => { event.preventDefault(); const sourceId = event.dataTransfer.getData("text/plain") || draggedGoalId; if (sourceId) moveGoal(sourceId, goal.id); setDraggedGoalId(null); setDragOverGoalId(null); }} onDragEnd={() => { setDraggedGoalId(null); setDragOverGoalId(null); }}><div className="goal-number">0{index + 1} · {goalPriorityLabel(index)}</div><span className="goal-drag-handle" aria-hidden="true">⋮⋮</span><button className="more-button" onClick={() => setGoalEditor(goal)} aria-label={`编辑${goal.title}`}>•••</button><h3>{goal.title}</h3><p>{goal.description}</p><div className={`goal-next-step ${stats.open === 0 ? "empty" : ""}`}><span>{stats.open > 0 ? `${stats.open} 个待完成下一步` : "还没有可执行的下一步"}{stats.done > 0 ? ` · ${stats.done} 已完成` : ""}</span><button onClick={(event) => { event.stopPropagation(); openNewTask(today, goal.id); }}>＋ 添加下一步</button></div><div className="goal-footer"><span>{goal.metric}</span><strong>{goal.progress}%</strong></div><div className="goal-progress"><span style={{ width: `${goal.progress}%` }} /></div></article>;
+                  return <article draggable className={`goal-card ${goal.tone} ${draggedGoalId === goal.id ? "dragging" : ""} ${dragOverGoalId === goal.id ? "drag-over" : ""}`} key={goal.id} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", goal.id); setDraggedGoalId(goal.id); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverGoalId(goal.id); }} onDrop={(event) => { event.preventDefault(); const sourceId = event.dataTransfer.getData("text/plain") || draggedGoalId; if (sourceId) moveGoal(sourceId, goal.id); setDraggedGoalId(null); setDragOverGoalId(null); }} onDragEnd={() => { setDraggedGoalId(null); setDragOverGoalId(null); }}><div className="goal-number">0{index + 1} · {goalPriorityLabel(index)}</div><span className="goal-drag-handle" aria-hidden="true">⋮⋮</span><div className="mobile-goal-order"><button disabled={index === 0} onClick={(event) => { event.stopPropagation(); moveGoalByOffset(goal.id, -1); }} aria-label={`提高${goal.title}的优先级`}>↑</button><button disabled={index === data.goals.length - 1} onClick={(event) => { event.stopPropagation(); moveGoalByOffset(goal.id, 1); }} aria-label={`降低${goal.title}的优先级`}>↓</button></div><button className="more-button" onClick={() => setGoalEditor(goal)} aria-label={`编辑${goal.title}`}>•••</button><h3>{goal.title}</h3><p>{goal.description}</p><div className={`goal-next-step ${stats.open === 0 ? "empty" : ""}`}><span>{stats.open > 0 ? `${stats.open} 个待完成下一步` : "还没有可执行的下一步"}{stats.done > 0 ? ` · ${stats.done} 已完成` : ""}</span><button onClick={(event) => { event.stopPropagation(); openNewTask(today, goal.id); }}>＋ 添加下一步</button></div><div className="goal-footer"><span>{goal.metric}</span><strong>{goal.progress}%</strong></div><div className="goal-progress"><span style={{ width: `${goal.progress}%` }} /></div></article>;
                 })}
                 <button className="goal-add-card" onClick={() => setGoalEditor("new")}><span>＋</span><strong>添加下一条人生主线</strong><small>买房、家庭、工作、个人项目……</small></button>
               </div>
@@ -1403,7 +1449,7 @@ export default function Home() {
             {semesterMode === "calendar" ? <section className="panel calendar-panel">
               <div className="calendar-toolbar">
                 <div><p className="section-kicker">CALENDAR</p><h3>{calendarMonthLabel}</h3><span>{visibleTaskCount} 项任务 · {visibleRoutineCount} 次固定任务 · {visibleScheduleCount} 次固定安排</span></div>
-                <div className="calendar-nav"><button onClick={() => setCalendarCursor((cursor) => moveMonth(cursor, -1))} aria-label="上个月">←</button><button className="calendar-today" onClick={() => setCalendarCursor(today.slice(0, 7))}>今天</button><button onClick={() => setCalendarCursor((cursor) => moveMonth(cursor, 1))} aria-label="下个月">→</button></div>
+                <div className="calendar-nav"><button onClick={() => moveCalendar(-1)} aria-label="上个月">←</button><button className="calendar-today" onClick={moveCalendarToToday}>今天</button><button onClick={() => moveCalendar(1)} aria-label="下个月">→</button></div>
               </div>
               {monthlySpanTasks.length > 0 && <section className="month-span-section">
                 <header><div><strong>本月跨度任务</strong><span>只显示一次，不再每天重复</span></div><i>{monthlySpanTasks.length}</i></header>
@@ -1428,6 +1474,28 @@ export default function Home() {
                     </article>;
                   })}
                 </div>
+              </div>
+              <div className="mobile-month-view">
+                <div className="mobile-month-weekdays" aria-hidden="true">{CALENDAR_DAY_LABEL.map((label) => <span key={label}>{label.slice(1)}</span>)}</div>
+                <div className="mobile-month-grid">
+                  {calendarCells.map((cell) => {
+                    const counts = mobileCalendarCounts.get(cell.key) || { taskCount: 0, routineCount: 0, scheduleCount: 0, total: 0 };
+                    return <button type="button" key={cell.key} className={`${cell.inMonth ? "" : "outside"} ${cell.key === today ? "today" : ""} ${cell.key === mobileCalendarDate ? "selected" : ""}`} onClick={() => setMobileCalendarDate(cell.key)} aria-label={`${formatDate(cell.key)}，${counts.total} 项安排`}>
+                      <span>{cell.day}</span>
+                      <i aria-hidden="true">{counts.taskCount > 0 && <b className="task" />}{counts.routineCount > 0 && <b className="routine" />}{counts.scheduleCount > 0 && <b className="schedule" />}</i>
+                      {counts.total > 0 && <small>{counts.total}</small>}
+                    </button>;
+                  })}
+                </div>
+                <section className="mobile-day-agenda">
+                  <header><div><small>{formatWeekday(mobileCalendarDate)}</small><h4>{formatDate(mobileCalendarDate)}</h4></div><button onClick={() => openNewTask(mobileCalendarDate)}>＋ 添加</button></header>
+                  <div className="mobile-agenda-list">
+                    {mobileSelectedTasks.map((task) => <article key={task.id} className={`mobile-agenda-item task ${categoryTone[task.category]} ${task.carriedFrom ? "carried" : ""}`}><TaskCalendarCheck task={task} onToggle={() => toggleTask(task.id)} /><button onClick={() => setTaskEditor(task)}><time>{task.date === mobileCalendarDate ? task.time || "全天" : "持续"}</time><span><strong>{task.title}</strong><small>{task.endDate ? `${formatDate(task.date)} → ${formatDate(task.endDate)}` : task.category}{task.details ? ` · ${task.details}` : ""}</small></span></button></article>)}
+                    {mobileSelectedRoutines.map((routine) => <article key={routine.id} className={`mobile-agenda-item routine ${categoryTone[routine.category]}`}><RoutineCalendarCheck completed={routine.completedDates.includes(mobileCalendarDate)} label={routine.title} onToggle={() => toggleRoutineCompletion(routine.id, mobileCalendarDate)} /><button onClick={() => setRoutineEditor(routine)}><time>{routine.time || "全天"}</time><span><strong>{routine.title}</strong><small>固定任务 · {routineFrequencyLabel(routine)}</small></span></button></article>)}
+                    {mobileSelectedSchedules.map((item) => <button key={item.id} className={`mobile-agenda-item schedule ${item.color}`} onClick={() => setScheduleEditor(item)}><span className="mobile-agenda-symbol">{item.kind === "TA" ? "TA" : "课"}</span><time>{item.start}</time><span><strong>{item.code}</strong><small>{item.title} · {item.room}</small></span></button>)}
+                    {mobileSelectedTasks.length === 0 && mobileSelectedRoutines.length === 0 && mobileSelectedSchedules.length === 0 && <div className="mobile-agenda-empty"><span>○</span><p>这一天没有安排</p><button onClick={() => openNewTask(mobileCalendarDate)}>添加一个任务</button></div>}
+                  </div>
+                </section>
               </div>
               <div className="calendar-legend"><span><i className="task" />当天任务</span><span><i className="routine" />固定任务</span><span><i className="schedule" />课程 / TA</span><small>完成后自动从日历隐藏 · 拖动普通任务到日期格即可改期 · 可在任务总览查看</small></div>
             </section> : <section className="panel schedule-panel">
@@ -1458,12 +1526,19 @@ export default function Home() {
                   ))}
                 </div>
               </div>
+              <div className="mobile-schedule-agenda">
+                {DAY_ORDER.map((day) => {
+                  const items = data.schedule.filter((item) => item.days.includes(day)).slice().sort((a, b) => a.start.localeCompare(b.start));
+                  return <section key={day} className="mobile-schedule-day"><header><div><strong>{DAY_LABEL[day]}</strong><small>{day.toUpperCase()}</small></div><span>{items.length || "—"}</span></header><div>{items.length > 0 ? items.map((item) => <button key={item.id} className={`mobile-schedule-item ${item.color}`} onClick={() => setScheduleEditor(item)}><time>{item.start}<small>{item.end}</small></time><span><strong>{item.code}</strong><small>{item.title}</small><em>{item.room}</em></span></button>) : <p>无固定安排</p>}</div></section>;
+                })}
+              </div>
               </section>
               <section className={`semester-week-module week-task-section ${draggedSemesterModule === "tasks" ? "dragging" : ""} ${dragOverSemesterModule === "tasks" ? "drag-over" : ""}`} style={{ order: semesterWeekOrder.indexOf("tasks") }} onDragOver={(event) => { if (!draggedSemesterModule) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverSemesterModule("tasks"); }} onDrop={(event) => { if (!draggedSemesterModule) return; event.preventDefault(); event.stopPropagation(); moveSemesterModule(draggedSemesterModule, "tasks"); setDraggedSemesterModule(null); setDragOverSemesterModule(null); }}>
                 <div className="week-task-heading"><strong>本周任务</strong><div className="semester-module-meta"><span>完成后隐藏 · 拖动任务可改日期</span><button type="button" draggable onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-map-semester-module", "tasks"); setDraggedSemesterModule("tasks"); }} onDragEnd={() => { setDraggedSemesterModule(null); setDragOverSemesterModule(null); }} aria-label="拖动本周任务区块排序" title="拖动区块排序">⋮⋮ 拖动排序</button></div></div>
                 <div className="week-task-scroll">
                   {weeklySpanTasks.length > 0 && <section className="week-span-section">
                     <div className="week-span-title"><div><strong>持续推进</strong><span>跨日任务按真实周期横跨本周</span></div><i>{weeklySpanTasks.length} 项</i></div>
+                    <div className="mobile-week-span-list">{weeklySpanTasks.map((task) => <article key={task.id} className={`mobile-week-span-item ${categoryTone[task.category]} ${task.carriedFrom ? "carried" : ""}`}><TaskCalendarCheck task={task} onToggle={() => toggleTask(task.id)} /><button onClick={() => setTaskEditor(task)}><span><strong>{task.title}</strong><small>{formatDate(task.date)} → {formatDate(task.endDate!)}</small></span><i>{task.carriedFrom ? "顺延" : "进行中"}</i></button></article>)}</div>
                     <div className="week-span-calendar">
                       <div className="week-span-days">{weekDays.map((day) => <span className={`${day.key === today ? "today" : ""} ${taskDropDate === day.key ? "task-drop-target" : ""}`} key={day.key} onDragOver={(event) => allowTaskDrop(event, day.key)} onDrop={(event) => dropTaskOnDate(event, day.key)}>{day.label}<small>{day.date}</small></span>)}</div>
                       {weeklySpanTasks.map((task) => {
@@ -1578,7 +1653,7 @@ export default function Home() {
 
         {view === "vault" && (
           <div className="page-content reference-page">
-            <section className="reference-workbench">
+            <section className={`reference-workbench ${referenceEditor ? "editing" : "browsing"}`}>
               <aside className="reference-sidebar panel">
                 <header><div><p className="section-kicker">PERSONAL NOTES</p><h2>私人速记</h2><span>{data.references.length} 条 · 自动保存</span></div><button className="reference-new" onClick={createReference}>＋ 新建</button></header>
                 <label className="reference-search"><span>⌕</span><input value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} placeholder="搜索全部笔记" /></label>
@@ -1590,7 +1665,7 @@ export default function Home() {
 
               <section className="reference-document panel">
                 {referenceEditor ? <>
-                  <header className="reference-document-toolbar"><div><span>{referenceEditor.pinned ? "置顶笔记" : "私人笔记"}</span><time>自动保存 · {formatNoteTime(referenceEditor.updatedAt)}</time></div><div><button className={`reference-ai-access ${referenceEditor.aiExcluded ? "local-only" : "ai-readable"}`} onClick={() => updateReference(referenceEditor, { aiExcluded: !referenceEditor.aiExcluded })}>{referenceEditor.aiExcluded ? "仅本机 · AI 不可读" : "✦ MAP AI 可读取"}</button><button onClick={() => toggleReferencePin(referenceEditor)}>{referenceEditor.pinned ? "取消置顶" : "置顶"}</button><button className={referenceCopiedId === referenceEditor.id ? "copied" : ""} onClick={() => void copyReference(referenceEditor)}>{referenceCopiedId === referenceEditor.id ? "已复制" : "复制全文"}</button><button className="reference-delete" onClick={() => deleteReference(referenceEditor)}>删除</button></div></header>
+                  <header className="reference-document-toolbar"><div><button className="mobile-reference-back" onClick={() => setReferenceEditor(null)}>← 返回笔记列表</button><span>{referenceEditor.pinned ? "置顶笔记" : "私人笔记"}</span><time>自动保存 · {formatNoteTime(referenceEditor.updatedAt)}</time></div><div><button className={`reference-ai-access ${referenceEditor.aiExcluded ? "local-only" : "ai-readable"}`} onClick={() => updateReference(referenceEditor, { aiExcluded: !referenceEditor.aiExcluded })}>{referenceEditor.aiExcluded ? "仅本机 · AI 不可读" : "✦ MAP AI 可读取"}</button><button onClick={() => toggleReferencePin(referenceEditor)}>{referenceEditor.pinned ? "取消置顶" : "置顶"}</button><button className={referenceCopiedId === referenceEditor.id ? "copied" : ""} onClick={() => void copyReference(referenceEditor)}>{referenceCopiedId === referenceEditor.id ? "已复制" : "复制全文"}</button><button className="reference-delete" onClick={() => deleteReference(referenceEditor)}>删除</button></div></header>
                   <div className="reference-document-editor">
                     <input className="reference-title-input" value={referenceEditor.title === "无标题速记" ? "" : referenceEditor.title} onChange={(event) => updateReference(referenceEditor, { title: event.target.value || "无标题速记" })} placeholder="无标题速记" aria-label="笔记标题" />
                     <textarea ref={referenceDocumentRef} value={referenceEditor.content} onChange={(event) => { const content = event.target.value; const titleWasAutomatic = referenceEditor.title === "无标题速记" || referenceEditor.title === referenceTitleFromContent(referenceEditor.content); const nextTitle = titleWasAutomatic ? referenceTitleFromContent(content) : referenceEditor.title; updateReference(referenceEditor, { content, title: content.trim() ? nextTitle : "无标题速记" }); }} placeholder={"直接开始输入或粘贴……\n\n像备忘录一样自由记录；每条笔记独立保存，所以不会挤成一整篇。"} aria-label="私人速记内容" spellCheck={false} />
@@ -1627,6 +1702,33 @@ export default function Home() {
           </div>
         )}
       </section>
+
+      <nav className="mobile-nav" aria-label="手机主导航">
+        <button className={view === "today" ? "active" : ""} onClick={() => setView("today")}><span>⌂</span><strong>今天</strong></button>
+        <button className={view === "semester" ? "active" : ""} onClick={() => setView("semester")}><span>▦</span><strong>日程</strong></button>
+        <button className={view === "notes" ? "active" : ""} onClick={openNotes}><span>✎</span><strong>草稿</strong></button>
+        <button className={view === "planner" ? "active" : ""} onClick={() => setView("planner")}><span>✓</span><strong>任务</strong></button>
+        <button className={mobileMenuOpen || ["goals", "career", "vault", "wellness"].includes(view) ? "active" : ""} onClick={() => setMobileMenuOpen((open) => !open)} aria-expanded={mobileMenuOpen}><span>•••</span><strong>更多</strong></button>
+      </nav>
+
+      {mobileMenuOpen && <div className="mobile-more-layer">
+        <button className="mobile-more-backdrop" onClick={() => setMobileMenuOpen(false)} aria-label="关闭更多功能" />
+        <aside className="mobile-more-sheet" role="dialog" aria-modal="true" aria-label="更多功能">
+          <header><div><small>ALL MODULES</small><h2>更多功能</h2></div><button onClick={() => setMobileMenuOpen(false)} aria-label="关闭更多功能">×</button></header>
+          <div className="mobile-more-grid">
+            <button className={view === "goals" ? "active" : ""} onClick={() => { setView("goals"); setMobileMenuOpen(false); }}><span>◎</span><strong>长期目标</strong><small>管理人生主线</small></button>
+            <button className={view === "career" ? "active" : ""} onClick={() => { setView("career"); setMobileMenuOpen(false); }}><span>↗</span><strong>求职记录</strong><small>跟踪投递进度</small></button>
+            <button className={view === "vault" ? "active" : ""} onClick={() => { openVault(); setMobileMenuOpen(false); }}><span>⌁</span><strong>私人速记</strong><small>资料与常用信息</small></button>
+            <button className={view === "wellness" ? "active" : ""} onClick={() => { setView("wellness"); setMobileMenuOpen(false); }}><span>＋</span><strong>健康运动</strong><small>饮食与训练签到</small></button>
+          </div>
+          <div className="mobile-system-actions">
+            <button onClick={() => void synchronizeData()} disabled={!online || syncStatus === "syncing"}><span className={`sync-dot ${syncStatus}`} />{syncMessage}</button>
+            {!standalone && <button onClick={installMapApp}>↓ 安装 MAP App</button>}
+            <button onClick={exportData}>导出 JSON 备份</button>
+            <button onClick={() => importRef.current?.click()}>导入备份</button>
+          </div>
+        </aside>
+      </div>}
 
       <button className={`ai-launcher ${aiOpen ? "active" : ""} ${!online ? "offline" : ""}`} onClick={toggleAIChat} aria-label={aiOpen ? "关闭 MAP AI" : "打开 MAP AI"}><span>✦</span><strong>{online ? "MAP AI" : "AI 离线"}</strong></button>
       {aiOpen && <aside className="ai-panel ai-chat-panel" aria-label="MAP AI 对话助手">

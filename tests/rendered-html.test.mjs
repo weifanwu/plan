@@ -57,6 +57,39 @@ test("server-renders MAP", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
 });
 
+test("mobile shell prioritizes five touch targets and keeps every module reachable", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(source, /className="mobile-nav"/);
+  for (const label of ["今天", "日程", "草稿", "任务", "更多"]) assert.match(source, new RegExp(`<strong>${label}<\\/strong>`));
+  for (const label of ["长期目标", "求职记录", "私人速记", "健康运动"]) assert.match(source, new RegExp(`<strong>${label}<\\/strong>`));
+  assert.match(styles, /env\(safe-area-inset-bottom\)/);
+  assert.match(styles, /100dvh/);
+});
+
+test("mobile calendars render as agendas instead of compressed desktop grids", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(source, /mobile-month-grid/);
+  assert.match(source, /mobile-day-agenda/);
+  assert.match(source, /mobile-schedule-agenda/);
+  assert.match(source, /mobile-week-span-list/);
+  assert.match(styles, /\.calendar-scroll \{ display: none; \}\.mobile-month-view \{ display: block;/);
+  assert.match(styles, /\.schedule-scroll \{ display: none; \}\.mobile-schedule-agenda \{ display: grid;/);
+  assert.match(styles, /\.week-task-grid \{ min-width: 0;/);
+});
+
+test("mobile touch alternatives cover ordering, private notes, modals, and AI", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(source, /moveGoalByOffset/);
+  assert.match(source, /mobile-reference-back/);
+  assert.match(styles, /\.mobile-goal-order \{/);
+  assert.match(styles, /\.reference-workbench\.editing \.reference-sidebar \{ display: none; \}/);
+  assert.match(styles, /\.ai-panel \{ inset: 0; width: 100%; height: 100dvh;/);
+  assert.match(styles, /\.modal-backdrop \{ padding: 0; align-items: end; \}/);
+});
+
 test("current phase shows both start and end countdowns before it begins", async () => {
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
