@@ -562,6 +562,7 @@ export default function Home() {
   }, []);
 
   const visibleTasks = useMemo(() => data.tasks.filter((task) => !isCompletedTaskArchived(task, today)), [data.tasks, today]);
+  const calendarTasks = useMemo(() => visibleTasks.filter((task) => task.status === "todo"), [visibleTasks]);
   const todayDisplayTasks = useMemo(() => visibleTasks.filter((task) => isTaskVisibleToday(task, today)), [visibleTasks, today]);
   const todayTasks = useMemo(() => todayDisplayTasks.filter((task) => task.status === "todo"), [todayDisplayTasks]);
   const todayRoutineEntries = useMemo(() => data.routines.flatMap((routine) => {
@@ -580,8 +581,8 @@ export default function Home() {
   const weekDays = useMemo(() => buildWeekDays(today), [today]);
   const weekStart = weekDays[0].key;
   const weekEnd = weekDays[6].key;
-  const weeklyTasks = visibleTasks.filter((task) => task.date <= weekEnd && (task.endDate || task.date) >= weekStart);
-  const weeklyRoutineCount = weekDays.reduce((count, day) => count + data.routines.filter((routine) => isRoutineDueOn(routine, day.key)).length, 0);
+  const weeklyTasks = calendarTasks.filter((task) => task.date <= weekEnd && (task.endDate || task.date) >= weekStart);
+  const weeklyRoutineCount = weekDays.reduce((count, day) => count + data.routines.filter((routine) => isRoutineDueOn(routine, day.key) && !routine.completedDates.includes(day.key)).length, 0);
   const weeklySpanTasks = weeklyTasks.filter(isMultiDayTask).slice().sort((a, b) => a.date.localeCompare(b.date) || (a.endDate || a.date).localeCompare(b.endDate || b.date));
   const calendarMonthLabel = useMemo(() => {
     const [year, month] = calendarCursor.split("-").map(Number);
@@ -589,9 +590,9 @@ export default function Home() {
   }, [calendarCursor]);
   const monthStart = `${calendarCursor}-01`;
   const monthEnd = calendarCells.filter((cell) => cell.inMonth).at(-1)?.key || monthStart;
-  const monthlySpanTasks = visibleTasks.filter((task) => isMultiDayTask(task) && task.date <= monthEnd && (task.endDate || task.date) >= monthStart).slice().sort((a, b) => a.date.localeCompare(b.date));
-  const visibleTaskCount = visibleTasks.filter((task) => task.date <= monthEnd && (task.endDate || task.date) >= monthStart).length;
-  const visibleRoutineCount = calendarCells.filter((cell) => cell.inMonth).reduce((count, cell) => count + data.routines.filter((routine) => isRoutineDueOn(routine, cell.key)).length, 0);
+  const monthlySpanTasks = calendarTasks.filter((task) => isMultiDayTask(task) && task.date <= monthEnd && (task.endDate || task.date) >= monthStart).slice().sort((a, b) => a.date.localeCompare(b.date));
+  const visibleTaskCount = calendarTasks.filter((task) => task.date <= monthEnd && (task.endDate || task.date) >= monthStart).length;
+  const visibleRoutineCount = calendarCells.filter((cell) => cell.inMonth).reduce((count, cell) => count + data.routines.filter((routine) => isRoutineDueOn(routine, cell.key) && !routine.completedDates.includes(cell.key)).length, 0);
   const visibleScheduleCount = calendarCells.filter((cell) => cell.inMonth && cell.key >= data.phase.startDate && cell.key <= data.phase.endDate).reduce((count, cell) => count + data.schedule.filter((item) => item.days.includes(cell.dayCode)).length, 0);
   const applicationDateCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -1214,8 +1215,8 @@ export default function Home() {
                 <div className="calendar-grid">
                   {CALENDAR_DAY_LABEL.map((label, index) => <div className={`calendar-weekday ${index > 4 ? "weekend" : ""}`} key={label}>{label}</div>)}
                   {calendarCells.map((cell) => {
-                    const tasks = visibleTasks.filter((task) => !isMultiDayTask(task) && task.date === cell.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
-                    const routines = data.routines.filter((routine) => isRoutineDueOn(routine, cell.key)).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
+                    const tasks = calendarTasks.filter((task) => !isMultiDayTask(task) && task.date === cell.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
+                    const routines = data.routines.filter((routine) => isRoutineDueOn(routine, cell.key) && !routine.completedDates.includes(cell.key)).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
                     const schedules = cell.key >= data.phase.startDate && cell.key <= data.phase.endDate ? data.schedule.filter((item) => item.days.includes(cell.dayCode)).sort((a, b) => a.start.localeCompare(b.start)) : [];
                     const events = [...tasks.map((task) => ({ type: "task" as const, time: task.time, item: task })), ...routines.map((routine) => ({ type: "routine" as const, time: routine.time, item: routine })), ...schedules.map((item) => ({ type: "schedule" as const, time: item.start, item }))].sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
                     return <article className={`calendar-day ${cell.inMonth ? "" : "outside"} ${cell.key === today ? "today" : ""} ${taskDropDate === cell.key ? "task-drop-target" : ""}`} key={cell.key} onDragOver={(event) => allowTaskDrop(event, cell.key)} onDrop={(event) => dropTaskOnDate(event, cell.key)}>
@@ -1227,7 +1228,7 @@ export default function Home() {
                   })}
                 </div>
               </div>
-              <div className="calendar-legend"><span><i className="task" />当天任务</span><span><i className="routine" />固定任务</span><span><i className="schedule" />课程 / TA</span><small>拖动普通任务到日期格即可改期 · 固定任务在任务计划中调整规则</small></div>
+              <div className="calendar-legend"><span><i className="task" />当天任务</span><span><i className="routine" />固定任务</span><span><i className="schedule" />课程 / TA</span><small>完成后自动从日历隐藏 · 拖动普通任务到日期格即可改期 · 可在任务总览查看</small></div>
             </section> : <section className="panel schedule-panel">
               <div className="panel-heading"><div><p className="section-kicker">THIS WEEK</p><h3>本周总览</h3></div><span className="counter">{formatDate(weekStart)}—{formatDate(weekEnd)} · {weeklyTasks.length} 项任务 · {weeklyRoutineCount} 次固定任务</span></div>
               <div className="semester-week-modules">
@@ -1258,7 +1259,7 @@ export default function Home() {
               </div>
               </section>
               <section className={`semester-week-module week-task-section ${draggedSemesterModule === "tasks" ? "dragging" : ""} ${dragOverSemesterModule === "tasks" ? "drag-over" : ""}`} style={{ order: semesterWeekOrder.indexOf("tasks") }} onDragOver={(event) => { if (!draggedSemesterModule) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverSemesterModule("tasks"); }} onDrop={(event) => { if (!draggedSemesterModule) return; event.preventDefault(); event.stopPropagation(); moveSemesterModule(draggedSemesterModule, "tasks"); setDraggedSemesterModule(null); setDragOverSemesterModule(null); }}>
-                <div className="week-task-heading"><strong>本周任务</strong><div className="semester-module-meta"><span>拖动任务改日期 · 跨度任务会整体平移</span><button type="button" draggable onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-map-semester-module", "tasks"); setDraggedSemesterModule("tasks"); }} onDragEnd={() => { setDraggedSemesterModule(null); setDragOverSemesterModule(null); }} aria-label="拖动本周任务区块排序" title="拖动区块排序">⋮⋮ 拖动排序</button></div></div>
+                <div className="week-task-heading"><strong>本周任务</strong><div className="semester-module-meta"><span>完成后隐藏 · 拖动任务可改日期</span><button type="button" draggable onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-map-semester-module", "tasks"); setDraggedSemesterModule("tasks"); }} onDragEnd={() => { setDraggedSemesterModule(null); setDragOverSemesterModule(null); }} aria-label="拖动本周任务区块排序" title="拖动区块排序">⋮⋮ 拖动排序</button></div></div>
                 <div className="week-task-scroll">
                   {weeklySpanTasks.length > 0 && <section className="week-span-section">
                     <div className="week-span-title"><div><strong>持续推进</strong><span>跨日任务按真实周期横跨本周</span></div><i>{weeklySpanTasks.length} 项</i></div>
@@ -1275,8 +1276,8 @@ export default function Home() {
                   </section>}
                   <div className="week-task-grid">
                     {weekDays.map((day) => {
-                      const tasks = visibleTasks.filter((task) => !isMultiDayTask(task) && task.date === day.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
-                      const routines = data.routines.filter((routine) => isRoutineDueOn(routine, day.key)).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
+                      const tasks = calendarTasks.filter((task) => !isMultiDayTask(task) && task.date === day.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
+                      const routines = data.routines.filter((routine) => isRoutineDueOn(routine, day.key) && !routine.completedDates.includes(day.key)).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
                       return <article className={`week-task-day ${day.key === today ? "today" : ""} ${taskDropDate === day.key ? "task-drop-target" : ""}`} key={day.key} onDragOver={(event) => allowTaskDrop(event, day.key)} onDrop={(event) => dropTaskOnDate(event, day.key)}>
                         <header><div><strong>{day.label}</strong><span>{day.date}</span></div>{day.key === today && <i>今天</i>}</header>
                         <div className="week-task-list">

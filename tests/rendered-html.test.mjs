@@ -78,6 +78,19 @@ test("week and month task cards expose drag, drop, and completion controls", asy
   assert.match(source, /拖动普通任务到日期格即可改期/);
 });
 
+test("completed tasks disappear from calendars but remain available in overview views", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /const calendarTasks = useMemo\(\(\) => visibleTasks\.filter\(\(task\) => task\.status === "todo"\)/);
+  assert.match(source, /const weeklyTasks = calendarTasks\.filter/);
+  assert.match(source, /const monthlySpanTasks = calendarTasks\.filter/);
+  assert.equal([...source.matchAll(/const tasks = calendarTasks\.filter/g)].length, 2);
+  assert.match(source, /!routine\.completedDates\.includes\(day\.key\)/);
+  assert.match(source, /!routine\.completedDates\.includes\(cell\.key\)/);
+  assert.match(source, /const todayDisplayTasks = useMemo\(\(\) => visibleTasks\.filter/);
+  assert.match(source, /const statusFilteredTasks = useMemo\(\(\) => visibleTasks\.filter/);
+  assert.match(source, /完成后自动从日历隐藏/);
+});
+
 test("completed tasks archive from the interface after 60 days", () => {
   const task = { status: "done", completedAt: "2026-06-25", date: "2026-06-20" };
   assert.equal(isCompletedTaskArchived(task, "2026-08-23"), false);
