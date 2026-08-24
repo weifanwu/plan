@@ -36,6 +36,37 @@ test("career board includes application-date filtering and daily counts", async 
   assert.match(source, /visibleApplications\.filter/);
 });
 
+test("voice input is exposed in the MAP AI composer", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /开始语音输入/);
+  assert.match(source, /\/api\/transcribe/);
+  assert.match(source, /MAP 不保存录音/);
+});
+
+test("voice transcription API forwards audio without persisting it", { concurrency: false }, async () => {
+  const worker = await loadWorker();
+  const originalFetch = globalThis.fetch;
+  let outboundUrl;
+  let outboundBody;
+  globalThis.fetch = async (url, init) => {
+    outboundUrl = String(url);
+    outboundBody = init.body;
+    return Response.json({ text: "明天提醒我投三份简历" });
+  };
+  try {
+    const form = new FormData();
+    form.append("audio", new Blob(["voice-bytes"], { type: "audio/webm" }), "map-voice.webm");
+    const response = await worker.fetch(new Request("http://localhost/api/transcribe", { method: "POST", body: form }), { OPENAI_API_KEY: "test-key" }, { waitUntil() {}, passThroughOnException() {} });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { text: "明天提醒我投三份简历" });
+    assert.equal(outboundUrl, "https://api.openai.com/v1/audio/transcriptions");
+    assert.equal(outboundBody.get("model"), "gpt-transcribe");
+    assert.equal(outboundBody.get("file").name, "map-voice.webm");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("MAP AI sends conversation, selected model, app context, and approval schema", { concurrency: false }, async () => {
   const worker = await loadWorker();
   const currentData = { tasks: [], schedule: [], goals: [], habits: [], workouts: [], applications: [], notes: [], habitDate: "2026-08-23", workoutWeek: "2026-08-17" };

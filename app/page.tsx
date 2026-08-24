@@ -55,6 +55,7 @@ type AIChatMessage = { id: string; role: "user" | "assistant"; content: string }
 type AICollection = "tasks" | "schedule" | "goals" | "habits" | "workouts" | "applications" | "notes";
 type AIOperation = { collection: AICollection; operation: "add" | "update" | "delete" | "reorder"; recordId: string; recordJson: string };
 type AIChatResponse = { reply: string; action: "answer" | "proposal"; summary: string; operations: AIOperation[]; error?: string };
+type VoiceState = "idle" | "recording" | "transcribing";
 type PWAInstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
 
 type AppData = {
@@ -253,6 +254,7 @@ export default function Home() {
   const [aiPreview, setAiPreview] = useState<AIPlanPreview | null>(null);
   const [aiMessages, setAiMessages] = useState<AIChatMessage[]>([AI_WELCOME_MESSAGE]);
   const [aiModel, setAiModel] = useState<AIModel>("gpt-5.6-luna");
+  const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const [filter, setFilter] = useState<"全部" | TaskCategory>("全部");
   const [semesterMode, setSemesterMode] = useState<"calendar" | "week">("week");
   const [calendarCursor, setCalendarCursor] = useState(() => getTorontoToday().slice(0, 7));
@@ -271,6 +273,12 @@ export default function Home() {
   const aiConversationRef = useRef<HTMLDivElement>(null);
   const aiInputRef = useRef<HTMLTextAreaElement>(null);
   const aiSessionRef = useRef(0);
+  const voiceSessionRef = useRef(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const voiceStreamRef = useRef<MediaStream | null>(null);
+  const voiceChunksRef = useRef<Blob[]>([]);
+  const voiceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const voiceAbortRef = useRef<AbortController | null>(null);
   const todayLabel = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", weekday: "long", month: "long", day: "numeric" }).format(new Date()).toUpperCase();
   const daysToGraduate = Math.max(0, Math.ceil((Date.parse("2026-12-28T12:00:00-05:00") - Date.parse(`${today}T12:00:00-05:00`)) / 86400000));
   const semesterProgress = Math.max(0, Math.min(100, Math.round(((Date.parse(`${today}T12:00:00-05:00`) - Date.parse("2026-09-01T12:00:00-04:00")) / (Date.parse("2026-12-28T12:00:00-05:00") - Date.parse("2026-09-01T12:00:00-04:00"))) * 100)));
@@ -444,8 +452,85 @@ export default function Home() {
     if (result.outcome === "accepted") setInstallPrompt(null);
   }
 
+  function releaseVoiceResources() {
+    if (voiceTimeoutRef.current) clearTimeout(voiceTimeoutRef.current);
+    voiceTimeoutRef.current = null;
+    voiceStreamRef.current?.getTracks().forEach((track) => track.stop());
+    voiceStreamRef.current = null;
+    mediaRecorderRef.current = null;
+  }
+
+  async function toggleVoiceInput() {
+    if (voiceState === "recording") {
+      if (mediaRecorderRef.current?.state !== "inactive") mediaRecorderRef.current?.stop();
+      return;
+    }
+    if (voiceState !== "idle" || aiLoading || !online) return;
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setAiError("这个浏览器不支持直接录音，请使用最新版 Chrome 或 Safari。");
+      return;
+    }
+
+    const session = ++voiceSessionRef.current;
+    setAiError("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (session !== voiceSessionRef.current) { stream.getTracks().forEach((track) => track.stop()); return; }
+      const mimeType = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm"].find((type) => MediaRecorder.isTypeSupported(type)) || "";
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      voiceStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      voiceChunksRef.current = [];
+      recorder.ondataavailable = (event) => { if (event.data.size) voiceChunksRef.current.push(event.data); };
+      recorder.onerror = () => {
+        if (session === voiceSessionRef.current) setAiError("录音失败，请重新允许麦克风权限后再试。");
+        releaseVoiceResources();
+        setVoiceState("idle");
+      };
+      recorder.onstop = async () => {
+        const chunks = voiceChunksRef.current;
+        const recordedType = recorder.mimeType || mimeType || "audio/webm";
+        releaseVoiceResources();
+        if (session !== voiceSessionRef.current) return;
+        const audio = new Blob(chunks, { type: recordedType });
+        if (!audio.size) { setAiError("没有录到声音，请再试一次。"); setVoiceState("idle"); return; }
+        setVoiceState("transcribing");
+        const controller = new AbortController();
+        voiceAbortRef.current = controller;
+        try {
+          const form = new FormData();
+          form.append("audio", audio, recordedType.includes("mp4") ? "map-voice.mp4" : "map-voice.webm");
+          const response = await fetch("/api/transcribe", { method: "POST", body: form, signal: controller.signal });
+          const result = await response.json() as { text?: string; error?: string };
+          if (!response.ok || !result.text) throw new Error(result.error || "语音暂时无法转写。");
+          if (session !== voiceSessionRef.current) return;
+          setAiText((current) => `${current}${current.trim() ? "\n" : ""}${result.text}`);
+          window.requestAnimationFrame(() => aiInputRef.current?.focus());
+        } catch (error) {
+          if (session === voiceSessionRef.current && !(error instanceof DOMException && error.name === "AbortError")) setAiError(error instanceof Error ? error.message : "语音暂时无法转写。");
+        } finally {
+          if (session === voiceSessionRef.current) setVoiceState("idle");
+          if (voiceAbortRef.current === controller) voiceAbortRef.current = null;
+        }
+      };
+      recorder.start();
+      setVoiceState("recording");
+      voiceTimeoutRef.current = setTimeout(() => { if (recorder.state !== "inactive") recorder.stop(); }, 120000);
+    } catch (error) {
+      releaseVoiceResources();
+      setVoiceState("idle");
+      setAiError(error instanceof DOMException && error.name === "NotAllowedError" ? "需要允许麦克风权限才能使用语音输入。" : "无法启动麦克风，请检查浏览器权限。");
+    }
+  }
+
   function closeAIChat() {
     aiSessionRef.current += 1;
+    voiceSessionRef.current += 1;
+    voiceAbortRef.current?.abort();
+    voiceAbortRef.current = null;
+    if (mediaRecorderRef.current?.state !== "inactive") mediaRecorderRef.current?.stop();
+    releaseVoiceResources();
+    setVoiceState("idle");
     setAiOpen(false);
     setAiText("");
     setAiLoading(false);
@@ -468,7 +553,7 @@ export default function Home() {
 
   async function sendAIMessage(text = aiText) {
     const content = text.trim();
-    if (!content || aiLoading) return;
+    if (!content || aiLoading || voiceState !== "idle") return;
     if (!online) { setAiError("当前处于离线模式。MAP 的其他功能仍可使用，恢复网络后再继续对话。"); return; }
     const userMessage: AIChatMessage = { id: uid(), role: "user", content };
     const nextMessages = [...aiMessages, userMessage];
@@ -827,10 +912,11 @@ export default function Home() {
           </section>}
         </div>
         <form className="ai-composer" onSubmit={(event) => { event.preventDefault(); void sendAIMessage(); }}>
-          <textarea ref={aiInputRef} value={aiText} onChange={(event) => setAiText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendAIMessage(); } }} placeholder={online ? "问问题、做分析，或让我修改 MAP…" : "恢复网络后继续对话"} disabled={aiLoading || !online} />
-          <button type="submit" disabled={!aiText.trim() || aiLoading || !online} aria-label="发送消息">↑</button>
+          <textarea ref={aiInputRef} value={aiText} onChange={(event) => setAiText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendAIMessage(); } }} placeholder={voiceState === "recording" ? "正在听…再次点击麦克风即可停止" : voiceState === "transcribing" ? "正在把语音转成文字…" : online ? "问问题、做分析，或让我修改 MAP…" : "恢复网络后继续对话"} disabled={aiLoading || voiceState !== "idle" || !online} />
+          <button type="button" className={`voice-button ${voiceState}`} onClick={() => void toggleVoiceInput()} disabled={aiLoading || voiceState === "transcribing" || !online} aria-label={voiceState === "recording" ? "停止录音" : voiceState === "transcribing" ? "正在转写语音" : "开始语音输入"}>{voiceState === "recording" ? "■" : voiceState === "transcribing" ? "…" : "麦"}</button>
+          <button type="submit" className="ai-send-button" disabled={!aiText.trim() || aiLoading || voiceState !== "idle" || !online} aria-label="发送消息">↑</button>
         </form>
-        <p className="ai-privacy">分析会读取完整 MAP；明确的数据修改只发送相关模块。聊天不保存，关闭面板即清空。</p>
+        <p className="ai-privacy">分析会读取完整 MAP；明确的数据修改只发送相关模块。语音会发送至 OpenAI 转写，MAP 不保存录音。</p>
       </aside>}
 
       {taskEditor && <TaskModal value={taskEditor} defaultDate={newTaskDate || undefined} onClose={() => { setTaskEditor(null); setNewTaskDate(null); }} onSave={(task) => { setData((current) => { const tasks = taskEditor === "new" ? [...current.tasks, task] : current.tasks.map((item) => item.id === task.id ? task : item); return { ...current, tasks: rollOverTasks(tasks, today) }; }); setTaskEditor(null); setNewTaskDate(null); }} onDelete={taskEditor === "new" ? undefined : () => { deleteTask(taskEditor.id); setTaskEditor(null); setNewTaskDate(null); }} />}

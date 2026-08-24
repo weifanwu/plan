@@ -55,6 +55,33 @@ function focusedData(data: Record<string, unknown>, collection: DataCollection) 
   ]);
 }
 
+async function handleTranscription(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "POST") return Response.json({ error: "Method not allowed" }, { status: 405 });
+  if (!env.OPENAI_API_KEY) return Response.json({ error: "语音转写功能尚未配置。" }, { status: 503 });
+
+  try {
+    const incoming = await request.formData();
+    const audio = incoming.get("audio");
+    if (!(audio instanceof File) || audio.size === 0) return Response.json({ error: "没有收到有效的录音。" }, { status: 400 });
+    if (audio.size > 12 * 1024 * 1024) return Response.json({ error: "录音太长了，请控制在两分钟以内。" }, { status: 413 });
+
+    const form = new FormData();
+    form.append("model", "gpt-transcribe");
+    form.append("file", audio, audio.name || "map-voice.webm");
+    const openAIResponse = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${env.OPENAI_API_KEY}` },
+      body: form,
+    });
+    const payload = await openAIResponse.json() as { text?: unknown; error?: { message?: string } };
+    if (!openAIResponse.ok) return Response.json({ error: payload.error?.message || "语音暂时无法转写，请再试一次。" }, { status: openAIResponse.status });
+    if (typeof payload.text !== "string" || !payload.text.trim()) return Response.json({ error: "没有识别到清晰的语音。" }, { status: 422 });
+    return Response.json({ text: payload.text.trim() });
+  } catch {
+    return Response.json({ error: "语音转写失败，请检查网络后再试。" }, { status: 500 });
+  }
+}
+
 async function handleAIChat(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return Response.json({ error: "Method not allowed" }, { status: 405 });
   if (!env.OPENAI_API_KEY) return Response.json({ error: "AI 功能尚未配置。" }, { status: 503 });
@@ -227,6 +254,7 @@ const worker = {
     }
 
     if (url.pathname === "/api/ai-chat") return handleAIChat(request, env);
+    if (url.pathname === "/api/transcribe") return handleTranscription(request, env);
 
     return handler.fetch(request, env, ctx);
   },
