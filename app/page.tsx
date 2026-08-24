@@ -8,7 +8,7 @@ import { isTaskVisibleToday } from "../lib/task-visibility.mjs";
 type View = "today" | "goals" | "semester" | "career" | "planner" | "notes" | "wellness";
 type TaskCategory = "学业" | "求职" | "生活" | "健康";
 type TaskStatus = "todo" | "done";
-type NoteCategory = "课程" | "项目" | "求职" | "生活" | "想法";
+type NoteCategory = "待办" | "想法" | "课程" | "项目" | "求职" | "生活";
 
 type Task = {
   id: string;
@@ -73,6 +73,7 @@ type PlannerStatusFilter = "open" | "done" | "all";
 type RecordCollection = "tasks" | "schedule" | "goals" | "habits" | "workouts" | "applications" | "notes";
 type UndoNotice = { message: string; restore: (current: AppData) => AppData };
 type PWAInstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
+type TaskPrefill = { title: string; details: string; category: TaskCategory };
 
 type AppData = {
   phase: ActivePhase;
@@ -92,7 +93,7 @@ const DAY_LABEL: Record<string, string> = { Mo: "周一", Tu: "周二", We: "周
 const CALENDAR_DAY_ORDER = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 const CALENDAR_DAY_LABEL = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 const APPLICATION_STAGES: ApplicationStage[] = ["已投", "面试", "Offer", "拒绝"];
-const NOTE_CATEGORIES: NoteCategory[] = ["想法", "课程", "项目", "求职", "生活"];
+const NOTE_CATEGORIES: NoteCategory[] = ["待办", "想法", "课程", "项目", "求职", "生活"];
 const BASE_DATE = "2026-08-23";
 const STORAGE_KEY = "map-life-os-v1";
 const AI_WELCOME_MESSAGE: AIChatMessage = { id: "welcome", role: "assistant", content: "你好，我是 MAP AI。我能看到你当前阶段、长期目标、任务、课表、求职记录、健康计划和全部笔记，也知道哪些任务正在服务哪个目标。你可以让我分析现状、回答问题，或者一起把一个想法变成计划；任何数据修改都会先给你预览。" };
@@ -214,7 +215,7 @@ function uid() {
 }
 
 function deriveAIChanges(current: AppData, next: AppData) {
-  const collections: Array<["tasks" | "schedule" | "goals" | "habits" | "workouts" | "applications" | "notes", string]> = [["tasks", "任务"], ["schedule", "固定安排"], ["goals", "目标"], ["habits", "饮食习惯"], ["workouts", "运动"], ["applications", "求职记录"], ["notes", "笔记"]];
+  const collections: Array<["tasks" | "schedule" | "goals" | "habits" | "workouts" | "applications" | "notes", string]> = [["tasks", "任务"], ["schedule", "固定安排"], ["goals", "目标"], ["habits", "饮食习惯"], ["workouts", "运动"], ["applications", "求职记录"], ["notes", "草稿"]];
   const changes: string[] = [];
   const displayName = (item: Record<string, unknown>) => String(item.title || item.company || item.label || item.code || item.content || item.id || "未命名记录").split("\n")[0].slice(0, 60);
   for (const [key, label] of collections) {
@@ -295,12 +296,19 @@ function goalPriorityLabel(index: number) {
 }
 
 function noteTitle(note: Note) {
-  return note.content.split("\n").find((line) => line.trim())?.trim().slice(0, 80) || "无标题笔记";
+  return note.content.split("\n").find((line) => line.trim())?.trim().slice(0, 80) || "无标题草稿";
 }
 
 function notePreview(note: Note) {
   const lines = note.content.split("\n").filter((line) => line.trim());
   return (lines.length > 1 ? lines.slice(1).join("\n") : note.content).trim();
+}
+
+function taskCategoryFromNote(category: NoteCategory): TaskCategory {
+  if (category === "课程") return "学业";
+  if (category === "求职") return "求职";
+  if (category === "生活") return "生活";
+  return "生活";
 }
 
 function formatNoteTime(value: string) {
@@ -316,6 +324,8 @@ export default function Home() {
   const [taskEditor, setTaskEditor] = useState<Task | "new" | null>(null);
   const [newTaskDate, setNewTaskDate] = useState<string | null>(null);
   const [newTaskGoalId, setNewTaskGoalId] = useState<string | null>(null);
+  const [taskPrefill, setTaskPrefill] = useState<TaskPrefill | null>(null);
+  const [promotingNoteId, setPromotingNoteId] = useState<string | null>(null);
   const [phaseEditor, setPhaseEditor] = useState(false);
   const [scheduleEditor, setScheduleEditor] = useState<ScheduleItem | "new" | null>(null);
   const [goalEditor, setGoalEditor] = useState<Goal | "new" | null>(null);
@@ -324,7 +334,8 @@ export default function Home() {
   const [applicationEditor, setApplicationEditor] = useState<Application | "new" | null>(null);
   const [noteEditor, setNoteEditor] = useState<Note | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
-  const [noteCategory, setNoteCategory] = useState<NoteCategory>("想法");
+  const [noteCategory, setNoteCategory] = useState<NoteCategory>("待办");
+  const [noteFilter, setNoteFilter] = useState<"全部" | NoteCategory>("全部");
   const [noteQuery, setNoteQuery] = useState("");
   const [aiOpen, setAiOpen] = useState(false);
   const [aiText, setAiText] = useState("");
@@ -490,13 +501,48 @@ export default function Home() {
   })), [data.goals, data.tasks]);
   const visibleNotes = useMemo(() => {
     const query = noteQuery.trim().toLocaleLowerCase();
-    return data.notes.filter((note) => !query || note.content.toLocaleLowerCase().includes(query) || note.category.toLocaleLowerCase().includes(query)).slice().sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt));
-  }, [data.notes, noteQuery]);
+    return data.notes.filter((note) => (noteFilter === "全部" || note.category === noteFilter) && (!query || note.content.toLocaleLowerCase().includes(query) || note.category.toLocaleLowerCase().includes(query))).slice().sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt));
+  }, [data.notes, noteFilter, noteQuery]);
+  const backlogCount = data.notes.filter((note) => note.category === "待办").length;
 
   function openNewTask(date?: string, goalId?: string) {
     setNewTaskDate(date || null);
     setNewTaskGoalId(goalId || null);
+    setTaskPrefill(null);
+    setPromotingNoteId(null);
     setTaskEditor("new");
+  }
+
+  function promoteNoteToTask(note: Note) {
+    const preview = notePreview(note);
+    setTaskPrefill({ title: noteTitle(note), details: preview === noteTitle(note) ? "" : preview, category: taskCategoryFromNote(note.category) });
+    setPromotingNoteId(note.id);
+    setNewTaskDate(today);
+    setNewTaskGoalId(null);
+    setTaskEditor("new");
+  }
+
+  function closeTaskEditor() {
+    setTaskEditor(null);
+    setNewTaskDate(null);
+    setNewTaskGoalId(null);
+    setTaskPrefill(null);
+    setPromotingNoteId(null);
+  }
+
+  function saveTaskFromEditor(task: Task) {
+    const sourceNote = promotingNoteId ? data.notes.find((note) => note.id === promotingNoteId) : null;
+    const sourceIndex = sourceNote ? data.notes.findIndex((note) => note.id === sourceNote.id) : -1;
+    setData((current) => {
+      const tasks = taskEditor === "new" ? [...current.tasks, task] : current.tasks.map((item) => item.id === task.id ? task : item);
+      const notes = sourceNote ? current.notes.filter((note) => note.id !== sourceNote.id) : current.notes;
+      return { ...current, notes, tasks: rollOverTasks(tasks, today) };
+    });
+    if (sourceNote) showUndo(`已将草稿「${noteTitle(sourceNote)}」安排为任务`, (current) => {
+      const notes = current.notes.some((note) => note.id === sourceNote.id) ? current.notes : [...current.notes.slice(0, Math.max(0, sourceIndex)), sourceNote, ...current.notes.slice(Math.max(0, sourceIndex))];
+      return { ...current, notes, tasks: current.tasks.filter((item) => item.id !== task.id) };
+    });
+    closeTaskEditor();
   }
 
   function openNotes() {
@@ -786,7 +832,7 @@ export default function Home() {
           <NavButton active={view === "semester"} label="阶段地图" icon="03" onClick={() => setView("semester")} />
           <NavButton active={view === "career"} label="求职记录" icon="04" onClick={() => setView("career")} />
           <NavButton active={view === "planner"} label="任务计划" icon="05" onClick={() => setView("planner")} />
-          <NavButton active={view === "notes"} label="灵感笔记" icon="06" onClick={openNotes} />
+          <NavButton active={view === "notes"} label="草稿箱" icon="06" onClick={openNotes} />
           <NavButton active={view === "wellness"} label="健康运动" icon="07" onClick={() => setView("wellness")} />
         </nav>
 
@@ -811,9 +857,9 @@ export default function Home() {
         <header className="topbar">
           <div>
             <p className="eyebrow">{todayLabel}</p>
-            <h1>{view === "today" ? "今天，先把最重要的事情往前推。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "看清当前阶段的时间与节奏。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : view === "notes" ? "先把想法接住，再慢慢整理。" : "健康不是剩余时间。"}</h1>
+            <h1>{view === "today" ? "今天，先把最重要的事情往前推。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "看清当前阶段的时间与节奏。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : view === "notes" ? "没准备好排期的，先放进草稿箱。" : "健康不是剩余时间。"}</h1>
           </div>
-          <div className="topbar-actions"><button className="quick-note-top" onClick={openNotes}><span>✎</span> 记一笔</button><button className="primary-button" onClick={() => openNewTask()}><span>＋</span> 新建任务</button></div>
+          <div className="topbar-actions"><button className="quick-note-top" onClick={openNotes}><span>✎</span> 记草稿</button><button className="primary-button" onClick={() => openNewTask()}><span>＋</span> 新建任务</button></div>
         </header>
 
         {view === "today" && (
@@ -1029,20 +1075,25 @@ export default function Home() {
 
         {view === "notes" && (
           <div className="page-content notes-page">
-            <section className="quick-note-panel">
-              <div className="quick-note-intro"><p className="section-kicker">QUICK CAPTURE</p><h2>想到什么，<br />现在就写下来。</h2><p>这里不要求完整，也不要求立刻分类清楚。先记录课程项目、求职判断、出行信息或突然冒出的想法，之后再回来整理。</p></div>
-              <div className="quick-note-compose">
-                <textarea ref={noteDraftRef} value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); saveQuickNote(); } }} placeholder={"直接开始写……\n\n例如：CAS 720 project 可以从数据库故障恢复这个方向切入，需要先查三篇 paper。"} aria-label="快速记录笔记" />
-                <div className="quick-note-footer"><div className="note-category-switch" role="group" aria-label="笔记分类">{NOTE_CATEGORIES.map((category) => <button key={category} className={noteCategory === category ? "active" : ""} onClick={() => setNoteCategory(category)}>{category}</button>)}</div><div className="quick-note-save"><span>⌘ / Ctrl + Enter</span><button onClick={saveQuickNote} disabled={!noteDraft.trim()}>保存笔记 →</button></div></div>
-              </div>
-            </section>
+            <section className="draft-workbench">
+              <aside className="draft-capture">
+                <div className="draft-capture-head"><div><p className="section-kicker">QUICK INBOX</p><h2>先记下来，<br />不用现在安排。</h2></div><span><strong>{backlogCount}</strong> 个待办草稿</span></div>
+                <p>未排期任务、突然想到的事情和不成熟的想法都先放这里。准备执行时，再把它安排成正式任务。</p>
+                <textarea ref={noteDraftRef} value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); saveQuickNote(); } }} placeholder={"写一个待办或想法……\n\n例如：研究三家 AI Platform 公司，之后再决定哪天开始。"} aria-label="快速记录草稿" />
+                <div className="draft-type-label">这是什么？</div>
+                <div className="note-category-switch" role="group" aria-label="草稿分类">{NOTE_CATEGORIES.map((category) => <button key={category} className={noteCategory === category ? "active" : ""} onClick={() => setNoteCategory(category)}>{category}</button>)}</div>
+                <div className="draft-save"><span>⌘ / Ctrl + Enter</span><button onClick={saveQuickNote} disabled={!noteDraft.trim()}>放进草稿箱 →</button></div>
+              </aside>
 
-            <section className="notes-library">
-              <header><div><p className="section-kicker">NOTEBOOK</p><h2>所有笔记</h2><span>{data.notes.length} 条记录 · 置顶内容优先显示</span></div><label className="note-search"><span>⌕</span><input value={noteQuery} onChange={(event) => setNoteQuery(event.target.value)} placeholder="搜索内容或分类" /></label></header>
-              {visibleNotes.length > 0 ? <div className="note-grid">{visibleNotes.map((note) => <article className={`note-card note-${note.category} ${note.pinned ? "pinned" : ""}`} key={note.id}>
-                <div className="note-card-meta"><span>{note.category}</span><time>{formatNoteTime(note.updatedAt)}</time><div className="note-card-controls"><button className="note-pin" onClick={() => setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? { ...item, pinned: !item.pinned } : item) }))} aria-label={note.pinned ? "取消置顶" : "置顶笔记"} title={note.pinned ? "取消置顶" : "置顶"}>{note.pinned ? "●" : "○"}</button><button className="note-delete" onClick={() => removeRecord("notes", note.id, `已删除笔记「${noteTitle(note)}」`)} aria-label={`删除笔记：${noteTitle(note)}`} title="删除笔记">×</button></div></div>
-                <button className="note-card-body" onClick={() => setNoteEditor(note)}><h3>{noteTitle(note)}</h3><p>{notePreview(note)}</p><span>打开编辑 <i>→</i></span></button>
-              </article>)}</div> : <div className="notes-empty"><span>{noteQuery ? "没有找到匹配的笔记" : "你的第一条笔记会出现在这里"}</span><p>{noteQuery ? "换一个关键词试试。" : "不用想标题，直接在上方写下第一句话。"}</p></div>}
+              <section className="draft-inbox">
+                <header><div><p className="section-kicker">DRAFT INBOX</p><h2>草稿箱</h2><span>{data.notes.length} 条草稿 · 置顶优先 · 准备好后可安排成任务</span></div><label className="note-search"><span>⌕</span><input value={noteQuery} onChange={(event) => setNoteQuery(event.target.value)} placeholder="搜索草稿" /></label></header>
+                <div className="draft-filter-row" role="group" aria-label="筛选草稿">{(["全部", ...NOTE_CATEGORIES] as const).map((category) => <button key={category} className={noteFilter === category ? "active" : ""} onClick={() => setNoteFilter(category)}>{category}<span>{category === "全部" ? data.notes.length : data.notes.filter((note) => note.category === category).length}</span></button>)}</div>
+                {visibleNotes.length > 0 ? <div className="draft-list">{visibleNotes.map((note) => <article className={`draft-row note-${note.category} ${note.pinned ? "pinned" : ""}`} key={note.id}>
+                  <button className="draft-pin" onClick={() => setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? { ...item, pinned: !item.pinned } : item) }))} aria-label={note.pinned ? "取消置顶" : "置顶草稿"} title={note.pinned ? "取消置顶" : "置顶"}>{note.pinned ? "●" : "○"}</button>
+                  <button className="draft-row-body" onClick={() => setNoteEditor(note)}><span className="draft-category">{note.category}</span><div><h3>{noteTitle(note)}</h3>{notePreview(note) !== noteTitle(note) && <p>{notePreview(note)}</p>}</div><time>{formatNoteTime(note.updatedAt)}</time></button>
+                  <div className="draft-row-actions"><button className="draft-schedule" onClick={() => promoteNoteToTask(note)}>安排成任务</button><button className="draft-delete" onClick={() => removeRecord("notes", note.id, `已删除草稿「${noteTitle(note)}」`)} aria-label={`删除草稿：${noteTitle(note)}`} title="删除草稿">×</button></div>
+                </article>)}</div> : <div className="notes-empty"><span>{noteQuery || noteFilter !== "全部" ? "没有符合条件的草稿" : "草稿箱还是空的"}</span><p>{noteQuery || noteFilter !== "全部" ? "换一个筛选条件或关键词。" : "把暂时不想排期的任务和想法先写在左边。"}</p></div>}
+              </section>
             </section>
           </div>
         )}
@@ -1097,14 +1148,14 @@ export default function Home() {
         <p className="ai-privacy">分析会读取完整 MAP；明确的数据修改只发送相关模块。语音会发送至 OpenAI 转写，MAP 不保存录音。</p>
       </aside>}
 
-      {taskEditor && <TaskModal value={taskEditor} goals={data.goals} defaultDate={newTaskDate || undefined} defaultGoalId={newTaskGoalId || undefined} onClose={() => { setTaskEditor(null); setNewTaskDate(null); setNewTaskGoalId(null); }} onSave={(task) => { setData((current) => { const tasks = taskEditor === "new" ? [...current.tasks, task] : current.tasks.map((item) => item.id === task.id ? task : item); return { ...current, tasks: rollOverTasks(tasks, today) }; }); setTaskEditor(null); setNewTaskDate(null); setNewTaskGoalId(null); }} onDelete={taskEditor === "new" ? undefined : () => { deleteTask(taskEditor.id); setTaskEditor(null); setNewTaskDate(null); setNewTaskGoalId(null); }} />}
+      {taskEditor && <TaskModal value={taskEditor} goals={data.goals} prefill={taskPrefill || undefined} sourceDraft={Boolean(promotingNoteId)} defaultDate={newTaskDate || undefined} defaultGoalId={newTaskGoalId || undefined} onClose={closeTaskEditor} onSave={saveTaskFromEditor} onDelete={taskEditor === "new" ? undefined : () => { deleteTask(taskEditor.id); closeTaskEditor(); }} />}
       {phaseEditor && <PhaseModal value={data.phase} goals={data.goals} onClose={() => setPhaseEditor(false)} onSave={(phase) => { setData((current) => ({ ...current, phase })); setCalendarCursor(phase.startDate.slice(0, 7)); setPhaseEditor(false); }} />}
       {scheduleEditor && <ScheduleModal value={scheduleEditor} onClose={() => setScheduleEditor(null)} onSave={(schedule) => { setData((current) => ({ ...current, schedule: scheduleEditor === "new" ? [...current.schedule, schedule] : current.schedule.map((item) => item.id === schedule.id ? schedule : item) })); setScheduleEditor(null); }} onDelete={scheduleEditor === "new" ? undefined : () => { removeRecord("schedule", scheduleEditor.id, `已删除安排「${scheduleEditor.code}」`); setScheduleEditor(null); }} />}
       {goalEditor && <GoalModal value={goalEditor} onClose={() => setGoalEditor(null)} onSave={(goal) => { setData((current) => ({ ...current, goals: goalEditor === "new" ? [...current.goals, goal] : current.goals.map((item) => item.id === goal.id ? goal : item) })); setGoalEditor(null); }} onDelete={goalEditor === "new" ? undefined : () => { deleteGoal(goalEditor.id); setGoalEditor(null); }} />}
       {habitEditor && <HabitModal value={habitEditor} onClose={() => setHabitEditor(null)} onSave={(habit) => { setData((current) => ({ ...current, habits: habitEditor === "new" ? [...current.habits, habit] : current.habits.map((item) => item.id === habit.id ? habit : item) })); setHabitEditor(null); }} onDelete={habitEditor === "new" ? undefined : () => { removeRecord("habits", habitEditor.id, `已删除健康项目「${habitEditor.label}」`); setHabitEditor(null); }} />}
       {workoutEditor && <WorkoutModal value={workoutEditor} onClose={() => setWorkoutEditor(null)} onSave={(workout) => { setData((current) => ({ ...current, workouts: workoutEditor === "new" ? [...current.workouts, workout] : current.workouts.map((item) => item.id === workout.id ? workout : item) })); setWorkoutEditor(null); }} onDelete={workoutEditor === "new" ? undefined : () => { removeRecord("workouts", workoutEditor.id, `已删除运动「${workoutEditor.title}」`); setWorkoutEditor(null); }} />}
       {applicationEditor && <ApplicationModal value={applicationEditor} onClose={() => setApplicationEditor(null)} onSave={(application) => { setData((current) => ({ ...current, applications: applicationEditor === "new" ? [...current.applications, application] : current.applications.map((item) => item.id === application.id ? application : item) })); setApplicationEditor(null); }} onDelete={applicationEditor === "new" ? undefined : () => { removeRecord("applications", applicationEditor.id, `已删除求职记录「${applicationEditor.company}」`); setApplicationEditor(null); }} />}
-      {noteEditor && <NoteModal value={noteEditor} onClose={() => setNoteEditor(null)} onSave={(note) => { setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? note : item) })); setNoteEditor(null); }} onDelete={() => { removeRecord("notes", noteEditor.id, `已删除笔记「${noteTitle(noteEditor)}」`); setNoteEditor(null); }} />}
+      {noteEditor && <NoteModal value={noteEditor} onClose={() => setNoteEditor(null)} onSave={(note) => { setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? note : item) })); setNoteEditor(null); }} onDelete={() => { removeRecord("notes", noteEditor.id, `已删除草稿「${noteTitle(noteEditor)}」`); setNoteEditor(null); }} />}
       {installHelp && <ModalFrame title="安装 MAP 到 Mac" subtitle="OFFLINE APP" onClose={() => setInstallHelp(false)}><div className="install-guide"><p>这台浏览器没有提供一键安装按钮。你仍然可以把 MAP 安装成独立的 Mac App：</p><ol><li>使用 Safari 打开 MAP 网站。</li><li>选择菜单栏的“文件”→“添加到程序坞”。</li><li>首次联网打开一次；之后断网也能查看和编辑计划。</li></ol><p className="install-guide-note">MAP AI 需要联网。本地任务、笔记、目标、课表、求职和健康记录不需要联网。</p><div className="modal-actions"><button className="primary-button" onClick={() => setInstallHelp(false)}>知道了</button></div></div></ModalFrame>}
     </main>
   );
@@ -1132,12 +1183,12 @@ function ModalFrame({ title, subtitle, onClose, onDelete, children }: { title: s
 
 function Field({ label, children, wide = false }: { label: string; children: React.ReactNode; wide?: boolean }) { return <label className={wide ? "wide" : ""}><span>{label}</span>{children}</label>; }
 
-function TaskModal({ value, goals, defaultDate, defaultGoalId, onClose, onSave, onDelete }: { value: Task | "new"; goals: Goal[]; defaultDate?: string; defaultGoalId?: string; onClose: () => void; onSave: (task: Task) => void; onDelete?: () => void }) {
+function TaskModal({ value, goals, prefill, sourceDraft = false, defaultDate, defaultGoalId, onClose, onSave, onDelete }: { value: Task | "new"; goals: Goal[]; prefill?: TaskPrefill; sourceDraft?: boolean; defaultDate?: string; defaultGoalId?: string; onClose: () => void; onSave: (task: Task) => void; onDelete?: () => void }) {
   const existing = value === "new" ? null : value;
   const titleInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => { titleInputRef.current?.focus(); }, []);
-  const [title, setTitle] = useState(existing?.title || ""); const [details, setDetails] = useState(existing?.details || ""); const [category, setCategory] = useState<TaskCategory>(existing?.category || "生活"); const [goalId, setGoalId] = useState(existing?.goalId || defaultGoalId || ""); const [date, setDate] = useState(existing?.date || defaultDate || getTorontoToday()); const [endDate, setEndDate] = useState(existing?.endDate || ""); const [time, setTime] = useState(existing?.time || "09:00"); const [priority, setPriority] = useState<"high" | "normal">(existing?.priority || "normal");
-  return <ModalFrame title={existing ? "编辑任务" : "新建任务"} subtitle="TASK" onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); if (!title.trim()) return; onSave({ id: existing?.id || uid(), title: title.trim(), details: details.trim() || null, category, goalId: goalId || null, date, time, endDate: endDate && endDate > date ? endDate : null, carriedFrom: existing && existing.date === date ? existing.carriedFrom : null, completedAt: existing?.completedAt || null, priority, status: existing?.status || "todo" }); }}><div className="form-grid"><Field label="任务名称" wide><input ref={titleInputRef} value={title} onChange={(e) => setTitle(e.target.value)} required /></Field><Field label="任务细节" wide><textarea value={details} onChange={(e) => setDetails(e.target.value)} placeholder="补充地点、材料、步骤、联系人或任何执行时需要的信息……" /></Field><Field label="类别"><select value={category} onChange={(e) => setCategory(e.target.value as TaskCategory)}><option>学业</option><option>求职</option><option>生活</option><option>健康</option></select></Field><Field label="关联长期目标"><select value={goalId} onChange={(e) => setGoalId(e.target.value)}><option value="">不关联目标</option>{goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.title}</option>)}</select></Field><Field label="优先级"><select value={priority} onChange={(e) => setPriority(e.target.value as "high" | "normal")}><option value="normal">普通</option><option value="high">优先</option></select></Field><Field label="开始日期"><input type="date" value={date} onChange={(e) => { const nextDate = e.target.value; setDate(nextDate); if (endDate && endDate < nextDate) setEndDate(nextDate); }} required /></Field><Field label="结束日期（可选）"><input type="date" value={endDate} min={date} onChange={(e) => setEndDate(e.target.value)} /></Field><Field label="时间"><input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">保存任务</button></div></form></ModalFrame>;
+  const [title, setTitle] = useState(existing?.title || prefill?.title || ""); const [details, setDetails] = useState(existing?.details || prefill?.details || ""); const [category, setCategory] = useState<TaskCategory>(existing?.category || prefill?.category || "生活"); const [goalId, setGoalId] = useState(existing?.goalId || defaultGoalId || ""); const [date, setDate] = useState(existing?.date || defaultDate || getTorontoToday()); const [endDate, setEndDate] = useState(existing?.endDate || ""); const [time, setTime] = useState(existing?.time || "09:00"); const [priority, setPriority] = useState<"high" | "normal">(existing?.priority || "normal");
+  return <ModalFrame title={existing ? "编辑任务" : sourceDraft ? "安排这个草稿" : "新建任务"} subtitle={sourceDraft ? "DRAFT → TASK" : "TASK"} onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); if (!title.trim()) return; onSave({ id: existing?.id || uid(), title: title.trim(), details: details.trim() || null, category, goalId: goalId || null, date, time, endDate: endDate && endDate > date ? endDate : null, carriedFrom: existing && existing.date === date ? existing.carriedFrom : null, completedAt: existing?.completedAt || null, priority, status: existing?.status || "todo" }); }}><div className="form-grid"><Field label="任务名称" wide><input ref={titleInputRef} value={title} onChange={(e) => setTitle(e.target.value)} required /></Field><Field label="任务细节" wide><textarea value={details} onChange={(e) => setDetails(e.target.value)} placeholder="补充地点、材料、步骤、联系人或任何执行时需要的信息……" /></Field><Field label="类别"><select value={category} onChange={(e) => setCategory(e.target.value as TaskCategory)}><option>学业</option><option>求职</option><option>生活</option><option>健康</option></select></Field><Field label="关联长期目标"><select value={goalId} onChange={(e) => setGoalId(e.target.value)}><option value="">不关联目标</option>{goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.title}</option>)}</select></Field><Field label="优先级"><select value={priority} onChange={(e) => setPriority(e.target.value as "high" | "normal")}><option value="normal">普通</option><option value="high">优先</option></select></Field><Field label="开始日期"><input type="date" value={date} onChange={(e) => { const nextDate = e.target.value; setDate(nextDate); if (endDate && endDate < nextDate) setEndDate(nextDate); }} required /></Field><Field label="结束日期（可选）"><input type="date" value={endDate} min={date} onChange={(e) => setEndDate(e.target.value)} /></Field><Field label="时间"><input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></Field></div>{sourceDraft && <p className="task-source-note">保存后，这条草稿会从草稿箱移除并进入正式任务；你仍然可以立即撤销。</p>}<div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">{sourceDraft ? "安排任务" : "保存任务"}</button></div></form></ModalFrame>;
 }
 
 function PhaseModal({ value, goals, onClose, onSave }: { value: ActivePhase; goals: Goal[]; onClose: () => void; onSave: (phase: ActivePhase) => void }) {
@@ -1155,7 +1206,7 @@ function NoteModal({ value, onClose, onSave, onDelete }: { value: Note; onClose:
   const [content, setContent] = useState(value.content);
   const [category, setCategory] = useState<NoteCategory>(value.category);
   const [pinned, setPinned] = useState(value.pinned);
-  return <ModalFrame title="编辑笔记" subtitle="NOTE" onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); if (!content.trim()) return; onSave({ ...value, content: content.trim(), category, pinned, updatedAt: new Date().toISOString() }); }}><div className="form-grid"><Field label="分类"><select value={category} onChange={(event) => setCategory(event.target.value as NoteCategory)}>{NOTE_CATEGORIES.map((item) => <option key={item}>{item}</option>)}</select></Field><Field label="显示顺序"><button type="button" className={`pin-toggle ${pinned ? "active" : ""}`} onClick={() => setPinned((current) => !current)}>{pinned ? "● 已置顶" : "○ 置顶这条笔记"}</button></Field><Field label="笔记内容" wide><textarea className="note-editor-area" value={content} onChange={(event) => setContent(event.target.value)} /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit" disabled={!content.trim()}>保存笔记</button></div></form></ModalFrame>;
+  return <ModalFrame title="编辑草稿" subtitle="DRAFT" onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); if (!content.trim()) return; onSave({ ...value, content: content.trim(), category, pinned, updatedAt: new Date().toISOString() }); }}><div className="form-grid"><Field label="分类"><select value={category} onChange={(event) => setCategory(event.target.value as NoteCategory)}>{NOTE_CATEGORIES.map((item) => <option key={item}>{item}</option>)}</select></Field><Field label="显示顺序"><button type="button" className={`pin-toggle ${pinned ? "active" : ""}`} onClick={() => setPinned((current) => !current)}>{pinned ? "● 已置顶" : "○ 置顶这条草稿"}</button></Field><Field label="草稿内容" wide><textarea className="note-editor-area" value={content} onChange={(event) => setContent(event.target.value)} /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit" disabled={!content.trim()}>保存草稿</button></div></form></ModalFrame>;
 }
 
 function ScheduleModal({ value, onClose, onSave, onDelete }: { value: ScheduleItem | "new"; onClose: () => void; onSave: (item: ScheduleItem) => void; onDelete?: () => void }) {

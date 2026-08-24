@@ -25,7 +25,7 @@ test("server-renders MAP", async () => {
   const html = await response.text();
   assert.match(html, /<title>MAP/);
   assert.match(html, /Life Operating System/);
-  assert.match(html, /灵感笔记/);
+  assert.match(html, /草稿箱/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
 });
 
@@ -52,6 +52,18 @@ test("workflow controls expose ranges, friendly weekdays, status filters, and un
   assert.match(source, /任务状态筛选/);
   assert.match(source, /undoLastAction/);
   assert.match(source, /upcomingTask/);
+});
+
+test("draft inbox keeps unscheduled work compact and promotes it into dated tasks", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(source, /type NoteCategory = "待办"/);
+  assert.match(source, /draft-list/);
+  assert.match(source, /安排成任务/);
+  assert.match(source, /promoteNoteToTask/);
+  assert.match(source, /sourceDraft/);
+  assert.match(styles, /\.draft-row/);
+  assert.doesNotMatch(source, /className="note-grid"/);
 });
 
 test("current phase is editable and drives the long-term time map", async () => {
@@ -127,6 +139,8 @@ test("MAP AI sends conversation, selected model, app context, and approval schem
     assert.equal(outbound.store, false);
     assert.deepEqual(outbound.input, [{ role: "user", content: "分析我的计划" }]);
     assert.match(outbound.instructions, /今日指挥台/);
+    assert.match(outbound.instructions, /草稿箱/);
+    assert.match(outbound.instructions, /prefer adding a note with category 待办/);
     assert.match(outbound.instructions, /HIGH-FREQUENCY JOB CAPTURE/);
     assert.match(outbound.instructions, /CURRENT MAP CONTEXT/);
     assert.deepEqual(outbound.text.format.schema.required, ["reply", "action", "summary", "operations"]);

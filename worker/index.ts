@@ -26,7 +26,7 @@ const COLLECTION_PATTERNS: Array<[DataCollection, RegExp]> = [
   ["goals", /(目标|优先级|goal)/i],
   ["habits", /(水果|蔬菜|蛋白质|饮水|饮食习惯|nutrition|habit)/i],
   ["workouts", /(健身|运动计划|锻炼|workout|exercise)/i],
-  ["notes", /(笔记|灵感|想法|notes?)/i],
+  ["notes", /(草稿箱|草稿|笔记|灵感|想法|backlog|draft|notes?)/i],
 ];
 
 function detectFocusedMutation(latestMessage: string, priorContext: string): DataCollection | null {
@@ -134,7 +134,7 @@ MAP is a long-term personal operating system, not only a graduation planner. It 
 3. 阶段地图: the editable current phase (for example graduation, a new job, moving, or a personal project), recurring weekly schedule, and dated tasks in weekly and monthly calendar views.
 4. 求职记录: a Kanban pipeline with exactly four stages: 已投, 面试, Offer, 拒绝. Each application stores company, role, job link, contact, application date, and notes/next step. The date powers daily application counts and filtering, so preserve the actual application date.
 5. 任务计划: one-off dated actions. title is concise; details stores execution context such as location, steps, materials, links, or contacts. Unfinished tasks may roll forward automatically.
-6. 灵感笔记: free-form ideas and reference material grouped as 课程, 项目, 求职, 生活, or 想法. Notes can be searched and pinned.
+6. 草稿箱: a quick inbox for unscheduled task backlogs, rough ideas, and reference material grouped as 待办, 想法, 课程, 项目, 求职, or 生活. Drafts can be searched, filtered, pinned, edited, and manually promoted into dated tasks.
 7. 健康运动: daily nutrition checks and weekly workout plans.
 
 CONVERSATION BEHAVIOR
@@ -156,7 +156,8 @@ DATA RULES
 - Context mode for this request is ${focus ? `FOCUSED MUTATION. The only allowed operation collection is ${focus}. Do not request or modify omitted modules.` : "FULL MAP CONTEXT. Multiple collections are allowed only when the latest instruction explicitly requests them."}
 - The browser applies operations locally to the current data. You never return the complete MAP dataset.
 - For new records create a unique id beginning with ai-. Resolve relative dates against today. Use YYYY-MM-DD dates and 24-hour HH:MM times.
-- Tasks are one-off actions; schedule is only recurring weekly blocks; goals are long-term directions; applications are job opportunities; notes are free-form ideas/reference; habits are daily nutrition checks; workouts are weekly exercise plans.
+- Tasks are formal one-off actions with a date; schedule is only recurring weekly blocks; goals are long-term directions; applications are job opportunities; notes are the unscheduled backlog and rough-idea inbox; habits are daily nutrition checks; workouts are weekly exercise plans.
+- When the user wants to remember an action but gives no date and does not ask to schedule it now, prefer adding a note with category 待办. Do not invent a task date. Use a dated task only when the user supplies a date, asks to schedule it, or explicitly asks to create a task.
 - Preserve details, goalId, carriedFrom, and completedAt on existing tasks unless explicitly changing them. For a new task, set goalId to the matching existing goal id when the connection is clear; otherwise use null. Use null for missing optional task fields. Preserve note timestamps unless changed; use valid ISO timestamps for new or updated notes.
 - Each operation has collection, operation, recordId, and recordJson. collection is one MAP array. operation is add, update, delete, or reorder.
 - For add, recordJson is a JSON string containing one complete new record. For update, it is a JSON string containing only the fields explicitly requested to change; the browser merges it into recordId. For delete, recordJson is an empty string. For reorder, recordJson is a JSON string containing the ordered id array.
