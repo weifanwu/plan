@@ -44,6 +44,7 @@ type Workout = { id: string; title: string; day: string; duration: string; done:
 type ApplicationStage = "已投" | "面试" | "Offer" | "拒绝";
 type Application = { id: string; company: string; role: string; stage: ApplicationStage; link: string; contact: string; date: string; notes: string };
 type AIPlanPreview = { summary: string; changes: string[]; nextData: AppData };
+type PWAInstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
 
 type AppData = {
   tasks: Task[];
@@ -216,6 +217,10 @@ export default function Home() {
   const [dragOverStage, setDragOverStage] = useState<ApplicationStage | null>(null);
   const [draggedGoalId, setDraggedGoalId] = useState<string | null>(null);
   const [dragOverGoalId, setDragOverGoalId] = useState<string | null>(null);
+  const [online, setOnline] = useState(true);
+  const [installPrompt, setInstallPrompt] = useState<PWAInstallPrompt | null>(null);
+  const [installHelp, setInstallHelp] = useState(false);
+  const [standalone, setStandalone] = useState(false);
   const importRef = useRef<HTMLInputElement>(null);
   const today = getTorontoToday();
   const todayLabel = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", weekday: "long", month: "long", day: "numeric" }).format(new Date()).toUpperCase();
@@ -240,6 +245,23 @@ export default function Home() {
   useEffect(() => {
     if (ready) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   }, [data, ready]);
+
+  useEffect(() => {
+    setOnline(window.navigator.onLine);
+    setStandalone(window.matchMedia("(display-mode: standalone)").matches || Boolean((window.navigator as Navigator & { standalone?: boolean }).standalone));
+    const handleOnline = () => setOnline(true);
+    const handleOffline = () => setOnline(false);
+    const handleInstallPrompt = (event: Event) => { event.preventDefault(); setInstallPrompt(event as PWAInstallPrompt); };
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    window.addEventListener("beforeinstallprompt", handleInstallPrompt);
+    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("beforeinstallprompt", handleInstallPrompt);
+    };
+  }, []);
 
   const todayTasks = useMemo(() => data.tasks.filter((task) => task.date === today && task.status === "todo"), [data.tasks, today]);
   const completedToday = data.tasks.filter((task) => task.date === today && task.status === "done").length;
@@ -309,8 +331,16 @@ export default function Home() {
     reader.readAsText(file);
   }
 
+  async function installMapApp() {
+    if (!installPrompt) { setInstallHelp(true); return; }
+    await installPrompt.prompt();
+    const result = await installPrompt.userChoice;
+    if (result.outcome === "accepted") setInstallPrompt(null);
+  }
+
   async function createAIPlan() {
     if (!aiText.trim() || aiLoading) return;
+    if (!online) { setAiError("当前处于离线模式。计划仍可编辑，MAP AI 会在恢复网络后继续使用。"); return; }
     setAiLoading(true);
     setAiError("");
     setAiPreview(null);
@@ -338,6 +368,7 @@ export default function Home() {
 
   return (
     <main className="app-shell">
+      {!online && <div className="offline-banner"><strong>离线模式</strong><span>计划仍会保存在这台设备；MAP AI 暂停。</span></div>}
       <aside className="sidebar">
         <button className="brand" onClick={() => setView("today")} aria-label="返回今日">
           <span className="brand-mark">M</span>
@@ -365,6 +396,7 @@ export default function Home() {
           <button onClick={() => importRef.current?.click()}>导入</button>
           <input ref={importRef} type="file" accept="application/json" hidden onChange={(event) => importData(event.target.files?.[0])} />
         </div>
+        {!standalone && <button className="install-app-button" onClick={installMapApp}><span>↓</span><div><strong>安装 MAP App</strong><small>独立窗口 · 支持离线</small></div></button>}
         <p className="local-note"><span /> 数据只保存在这台设备</p>
       </aside>
 
@@ -604,7 +636,7 @@ export default function Home() {
         )}
       </section>
 
-      <button className={`ai-launcher ${aiOpen ? "active" : ""}`} onClick={() => setAiOpen((open) => !open)} aria-label={aiOpen ? "关闭 MAP AI" : "打开 MAP AI"}><span>✦</span><strong>MAP AI</strong></button>
+      <button className={`ai-launcher ${aiOpen ? "active" : ""} ${!online ? "offline" : ""}`} onClick={() => setAiOpen((open) => !open)} aria-label={aiOpen ? "关闭 MAP AI" : "打开 MAP AI"}><span>✦</span><strong>{online ? "MAP AI" : "AI 离线"}</strong></button>
       {aiOpen && <aside className="ai-panel" aria-label="MAP AI 计划助手">
         <header><div><p className="section-kicker">INTENT → PLAN</p><h2>告诉我你想怎么安排。</h2></div><button onClick={() => setAiOpen(false)} aria-label="关闭">×</button></header>
         {!aiPreview ? <>
@@ -615,7 +647,7 @@ export default function Home() {
           <textarea value={aiText} onChange={(event) => setAiText(event.target.value)} placeholder="例如：下周一开始，每周一三五晚上 7 点刷题一小时；再加一个目标，年底前完成 100 道题……" autoFocus />
           {aiError && <p className="ai-error">{aiError}</p>}
           <p className="ai-privacy">发送时，这段文字和当前计划数据会传给 OpenAI。API key 只在服务端使用，不会进入浏览器。</p>
-          <button className="ai-submit" onClick={createAIPlan} disabled={!aiText.trim() || aiLoading}>{aiLoading ? <><i /> 正在整理你的计划…</> : <>生成修改预览 <span>→</span></>}</button>
+          <button className="ai-submit" onClick={createAIPlan} disabled={!aiText.trim() || aiLoading || !online}>{aiLoading ? <><i /> 正在整理你的计划…</> : !online ? <>恢复网络后使用 MAP AI</> : <>生成修改预览 <span>→</span></>}</button>
         </> : <div className="ai-preview">
           <div className="ai-preview-mark">✓</div>
           <p className="section-kicker">READY TO APPLY</p>
@@ -633,6 +665,7 @@ export default function Home() {
       {workoutEditor && <WorkoutModal value={workoutEditor} onClose={() => setWorkoutEditor(null)} onSave={(workout) => { setData((current) => ({ ...current, workouts: workoutEditor === "new" ? [...current.workouts, workout] : current.workouts.map((item) => item.id === workout.id ? workout : item) })); setWorkoutEditor(null); }} onDelete={workoutEditor === "new" ? undefined : () => { setData((current) => ({ ...current, workouts: current.workouts.filter((item) => item.id !== workoutEditor.id) })); setWorkoutEditor(null); }} />}
       {applicationEditor && <ApplicationModal value={applicationEditor} onClose={() => setApplicationEditor(null)} onSave={(application) => { setData((current) => ({ ...current, applications: applicationEditor === "new" ? [...current.applications, application] : current.applications.map((item) => item.id === application.id ? application : item) })); setApplicationEditor(null); }} onDelete={applicationEditor === "new" ? undefined : () => { setData((current) => ({ ...current, applications: current.applications.filter((item) => item.id !== applicationEditor.id) })); setApplicationEditor(null); }} />}
       {pasteEditor && <PasteApplicationModal onClose={() => setPasteEditor(false)} onCreate={(application) => { setData((current) => ({ ...current, applications: [...current.applications, application] })); setPasteEditor(false); setApplicationEditor(application); }} />}
+      {installHelp && <ModalFrame title="安装 MAP 到 Mac" subtitle="OFFLINE APP" onClose={() => setInstallHelp(false)}><div className="install-guide"><p>这台浏览器没有提供一键安装按钮。你仍然可以把 MAP 安装成独立的 Mac App：</p><ol><li>使用 Safari 打开 MAP 网站。</li><li>选择菜单栏的“文件”→“添加到程序坞”。</li><li>首次联网打开一次；之后断网也能查看和编辑计划。</li></ol><p className="install-guide-note">MAP AI 需要联网。本地任务、目标、课表、求职和健康记录不需要联网。</p><div className="modal-actions"><button className="primary-button" onClick={() => setInstallHelp(false)}>知道了</button></div></div></ModalFrame>}
     </main>
   );
 }
