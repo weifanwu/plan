@@ -959,7 +959,7 @@ export default function Home() {
                       <header><strong>{DAY_LABEL[day]}</strong><small>{day.toUpperCase()}</small></header>
                       <div className="day-body">
                         {[0, 1, 2, 3, 4, 5].map((line) => <i key={line} style={{ top: `${line * 20}%` }} />)}
-                        {data.schedule.filter((item) => item.days.includes(day) && (weekDays.find((weekDay) => weekDay.dayCode === day)?.key || "") >= data.phase.startDate && (weekDays.find((weekDay) => weekDay.dayCode === day)?.key || "") <= data.phase.endDate).map((item) => {
+                        {data.schedule.filter((item) => item.days.includes(day)).map((item) => {
                           const top = ((timeToMinutes(item.start) - 480) / 600) * 100;
                           const height = ((timeToMinutes(item.end) - timeToMinutes(item.start)) / 600) * 100;
                           return <button key={item.id} className={`schedule-block ${item.color}`} style={{ top: `${top}%`, height: `${height}%` }} onClick={() => setScheduleEditor(item)}><strong>{item.code}</strong><span>{item.start}—{item.end}</span><small>{item.room}</small></button>;

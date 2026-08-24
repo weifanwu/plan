@@ -63,6 +63,12 @@ test("current phase is editable and drives the long-term time map", async () => 
   assert.match(source, /阶段已结束 · 点击设置下一阶段/);
 });
 
+test("weekly fixed schedule remains visible outside the phase date range", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /data\.schedule\.filter\(\(item\) => item\.days\.includes\(day\)\)\.map/);
+  assert.doesNotMatch(source, /weekDays\.find\(\(weekDay\) => weekDay\.dayCode === day\)/);
+});
+
 test("tasks can link to goals and be filtered by that execution path", async () => {
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(source, /goalId\?: string \| null/);
