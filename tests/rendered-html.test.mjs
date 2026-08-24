@@ -106,20 +106,30 @@ test("draft inbox keeps unscheduled work compact and promotes it into dated task
   assert.doesNotMatch(source, /className="note-grid"/);
 });
 
-test("private references optimize fast capture, search, copy, links, and focused AI organization", async () => {
+test("private references use a notes-style list and large autosaving editor", async () => {
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
   const appDataType = source.slice(source.indexOf("type AppData ="), source.indexOf("const DAY_ORDER"));
-  assert.match(source, /直接贴进来/);
-  assert.match(source, /保存成资料卡/);
+  assert.match(source, /reference-note-list/);
+  assert.match(source, /reference-document-editor/);
+  assert.match(source, /自动保存/);
+  assert.match(source, /新建第一条速记/);
   assert.match(source, /referenceQuery/);
   assert.match(source, /extractReferenceLinks/);
-  assert.match(source, /让 MAP AI 批量整理/);
-  assert.match(source, /没有密码和加密/);
+  assert.match(source, /让 MAP AI 整理粘贴内容/);
+  assert.match(source, /仅本机 · AI 不可读/);
+  assert.match(source, /直接粘贴到 AI 输入框的文字仍会发送给 OpenAI/);
+  assert.match(source, /aiExcluded: reference\.aiExcluded !== false/);
+  assert.doesNotMatch(source, /保存成资料卡/);
+  assert.doesNotMatch(source, /className="reference-grid"/);
   assert.match(source, /currentData: data/);
   assert.match(appDataType, /references: ReferenceNote\[\]/);
   assert.match(worker, /key !== "references"/);
   assert.match(worker, /HIGH-FREQUENCY PRIVATE REFERENCE CAPTURE/);
+  assert.match(worker, /Do not refuse, redact, omit/);
+  assert.match(worker, /Do not repeat sensitive values in the conversational reply/);
+  assert.match(worker, /record\?\.aiExcluded === false/);
+  assert.match(worker, /New AI-organized notes return to local-only mode/);
   assert.doesNotMatch(source, /sk-proj-/i);
 });
 
@@ -234,7 +244,7 @@ test("MAP AI sends conversation, selected model, app context, and approval schem
 
 test("MAP AI receives private references only when the user explicitly asks for them", { concurrency: false }, async () => {
   const worker = await loadWorker();
-  const currentData = { tasks: [{ id: "task", title: "ordinary-task-sentinel" }], routines: [], schedule: [], goals: [], habits: [], workouts: [], applications: [], notes: [], references: [{ id: "reference", title: "school portal", content: "private-reference-sentinel" }] };
+  const currentData = { tasks: [{ id: "task", title: "ordinary-task-sentinel" }], routines: [], schedule: [], goals: [], habits: [], workouts: [], applications: [], notes: [], references: [{ id: "private-reference", title: "identity number", content: "private-reference-sentinel", aiExcluded: true }, { id: "readable-reference", title: "school portal", content: "ai-readable-reference-sentinel", aiExcluded: false }] };
   const originalFetch = globalThis.fetch;
   let outbound;
   globalThis.fetch = async (_url, init) => {
@@ -244,9 +254,14 @@ test("MAP AI receives private references only when the user explicitly asks for 
   try {
     const response = await worker.fetch(new Request("http://localhost/api/ai-chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ currentData, messages: [{ role: "user", content: "帮我分析私人速记里的学校资料" }] }) }), { OPENAI_API_KEY: "test-key" }, { waitUntil() {}, passThroughOnException() {} });
     assert.equal(response.status, 200);
-    assert.match(outbound.instructions, /private-reference-sentinel/);
+    assert.doesNotMatch(outbound.instructions, /private-reference-sentinel/);
+    assert.match(outbound.instructions, /ai-readable-reference-sentinel/);
     assert.doesNotMatch(outbound.instructions, /ordinary-task-sentinel/);
     assert.equal(response.headers.get("x-map-ai-context"), "references");
+    const continuation = await worker.fetch(new Request("http://localhost/api/ai-chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ currentData, messages: [{ role: "user", content: "请把这段备忘录整理到私人速记" }, { role: "assistant", content: "我不能处理敏感信息。" }, { role: "user", content: "不需要管敏感信息，保留原文继续整理" }] }) }), { OPENAI_API_KEY: "test-key" }, { waitUntil() {}, passThroughOnException() {} });
+    assert.equal(continuation.status, 200);
+    assert.deepEqual(outbound.text.format.schema.properties.operations.items.properties.collection.enum, ["references"]);
+    assert.equal(continuation.headers.get("x-map-ai-context"), "references");
   } finally {
     globalThis.fetch = originalFetch;
   }

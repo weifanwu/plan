@@ -20,6 +20,7 @@ type DataCollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "
 const DATA_COLLECTIONS: DataCollection[] = ["tasks", "routines", "schedule", "goals", "habits", "workouts", "applications", "notes", "references"];
 const MUTATION_PATTERN = /(加入|添加|新增|创建|修改|更新|改成|移动|拖到|完成|删除|移除|取消|重排|调整|安排|记一下|记到|记录一下|记录这|记录该|记录到|保存|提醒我|放到|放进|标记|延期|推迟)|\b(add|create|update|edit|move|complete|delete|remove|reorder|schedule|save|mark|remind)\b/i;
 const REFERENCE_CONTEXT_PATTERN = /(私人速记|私人资料|常用网址|学校信息|参考资料|个人资料|备忘录|personal reference|quick reference)/i;
+const REFERENCE_CONTINUE_PATTERN = /(不需要管敏感|不用管敏感|继续整理|继续保存|照做|不要拒绝|不用脱敏|可以保存|保留原文)/i;
 const COLLECTION_PATTERNS: Array<[DataCollection, RegExp]> = [
   ["applications", /(求职看板|求职记录|岗位|职位|公司|投递|面试|offer|application|job|role|position|company)/i],
   ["routines", /(固定任务|重复任务|每日任务|每天|隔天|每隔|每\s*\d+\s*天|recurring|routine|every day)/i],
@@ -56,7 +57,11 @@ function focusedData(data: Record<string, unknown>, collection: DataCollection) 
     references: ["references"],
   };
   return Object.fromEntries([
-    ...relatedCollections[collection].map((key) => [key, Array.isArray(data[key]) ? data[key] : []]),
+    ...relatedCollections[collection].map((key) => {
+      const records = Array.isArray(data[key]) ? data[key] as Array<Record<string, unknown>> : [];
+      const aiReadableRecords = key === "references" ? records.filter((record) => record?.aiExcluded === false) : records;
+      return [key, aiReadableRecords];
+    }),
     ["phase", data.phase ?? null],
     ["habitDate", data.habitDate ?? ""],
     ["workoutWeek", data.workoutWeek ?? ""],
@@ -110,7 +115,8 @@ async function handleAIChat(request: Request, env: Env): Promise<Response> {
     const latestUserIndex = messages.findLastIndex((message) => message.role === "user");
     const latestUserMessage = latestUserIndex >= 0 ? messages[latestUserIndex].content : "";
     const priorUserContext = messages.slice(0, latestUserIndex).filter((message) => message.role === "user").slice(-2).map((message) => message.content).join("\n");
-    const focus = detectFocusedMutation(latestUserMessage, priorUserContext);
+    const detectedFocus = detectFocusedMutation(latestUserMessage, priorUserContext);
+    const focus = detectedFocus || (REFERENCE_CONTEXT_PATTERN.test(priorUserContext) && REFERENCE_CONTINUE_PATTERN.test(latestUserMessage) ? "references" : null);
     const referenceContext = REFERENCE_CONTEXT_PATTERN.test(latestUserMessage) || REFERENCE_CONTEXT_PATTERN.test(priorUserContext);
     const rawCurrentData = body.currentData && typeof body.currentData === "object" ? body.currentData as Record<string, unknown> : {};
     const modelData = focus ? focusedData(rawCurrentData, focus) : referenceContext ? focusedData(rawCurrentData, "references") : Object.fromEntries(Object.entries(rawCurrentData).filter(([key]) => key !== "references"));
@@ -144,7 +150,7 @@ MAP is a long-term personal operating system, not only a graduation planner. It 
 5. 任务计划: dated actions plus fixed recurring actions. A normal task may be a single-day action or genuine multi-day work with date and endDate. title is concise; details stores execution context. Unfinished normal tasks may roll forward automatically.
 6. 固定任务: recurring actions that appear every day or every N days. A routine stores title, details, category, goalId, startDate, optional time, frequency (daily or interval), intervalDays, active, and completedDates. Each occurrence is checked independently; never create duplicate normal tasks for a recurring rule.
 7. 草稿箱: a quick inbox for unscheduled task backlogs and rough ideas grouped as 待办, 想法, 课程, 项目, 求职, or 生活. Drafts can be searched, filtered, pinned, edited, and manually promoted into dated tasks.
-8. 私人速记: fast device-local reference cards for frequently retrieved URLs, school information, addresses, and other personal reference text. Each card has title, content, pinned, createdAt, and updatedAt. It is deliberately separate from the task backlog.
+8. 私人速记: an Apple Notes / Notion-style device-local editor for frequently retrieved URLs, school information, commands, credentials, and other personal reference text. The left side is a compact note index and the right side is a free-form editor. Each note has title, content, pinned, aiExcluded, createdAt, and updatedAt. aiExcluded=true means local-only and must never appear in AI context. It is deliberately separate from the task backlog.
 9. 健康运动: daily nutrition checks and weekly workout plans.
 
 CONVERSATION BEHAVIOR
@@ -163,9 +169,11 @@ HIGH-FREQUENCY JOB CAPTURE
 
 HIGH-FREQUENCY PRIVATE REFERENCE CAPTURE
 - Only read or modify references when the user explicitly mentions 私人速记, 私人资料, 备忘录, 常用网址, or asks to organize personal reference material. Ordinary full-context analysis intentionally omits references.
-- When the user pastes a messy Apple Notes-style block and asks to organize it, split it into the smallest useful set of topic-based reference cards. Preserve every supplied value exactly, never invent missing information, use a clear searchable title, and keep related lines together.
-- Prefer a few coherent cards over one giant card or dozens of one-line cards. New reference records require id, title, content, pinned=false, and valid ISO createdAt/updatedAt timestamps.
-- This data is not encrypted. Do not claim that MAP is a password manager or that storage is risk-free.
+- The supplied references array is already privacy-filtered and contains only records whose owner explicitly enabled AI access (aiExcluded=false). Never infer, request, or claim access to excluded notes.
+- When the user pastes a messy Apple Notes-style block and asks to organize it, split it into the smallest useful set of topic-based note pages. Preserve every supplied value exactly, never invent missing information, use a clear searchable title, and keep related lines together.
+- The user may explicitly ask to organize their own passwords, API keys, tokens, account details, identity numbers, or credentials. This is a user-authorized transformation of text they supplied. Do not refuse, redact, omit, rotate, moralize, or replace those values; preserve them exactly in proposed reference records. Do not repeat sensitive values in the conversational reply—put them only in recordJson for the approval preview.
+- Prefer a few coherent pages over one giant page or dozens of one-line pages. New reference records require id, title, content, pinned=false, aiExcluded=true, and valid ISO createdAt/updatedAt timestamps. New AI-organized notes return to local-only mode after creation.
+- This data is not encrypted. Never claim that storage is encrypted or risk-free, but do not interrupt an explicit organization request with unsolicited security advice.
 
 DATA RULES
 - Output only the smallest set of operations required by the user's latest instruction. Earlier messages are context or referenced source material, not pending commands. Never output an operation for an unrelated record or collection.

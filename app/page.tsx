@@ -67,7 +67,7 @@ type ApplicationStage = "已投" | "面试" | "Offer" | "拒绝";
 type Application = { id: string; company: string; role: string; stage: ApplicationStage; link: string; contact: string; date: string; notes: string };
 type Note = { id: string; content: string; category: NoteCategory; pinned: boolean; createdAt: string; updatedAt: string };
 type Routine = { id: string; title: string; details: string; category: TaskCategory; goalId?: string | null; startDate: string; time?: string | null; frequency: RoutineFrequency; intervalDays: number; active: boolean; completedDates: string[] };
-type ReferenceNote = { id: string; title: string; content: string; pinned: boolean; createdAt: string; updatedAt: string };
+type ReferenceNote = { id: string; title: string; content: string; pinned: boolean; aiExcluded: boolean; createdAt: string; updatedAt: string };
 type AIPlanPreview = { summary: string; changes: string[]; nextData: AppData };
 type AIModel = "gpt-5.6-luna" | "gpt-5.6-terra" | "gpt-5.6-sol" | "gpt-5.4-mini" | "gpt-5.4";
 type AIChatMessage = { id: string; role: "user" | "assistant"; content: string };
@@ -187,7 +187,7 @@ function normalizeReferences(references: ReferenceNote[] = []) {
   return references.flatMap((reference) => {
     if (!reference || typeof reference.id !== "string" || typeof reference.content !== "string") return [];
     const now = new Date().toISOString();
-    return [{ id: reference.id, title: typeof reference.title === "string" && reference.title.trim() ? reference.title : referenceTitleFromContent(reference.content), content: reference.content, pinned: Boolean(reference.pinned), createdAt: typeof reference.createdAt === "string" ? reference.createdAt : now, updatedAt: typeof reference.updatedAt === "string" ? reference.updatedAt : now }];
+    return [{ id: reference.id, title: typeof reference.title === "string" && reference.title.trim() ? reference.title : referenceTitleFromContent(reference.content), content: reference.content, pinned: Boolean(reference.pinned), aiExcluded: reference.aiExcluded !== false, createdAt: typeof reference.createdAt === "string" ? reference.createdAt : now, updatedAt: typeof reference.updatedAt === "string" ? reference.updatedAt : now }];
   });
 }
 
@@ -404,7 +404,6 @@ export default function Home() {
   const [noteCategory, setNoteCategory] = useState<NoteCategory>("待办");
   const [noteFilter, setNoteFilter] = useState<"全部" | NoteCategory>("全部");
   const [noteQuery, setNoteQuery] = useState("");
-  const [referenceDraft, setReferenceDraft] = useState("");
   const [referenceQuery, setReferenceQuery] = useState("");
   const [referenceEditor, setReferenceEditor] = useState<ReferenceNote | null>(null);
   const [referenceCopiedId, setReferenceCopiedId] = useState<string | null>(null);
@@ -436,7 +435,7 @@ export default function Home() {
   const [today, setToday] = useState(() => getTorontoToday());
   const importRef = useRef<HTMLInputElement>(null);
   const noteDraftRef = useRef<HTMLTextAreaElement>(null);
-  const referenceDraftRef = useRef<HTMLTextAreaElement>(null);
+  const referenceDocumentRef = useRef<HTMLTextAreaElement>(null);
   const aiConversationRef = useRef<HTMLDivElement>(null);
   const aiInputRef = useRef<HTMLTextAreaElement>(null);
   const aiSessionRef = useRef(0);
@@ -481,7 +480,7 @@ export default function Home() {
 
   useEffect(() => {
     if (view === "notes") window.requestAnimationFrame(() => noteDraftRef.current?.focus());
-    if (view === "vault") window.requestAnimationFrame(() => referenceDraftRef.current?.focus());
+    if (view === "vault") window.requestAnimationFrame(() => referenceDocumentRef.current?.focus());
   }, [view]);
 
   useEffect(() => {
@@ -657,22 +656,23 @@ export default function Home() {
 
   function openVault() {
     setView("vault");
-    window.requestAnimationFrame(() => referenceDraftRef.current?.focus());
+    const selected = referenceEditor || visibleReferences[0] || null;
+    if (selected && !referenceEditor) setReferenceEditor(selected);
+    if (selected) window.requestAnimationFrame(() => referenceDocumentRef.current?.focus());
   }
 
-  function saveQuickReference() {
-    const content = referenceDraft.trim();
-    if (!content) return;
+  function createReference() {
     const now = new Date().toISOString();
-    const reference: ReferenceNote = { id: uid(), title: referenceTitleFromContent(content), content, pinned: false, createdAt: now, updatedAt: now };
+    const reference: ReferenceNote = { id: uid(), title: "无标题速记", content: "", pinned: false, aiExcluded: true, createdAt: now, updatedAt: now };
     setData((current) => ({ ...current, references: [reference, ...current.references] }));
-    setReferenceDraft("");
-    window.requestAnimationFrame(() => referenceDraftRef.current?.focus());
+    setReferenceEditor(reference);
+    window.requestAnimationFrame(() => referenceDocumentRef.current?.focus());
   }
 
-  function saveReference(reference: ReferenceNote) {
-    setData((current) => ({ ...current, references: current.references.map((item) => item.id === reference.id ? reference : item) }));
-    setReferenceEditor(null);
+  function updateReference(reference: ReferenceNote, patch: Partial<ReferenceNote>) {
+    const next = { ...reference, ...patch, updatedAt: new Date().toISOString() };
+    setReferenceEditor(next);
+    setData((current) => ({ ...current, references: current.references.map((item) => item.id === reference.id ? next : item) }));
   }
 
   function deleteReference(reference: ReferenceNote) {
@@ -681,7 +681,9 @@ export default function Home() {
   }
 
   function toggleReferencePin(reference: ReferenceNote) {
-    setData((current) => ({ ...current, references: current.references.map((item) => item.id === reference.id ? { ...item, pinned: !item.pinned, updatedAt: new Date().toISOString() } : item) }));
+    const next = { ...reference, pinned: !reference.pinned, updatedAt: new Date().toISOString() };
+    setData((current) => ({ ...current, references: current.references.map((item) => item.id === reference.id ? next : item) }));
+    if (referenceEditor?.id === reference.id) setReferenceEditor(next);
   }
 
   async function copyReference(reference: ReferenceNote) {
@@ -697,7 +699,7 @@ export default function Home() {
 
   function openReferenceOrganizerAI() {
     setAiOpen(true);
-    setAiText("请把我接下来粘贴的杂乱内容整理进私人速记。按主题拆成少量容易搜索的资料卡，不要遗漏原始信息：\n");
+    setAiText("请把我接下来主动粘贴、愿意发送给 AI 的杂乱备忘录整理进私人速记。按主题拆成少量独立笔记页面，保留我明确提供的原文和值，先给我预览：\n");
     window.requestAnimationFrame(() => aiInputRef.current?.focus());
   }
 
@@ -1335,26 +1337,24 @@ export default function Home() {
         {view === "vault" && (
           <div className="page-content reference-page">
             <section className="reference-workbench">
-              <aside className="reference-capture">
-                <div><p className="section-kicker">QUICK CAPTURE</p><h2>直接贴进来，<br />不用先整理。</h2></div>
-                <p>不要求先填标题或分类。MAP 会用第一行自动命名，并保存成一张独立资料卡，不会堆成一整篇大文本。</p>
-                <textarea ref={referenceDraftRef} value={referenceDraft} onChange={(event) => setReferenceDraft(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); saveQuickReference(); } }} placeholder={"粘贴网址、学校信息、地址或一段常用资料……\n\n第一行会自动成为标题。"} aria-label="快速记录私人资料" spellCheck={false} />
-                <div className="reference-capture-actions"><span>⌘ / Ctrl + Enter</span><button onClick={saveQuickReference} disabled={!referenceDraft.trim()}>保存成资料卡 →</button></div>
-                <button className="reference-ai-organize" onClick={openReferenceOrganizerAI}><span>✦</span><div><strong>让 MAP AI 批量整理</strong><small>把杂乱备忘录拆成少量可搜索资料卡，预览后再写入</small></div></button>
-                <p className="reference-privacy-note">资料保存在这台设备的浏览器存储中，没有密码和加密。不要把它当密码管理器；只有你明确要求整理“私人速记”时，相关内容才会发送给 MAP AI。</p>
+              <aside className="reference-sidebar panel">
+                <header><div><p className="section-kicker">PERSONAL NOTES</p><h2>私人速记</h2><span>{data.references.length} 条 · 自动保存</span></div><button className="reference-new" onClick={createReference}>＋ 新建</button></header>
+                <label className="reference-search"><span>⌕</span><input value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} placeholder="搜索全部笔记" /></label>
+                <div className="reference-note-list">{visibleReferences.map((reference) => <button className={`reference-note-row ${reference.pinned ? "pinned" : ""} ${referenceEditor?.id === reference.id ? "active" : ""}`} key={reference.id} onClick={() => { setReferenceEditor(reference); window.requestAnimationFrame(() => referenceDocumentRef.current?.focus()); }}><span title={reference.aiExcluded ? "仅本机，AI 不可读" : "已允许 MAP AI 读取"}>{reference.pinned ? "●" : reference.aiExcluded ? "⌁" : "✦"}</span><div><strong>{reference.title || "无标题速记"}</strong><p>{referencePreview(reference) || "空白笔记"}</p></div><time>{formatNoteTime(reference.updatedAt)}</time></button>)}</div>
+                {visibleReferences.length === 0 && <div className="reference-list-empty">{referenceQuery ? "没有找到相关笔记" : "点击“新建”即可开始记录"}</div>}
+                <button className="reference-ai-organize" onClick={openReferenceOrganizerAI}><span>✦</span><div><strong>让 MAP AI 整理粘贴内容</strong><small>只粘贴你愿意发送的内容；SIN 等可在右侧手动保存</small></div></button>
+                <p className="reference-privacy-note">新笔记默认仅本机，MAP AI 不可读取。直接粘贴到 AI 输入框的文字仍会发送给 OpenAI。</p>
               </aside>
 
-              <section className="reference-library panel">
-                <header><div><p className="section-kicker">PERSONAL REFERENCE</p><h2>私人速记</h2><span>{data.references.length} 张资料卡 · 自动标题 · 置顶优先</span></div><label className="reference-search"><span>⌕</span><input value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} placeholder="搜索标题或全部内容" /></label></header>
-                {visibleReferences.length > 0 ? <div className="reference-grid">{visibleReferences.map((reference) => {
-                  const links = extractReferenceLinks(reference.content).slice(0, 3);
-                  return <article className={`reference-card ${reference.pinned ? "pinned" : ""}`} key={reference.id}>
-                    <button className="reference-pin" onClick={() => toggleReferencePin(reference)} aria-label={reference.pinned ? "取消置顶" : "置顶资料"}>{reference.pinned ? "● 已置顶" : "○ 置顶"}</button>
-                    <button className="reference-card-body" onClick={() => setReferenceEditor(reference)}><h3>{reference.title}</h3><p>{referencePreview(reference)}</p><time>{formatNoteTime(reference.updatedAt)}</time></button>
-                    {links.length > 0 && <div className="reference-links">{links.map((link) => <a href={link} target="_blank" rel="noreferrer" key={link}>↗ {referenceLinkLabel(link)}</a>)}</div>}
-                    <div className="reference-card-actions"><button className={referenceCopiedId === reference.id ? "copied" : ""} onClick={() => void copyReference(reference)}>{referenceCopiedId === reference.id ? "已复制" : "复制全文"}</button><button onClick={() => setReferenceEditor(reference)}>编辑</button><button onClick={() => deleteReference(reference)}>删除</button></div>
-                  </article>;
-                })}</div> : <div className="reference-empty"><span>{referenceQuery ? "没有找到相关资料" : "还没有私人速记"}</span><p>{referenceQuery ? "换一个关键词搜索标题和全文。" : "把第一条常用网址或学校信息直接贴到左边。"}</p></div>}
+              <section className="reference-document panel">
+                {referenceEditor ? <>
+                  <header className="reference-document-toolbar"><div><span>{referenceEditor.pinned ? "置顶笔记" : "私人笔记"}</span><time>自动保存 · {formatNoteTime(referenceEditor.updatedAt)}</time></div><div><button className={`reference-ai-access ${referenceEditor.aiExcluded ? "local-only" : "ai-readable"}`} onClick={() => updateReference(referenceEditor, { aiExcluded: !referenceEditor.aiExcluded })}>{referenceEditor.aiExcluded ? "仅本机 · AI 不可读" : "✦ MAP AI 可读取"}</button><button onClick={() => toggleReferencePin(referenceEditor)}>{referenceEditor.pinned ? "取消置顶" : "置顶"}</button><button className={referenceCopiedId === referenceEditor.id ? "copied" : ""} onClick={() => void copyReference(referenceEditor)}>{referenceCopiedId === referenceEditor.id ? "已复制" : "复制全文"}</button><button className="reference-delete" onClick={() => deleteReference(referenceEditor)}>删除</button></div></header>
+                  <div className="reference-document-editor">
+                    <input className="reference-title-input" value={referenceEditor.title === "无标题速记" ? "" : referenceEditor.title} onChange={(event) => updateReference(referenceEditor, { title: event.target.value || "无标题速记" })} placeholder="无标题速记" aria-label="笔记标题" />
+                    <textarea ref={referenceDocumentRef} value={referenceEditor.content} onChange={(event) => { const content = event.target.value; const titleWasAutomatic = referenceEditor.title === "无标题速记" || referenceEditor.title === referenceTitleFromContent(referenceEditor.content); const nextTitle = titleWasAutomatic ? referenceTitleFromContent(content) : referenceEditor.title; updateReference(referenceEditor, { content, title: content.trim() ? nextTitle : "无标题速记" }); }} placeholder={"直接开始输入或粘贴……\n\n像备忘录一样自由记录；每条笔记独立保存，所以不会挤成一整篇。"} aria-label="私人速记内容" spellCheck={false} />
+                    {extractReferenceLinks(referenceEditor.content).length > 0 && <div className="reference-document-links"><span>识别到的网址</span>{extractReferenceLinks(referenceEditor.content).map((link) => <a href={link} target="_blank" rel="noreferrer" key={link}>↗ {referenceLinkLabel(link)}</a>)}</div>}
+                  </div>
+                </> : <div className="reference-document-empty"><span>✎</span><h2>像备忘录一样直接写，<br />但每件事各自成页。</h2><p>左侧列表负责保持整洁；右侧是没有表单、没有分类步骤的自由编辑区。</p><button className="primary-button" onClick={createReference}>＋ 新建第一条速记</button></div>}
               </section>
             </section>
           </div>
@@ -1419,19 +1419,9 @@ export default function Home() {
       {workoutEditor && <WorkoutModal value={workoutEditor} onClose={() => setWorkoutEditor(null)} onSave={(workout) => { setData((current) => ({ ...current, workouts: workoutEditor === "new" ? [...current.workouts, workout] : current.workouts.map((item) => item.id === workout.id ? workout : item) })); setWorkoutEditor(null); }} onDelete={workoutEditor === "new" ? undefined : () => { removeRecord("workouts", workoutEditor.id, `已删除运动「${workoutEditor.title}」`); setWorkoutEditor(null); }} />}
       {applicationEditor && <ApplicationModal value={applicationEditor} onClose={() => setApplicationEditor(null)} onSave={(application) => { setData((current) => ({ ...current, applications: applicationEditor === "new" ? [...current.applications, application] : current.applications.map((item) => item.id === application.id ? application : item) })); setApplicationEditor(null); }} onDelete={applicationEditor === "new" ? undefined : () => { removeRecord("applications", applicationEditor.id, `已删除求职记录「${applicationEditor.company}」`); setApplicationEditor(null); }} />}
       {noteEditor && <NoteModal value={noteEditor} onClose={() => setNoteEditor(null)} onSave={(note) => { setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? note : item) })); setNoteEditor(null); }} onDelete={() => { removeRecord("notes", noteEditor.id, `已删除草稿「${noteTitle(noteEditor)}」`); setNoteEditor(null); }} />}
-      {referenceEditor && <ReferenceModal value={referenceEditor} onClose={() => setReferenceEditor(null)} onSave={saveReference} onDelete={() => deleteReference(referenceEditor)} />}
       {installHelp && <ModalFrame title="安装 MAP 到 Mac" subtitle="OFFLINE APP" onClose={() => setInstallHelp(false)}><div className="install-guide"><p>这台浏览器没有提供一键安装按钮。你仍然可以把 MAP 安装成独立的 Mac App：</p><ol><li>使用 Safari 打开 MAP 网站。</li><li>选择菜单栏的“文件”→“添加到程序坞”。</li><li>首次联网打开一次；之后断网也能查看和编辑计划。</li></ol><p className="install-guide-note">MAP AI 需要联网。本地任务、笔记、目标、课表、求职、健康和私人速记不需要联网。</p><div className="modal-actions"><button className="primary-button" onClick={() => setInstallHelp(false)}>知道了</button></div></div></ModalFrame>}
     </main>
   );
-}
-
-function ReferenceModal({ value, onClose, onSave, onDelete }: { value: ReferenceNote; onClose: () => void; onSave: (item: ReferenceNote) => void; onDelete: () => void }) {
-  const contentRef = useRef<HTMLTextAreaElement>(null);
-  const [title, setTitle] = useState(value.title);
-  const [content, setContent] = useState(value.content);
-  const [pinned, setPinned] = useState(value.pinned);
-  useEffect(() => { contentRef.current?.focus(); }, []);
-  return <ModalFrame title="编辑私人速记" subtitle="PERSONAL REFERENCE" onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); const trimmed = content.trim(); if (!trimmed) return; onSave({ ...value, title: title.trim() || referenceTitleFromContent(trimmed), content: trimmed, pinned, updatedAt: new Date().toISOString() }); }}><div className="form-grid"><Field label="标题（可修改）" wide><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="留空则使用第一行" /></Field><Field label="资料内容" wide><textarea ref={contentRef} className="reference-value-editor" value={content} onChange={(event) => setContent(event.target.value)} spellCheck={false} required /></Field><Field label="常用程度" wide><button type="button" className={`pin-toggle ${pinned ? "active" : ""}`} onClick={() => setPinned((current) => !current)}>{pinned ? "● 已置顶" : "○ 置顶，放在最前面"}</button></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">保存资料</button></div></form></ModalFrame>;
 }
 
 function NavButton({ active, label, icon, onClick }: { active: boolean; label: string; icon: string; onClick: () => void }) {
