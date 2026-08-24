@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { rollOverTasks } from "../lib/task-rollover.mjs";
 
 type View = "today" | "goals" | "semester" | "career" | "planner" | "wellness";
 type TaskCategory = "学业" | "求职" | "生活" | "健康";
@@ -11,8 +12,9 @@ type Task = {
   title: string;
   category: TaskCategory;
   date: string;
-  time?: string;
-  endDate?: string;
+  time?: string | null;
+  endDate?: string | null;
+  carriedFrom?: string | null;
   priority: "high" | "normal";
   status: TaskStatus;
 };
@@ -221,30 +223,53 @@ export default function Home() {
   const [installPrompt, setInstallPrompt] = useState<PWAInstallPrompt | null>(null);
   const [installHelp, setInstallHelp] = useState(false);
   const [standalone, setStandalone] = useState(false);
+  const [today, setToday] = useState(() => getTorontoToday());
   const importRef = useRef<HTMLInputElement>(null);
-  const today = getTorontoToday();
   const todayLabel = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", weekday: "long", month: "long", day: "numeric" }).format(new Date()).toUpperCase();
   const daysToGraduate = Math.max(0, Math.ceil((Date.parse("2026-12-28T12:00:00-05:00") - Date.parse(`${today}T12:00:00-05:00`)) / 86400000));
   const semesterProgress = Math.max(0, Math.min(100, Math.round(((Date.parse(`${today}T12:00:00-05:00`) - Date.parse("2026-09-01T12:00:00-04:00")) / (Date.parse("2026-12-28T12:00:00-05:00") - Date.parse("2026-09-01T12:00:00-04:00"))) * 100)));
 
   useEffect(() => {
     const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved) as Partial<AppData>;
-        const currentDay = getTorontoToday();
-        const currentWeek = getWeekKey(currentDay);
-        const savedHabits = parsed.habits || initialData.habits;
-        const savedWorkouts = parsed.workouts || initialData.workouts;
-        setData({ ...initialData, ...parsed, tasks: parsed.tasks || initialData.tasks, schedule: parsed.schedule || initialData.schedule, goals: parsed.goals || initialData.goals, habits: parsed.habitDate === currentDay ? savedHabits : savedHabits.map((habit) => ({ ...habit, done: false })), workouts: parsed.workoutWeek === currentWeek ? savedWorkouts : savedWorkouts.map((workout) => ({ ...workout, done: false })), applications: normalizeApplications(parsed.applications), habitDate: currentDay, workoutWeek: currentWeek });
-      } catch { /* keep safe defaults */ }
-    }
+    let parsed: Partial<AppData> = {};
+    if (saved) try { parsed = JSON.parse(saved) as Partial<AppData>; } catch { /* keep safe defaults */ }
+    const currentDay = getTorontoToday();
+    const currentWeek = getWeekKey(currentDay);
+    const savedHabits = parsed.habits || initialData.habits;
+    const savedWorkouts = parsed.workouts || initialData.workouts;
+    setToday(currentDay);
+    setData({ ...initialData, ...parsed, tasks: rollOverTasks(parsed.tasks || initialData.tasks, currentDay), schedule: parsed.schedule || initialData.schedule, goals: parsed.goals || initialData.goals, habits: parsed.habitDate === currentDay ? savedHabits : savedHabits.map((habit) => ({ ...habit, done: false })), workouts: parsed.workoutWeek === currentWeek ? savedWorkouts : savedWorkouts.map((workout) => ({ ...workout, done: false })), applications: normalizeApplications(parsed.applications), habitDate: currentDay, workoutWeek: currentWeek });
     setReady(true);
   }, []);
 
   useEffect(() => {
     if (ready) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   }, [data, ready]);
+
+  useEffect(() => {
+    const refreshDay = () => setToday(getTorontoToday());
+    const timer = window.setInterval(refreshDay, 60000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!ready) return;
+    setData((current) => {
+      const tasks = rollOverTasks(current.tasks, today);
+      const currentWeek = getWeekKey(today);
+      const resetHabits = current.habitDate !== today;
+      const resetWorkouts = current.workoutWeek !== currentWeek;
+      if (tasks === current.tasks && !resetHabits && !resetWorkouts) return current;
+      return {
+        ...current,
+        tasks,
+        habits: resetHabits ? current.habits.map((habit) => ({ ...habit, done: false })) : current.habits,
+        workouts: resetWorkouts ? current.workouts.map((workout) => ({ ...workout, done: false })) : current.workouts,
+        habitDate: today,
+        workoutWeek: currentWeek,
+      };
+    });
+  }, [ready, today]);
 
   useEffect(() => {
     setOnline(window.navigator.onLine);
@@ -288,7 +313,7 @@ export default function Home() {
   }
 
   function toggleTask(id: string) {
-    setData((current) => ({ ...current, tasks: current.tasks.map((task) => task.id === id ? { ...task, status: task.status === "done" ? "todo" : "done" } : task) }));
+    setData((current) => ({ ...current, tasks: rollOverTasks(current.tasks.map((task) => task.id === id ? { ...task, status: task.status === "done" ? "todo" as const : "done" as const } : task), today) }));
   }
 
   function deleteTask(id: string) {
@@ -326,7 +351,7 @@ export default function Home() {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      try { const parsed = JSON.parse(String(reader.result)) as AppData; setData({ ...parsed, applications: normalizeApplications(parsed.applications) }); } catch { window.alert("这个备份文件无法读取。"); }
+      try { const parsed = JSON.parse(String(reader.result)) as AppData; setData({ ...parsed, tasks: rollOverTasks(parsed.tasks || [], today), applications: normalizeApplications(parsed.applications) }); } catch { window.alert("这个备份文件无法读取。"); }
     };
     reader.readAsText(file);
   }
@@ -359,7 +384,7 @@ export default function Home() {
 
   function applyAIPlan() {
     if (!aiPreview) return;
-    setData({ ...aiPreview.nextData, habitDate: today, workoutWeek: getWeekKey(today) });
+    setData({ ...aiPreview.nextData, tasks: rollOverTasks(aiPreview.nextData.tasks, today), habitDate: today, workoutWeek: getWeekKey(today) });
     setAiText("");
     setAiPreview(null);
     setAiError("");
@@ -525,7 +550,7 @@ export default function Home() {
                     return <article className={`calendar-day ${cell.inMonth ? "" : "outside"} ${cell.key === today ? "today" : ""}`} key={cell.key}>
                       <header><span>{cell.day}</span>{cell.key === today && <strong>今天</strong>}<button onClick={() => openNewTask(cell.key)} aria-label={`在 ${cell.key} 新建任务`}>＋</button></header>
                       <div className="calendar-events">
-                        {events.map((event) => event.type === "task" ? <button key={`task-${event.item.id}`} className={`calendar-event task ${categoryTone[event.item.category]} ${event.item.status === "done" ? "done" : ""}`} onClick={() => setTaskEditor(event.item)} title={event.item.title}><time>{event.time || (event.item.date < cell.key ? "↳" : "")}</time><span>{event.item.title}</span></button> : <button key={`schedule-${event.item.id}`} className={`calendar-event schedule ${event.item.color}`} onClick={() => setScheduleEditor(event.item)} title={`${event.item.title} · ${event.item.room}`}><time>{event.item.start}</time><span>{event.item.code}</span></button>)}
+                        {events.map((event) => event.type === "task" ? <button key={`task-${event.item.id}`} className={`calendar-event task ${categoryTone[event.item.category]} ${event.item.status === "done" ? "done" : ""} ${event.item.carriedFrom && event.item.status === "todo" ? "carried" : ""}`} onClick={() => setTaskEditor(event.item)} title={`${event.item.title}${event.item.carriedFrom && event.item.status === "todo" ? ` · 未完成顺延，原定 ${formatDate(event.item.carriedFrom)}` : ""}`}><time>{event.time || (event.item.date < cell.key ? "↳" : "")}</time><span>{event.item.title}</span></button> : <button key={`schedule-${event.item.id}`} className={`calendar-event schedule ${event.item.color}`} onClick={() => setScheduleEditor(event.item)} title={`${event.item.title} · ${event.item.room}`}><time>{event.item.start}</time><span>{event.item.code}</span></button>)}
                       </div>
                     </article>;
                   })}
@@ -567,7 +592,7 @@ export default function Home() {
                       return <article className={`week-task-day ${day.key === today ? "today" : ""}`} key={day.key}>
                         <header><div><strong>{day.label}</strong><span>{day.date}</span></div>{day.key === today && <i>今天</i>}</header>
                         <div className="week-task-list">
-                          {tasks.map((task) => <button key={task.id} className={`week-task-item ${categoryTone[task.category]} ${task.status === "done" ? "done" : ""}`} onClick={() => setTaskEditor(task)}><time>{task.date === day.key ? task.time || "全天" : "持续"}</time><span>{task.title}</span></button>)}
+                          {tasks.map((task) => <button key={task.id} className={`week-task-item ${categoryTone[task.category]} ${task.status === "done" ? "done" : ""} ${task.carriedFrom && task.status === "todo" ? "carried" : ""}`} onClick={() => setTaskEditor(task)}><time>{task.date === day.key ? task.time || "全天" : "持续"}</time><span>{task.title}{task.carriedFrom && task.status === "todo" && <small>未完成顺延 · 原定 {formatDate(task.carriedFrom)}</small>}</span></button>)}
                           {tasks.length === 0 && <span className="week-task-empty">暂无任务</span>}
                         </div>
                         <button className="week-task-add" onClick={() => openNewTask(day.key)}>＋ 添加</button>
@@ -663,7 +688,7 @@ export default function Home() {
         </div>}
       </aside>}
 
-      {taskEditor && <TaskModal value={taskEditor} defaultDate={newTaskDate || undefined} onClose={() => { setTaskEditor(null); setNewTaskDate(null); }} onSave={(task) => { setData((current) => ({ ...current, tasks: taskEditor === "new" ? [...current.tasks, task] : current.tasks.map((item) => item.id === task.id ? task : item) })); setTaskEditor(null); setNewTaskDate(null); }} onDelete={taskEditor === "new" ? undefined : () => { deleteTask(taskEditor.id); setTaskEditor(null); setNewTaskDate(null); }} />}
+      {taskEditor && <TaskModal value={taskEditor} defaultDate={newTaskDate || undefined} onClose={() => { setTaskEditor(null); setNewTaskDate(null); }} onSave={(task) => { setData((current) => { const tasks = taskEditor === "new" ? [...current.tasks, task] : current.tasks.map((item) => item.id === task.id ? task : item); return { ...current, tasks: rollOverTasks(tasks, today) }; }); setTaskEditor(null); setNewTaskDate(null); }} onDelete={taskEditor === "new" ? undefined : () => { deleteTask(taskEditor.id); setTaskEditor(null); setNewTaskDate(null); }} />}
       {scheduleEditor && <ScheduleModal value={scheduleEditor} onClose={() => setScheduleEditor(null)} onSave={(schedule) => { setData((current) => ({ ...current, schedule: scheduleEditor === "new" ? [...current.schedule, schedule] : current.schedule.map((item) => item.id === schedule.id ? schedule : item) })); setScheduleEditor(null); }} onDelete={scheduleEditor === "new" ? undefined : () => { setData((current) => ({ ...current, schedule: current.schedule.filter((item) => item.id !== scheduleEditor.id) })); setScheduleEditor(null); }} />}
       {goalEditor && <GoalModal value={goalEditor} onClose={() => setGoalEditor(null)} onSave={(goal) => { setData((current) => ({ ...current, goals: goalEditor === "new" ? [...current.goals, goal] : current.goals.map((item) => item.id === goal.id ? goal : item) })); setGoalEditor(null); }} onDelete={goalEditor === "new" ? undefined : () => { setData((current) => ({ ...current, goals: current.goals.filter((item) => item.id !== goalEditor.id) })); setGoalEditor(null); }} />}
       {habitEditor && <HabitModal value={habitEditor} onClose={() => setHabitEditor(null)} onSave={(habit) => { setData((current) => ({ ...current, habits: habitEditor === "new" ? [...current.habits, habit] : current.habits.map((item) => item.id === habit.id ? habit : item) })); setHabitEditor(null); }} onDelete={habitEditor === "new" ? undefined : () => { setData((current) => ({ ...current, habits: current.habits.filter((item) => item.id !== habitEditor.id) })); setHabitEditor(null); }} />}
@@ -680,10 +705,11 @@ function NavButton({ active, label, icon, onClick }: { active: boolean; label: s
 }
 
 function TaskRow({ task, onToggle, onEdit, onDelete, compact = false }: { task: Task; onToggle: () => void; onEdit: () => void; onDelete: () => void; compact?: boolean }) {
-  return <div className={`task-row ${task.status === "done" ? "done" : ""} ${compact ? "compact" : ""}`}>
+  const carried = Boolean(task.carriedFrom) && task.status === "todo";
+  return <div className={`task-row ${task.status === "done" ? "done" : ""} ${carried ? "carried" : ""} ${compact ? "compact" : ""}`}>
     <button className="task-check" onClick={onToggle} aria-label={task.status === "done" ? "标记未完成" : "标记完成"}>{task.status === "done" ? "✓" : ""}</button>
-    <div className="task-main"><strong>{task.title}</strong>{compact && <span><i className={`dot ${categoryTone[task.category]}`} />{task.category}{task.endDate ? ` · 截止 ${formatDate(task.endDate)}` : ""}</span>}</div>
-    {!compact && <><span className="task-date">{formatDate(task.date)}{task.time ? ` · ${task.time}` : ""}</span><span className={`category-pill ${categoryTone[task.category]}`}>{task.category}</span><span className="status-label">{task.status === "done" ? "已完成" : task.priority === "high" ? "优先" : "待处理"}</span></>}
+    <div className="task-main"><strong>{task.title}</strong>{compact && <span><i className={`dot ${categoryTone[task.category]}`} />{task.category}{task.endDate ? ` · 截止 ${formatDate(task.endDate)}` : ""}{carried && <b className="rollover-label">未完成顺延 · 原定 {formatDate(task.carriedFrom!)}</b>}</span>}{!compact && carried && <span className="rollover-meta">未完成顺延 · 原定 {formatDate(task.carriedFrom!)}</span>}</div>
+    {!compact && <><span className="task-date">{formatDate(task.date)}{task.time ? ` · ${task.time}` : ""}</span><span className={`category-pill ${categoryTone[task.category]}`}>{task.category}</span><span className={`status-label ${carried ? "carried" : ""}`}>{task.status === "done" ? "已完成" : carried ? "未完成顺延" : task.priority === "high" ? "优先" : "待处理"}</span></>}
     {compact && <time>{task.time || "今天"}</time>}
     <div className="task-actions"><button onClick={onEdit}>编辑</button><button onClick={onDelete}>删除</button></div>
   </div>;
@@ -698,7 +724,7 @@ function Field({ label, children, wide = false }: { label: string; children: Rea
 function TaskModal({ value, defaultDate, onClose, onSave, onDelete }: { value: Task | "new"; defaultDate?: string; onClose: () => void; onSave: (task: Task) => void; onDelete?: () => void }) {
   const existing = value === "new" ? null : value;
   const [title, setTitle] = useState(existing?.title || ""); const [category, setCategory] = useState<TaskCategory>(existing?.category || "生活"); const [date, setDate] = useState(existing?.date || defaultDate || getTorontoToday()); const [time, setTime] = useState(existing?.time || "09:00"); const [priority, setPriority] = useState<"high" | "normal">(existing?.priority || "normal");
-  return <ModalFrame title={existing ? "编辑任务" : "新建任务"} subtitle="TASK" onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); if (!title.trim()) return; onSave({ id: existing?.id || uid(), title: title.trim(), category, date, time, endDate: existing?.endDate, priority, status: existing?.status || "todo" }); }}><div className="form-grid"><Field label="任务名称" wide><input value={title} onChange={(e) => setTitle(e.target.value)} autoFocus required /></Field><Field label="类别"><select value={category} onChange={(e) => setCategory(e.target.value as TaskCategory)}><option>学业</option><option>求职</option><option>生活</option><option>健康</option></select></Field><Field label="优先级"><select value={priority} onChange={(e) => setPriority(e.target.value as "high" | "normal")}><option value="normal">普通</option><option value="high">优先</option></select></Field><Field label="日期"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} required /></Field><Field label="时间"><input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">保存任务</button></div></form></ModalFrame>;
+  return <ModalFrame title={existing ? "编辑任务" : "新建任务"} subtitle="TASK" onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); if (!title.trim()) return; onSave({ id: existing?.id || uid(), title: title.trim(), category, date, time, endDate: existing?.endDate, carriedFrom: existing && existing.date === date ? existing.carriedFrom : null, priority, status: existing?.status || "todo" }); }}><div className="form-grid"><Field label="任务名称" wide><input value={title} onChange={(e) => setTitle(e.target.value)} autoFocus required /></Field><Field label="类别"><select value={category} onChange={(e) => setCategory(e.target.value as TaskCategory)}><option>学业</option><option>求职</option><option>生活</option><option>健康</option></select></Field><Field label="优先级"><select value={priority} onChange={(e) => setPriority(e.target.value as "high" | "normal")}><option value="normal">普通</option><option value="high">优先</option></select></Field><Field label="日期"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} required /></Field><Field label="时间"><input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">保存任务</button></div></form></ModalFrame>;
 }
 
 function ScheduleModal({ value, onClose, onSave, onDelete }: { value: ScheduleItem | "new"; onClose: () => void; onSave: (item: ScheduleItem) => void; onDelete?: () => void }) {
