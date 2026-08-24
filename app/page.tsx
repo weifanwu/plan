@@ -537,7 +537,12 @@ export default function Home() {
               <div className="fixed-schedule-heading first"><div><p className="section-kicker">WEEKLY RHYTHM</p><h3>每周固定课程与 TA</h3></div><span>点击安排可编辑</span></div>
               <div className="schedule-scroll">
                 <div className="schedule-grid">
-                  <div className="time-column"><span /><span>8 AM</span><span>10 AM</span><span>12 PM</span><span>2 PM</span><span>4 PM</span><span>6 PM</span></div>
+                  <div className="time-column">
+                    <span className="time-corner" aria-hidden="true" />
+                    <div className="time-body">
+                      {["8 AM", "10 AM", "12 PM", "2 PM", "4 PM", "6 PM"].map((label, index) => <span key={label} style={{ top: `${index * 20}%` }}><em>{label}</em></span>)}
+                    </div>
+                  </div>
                   {DAY_ORDER.map((day) => (
                     <div className="day-column" key={day}>
                       <header><strong>{DAY_LABEL[day]}</strong><small>{day.toUpperCase()}</small></header>
