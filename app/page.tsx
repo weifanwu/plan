@@ -20,6 +20,7 @@ type Task = {
   endDate?: string | null;
   carriedFrom?: string | null;
   completedAt?: string | null;
+  goalId?: string | null;
   priority: "high" | "normal";
   status: TaskStatus;
 };
@@ -46,6 +47,16 @@ type Goal = {
   tone: "lime" | "coral" | "lavender";
 };
 
+type ActivePhase = {
+  goalId?: string | null;
+  label: string;
+  title: string;
+  outcome: string;
+  description: string;
+  startDate: string;
+  endDate: string;
+};
+
 type Habit = { id: string; label: string; done: boolean; icon: string };
 type Workout = { id: string; title: string; day: string; duration: string; done: boolean };
 type ApplicationStage = "已投" | "面试" | "Offer" | "拒绝";
@@ -64,6 +75,7 @@ type UndoNotice = { message: string; restore: (current: AppData) => AppData };
 type PWAInstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
 
 type AppData = {
+  phase: ActivePhase;
   tasks: Task[];
   schedule: ScheduleItem[];
   goals: Goal[];
@@ -83,7 +95,8 @@ const APPLICATION_STAGES: ApplicationStage[] = ["已投", "面试", "Offer", "�
 const NOTE_CATEGORIES: NoteCategory[] = ["想法", "课程", "项目", "求职", "生活"];
 const BASE_DATE = "2026-08-23";
 const STORAGE_KEY = "map-life-os-v1";
-const AI_WELCOME_MESSAGE: AIChatMessage = { id: "welcome", role: "assistant", content: "你好，我是 MAP AI。我能看到你当前的目标、任务、课表、求职记录、健康计划和全部笔记。你可以让我分析现状、回答问题，或者一起把一个想法变成计划；任何数据修改都会先给你预览。" };
+const AI_WELCOME_MESSAGE: AIChatMessage = { id: "welcome", role: "assistant", content: "你好，我是 MAP AI。我能看到你当前阶段、长期目标、任务、课表、求职记录、健康计划和全部笔记，也知道哪些任务正在服务哪个目标。你可以让我分析现状、回答问题，或者一起把一个想法变成计划；任何数据修改都会先给你预览。" };
+const LEGACY_TASK_GOALS: Record<string, string> = { stephnie: "graduate", leetcode: "career", fees: "graduate", applications: "career", pte: "graduate", irene: "graduate" };
 
 function getTorontoToday() {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Toronto", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
@@ -130,7 +143,12 @@ function normalizeApplications(applications: Application[] = []) {
 }
 
 function normalizeTasks(tasks: Task[] = []) {
-  return tasks.map((task) => ({ ...task, details: task.details ?? null, time: task.time ?? null, endDate: task.endDate ?? null, carriedFrom: task.carriedFrom ?? null, completedAt: task.completedAt ?? null }));
+  return tasks.map((task) => ({ ...task, details: task.details ?? null, time: task.time ?? null, endDate: task.endDate ?? null, carriedFrom: task.carriedFrom ?? null, completedAt: task.completedAt ?? null, goalId: task.goalId ?? LEGACY_TASK_GOALS[task.id] ?? null }));
+}
+
+function normalizeTaskGoals(tasks: Task[] = [], goals: Goal[] = []) {
+  const goalIds = new Set(goals.map((goal) => goal.id));
+  return normalizeTasks(tasks).map((task) => task.goalId && !goalIds.has(task.goalId) ? { ...task, goalId: null } : task);
 }
 
 function normalizeSchedule(schedule: ScheduleItem[] = []) {
@@ -138,6 +156,15 @@ function normalizeSchedule(schedule: ScheduleItem[] = []) {
 }
 
 const initialData: AppData = {
+  phase: {
+    goalId: "graduate",
+    label: "FALL · 2026",
+    title: "毕业冲刺",
+    outcome: "顺利毕业",
+    description: "课程、TA、求职和身体状态都服务于同一个结果：年底稳稳完成学业，同时不把自己耗尽。",
+    startDate: "2026-09-01",
+    endDate: "2026-12-28",
+  },
   goals: [
     { id: "graduate", title: "顺利毕业", description: "完成三门课程、TA 工作与英语毕业要求", metric: "2026 · Fall", progress: 0, tone: "lime" },
     { id: "career", title: "找到更好的机会", description: "已有一年实习保底，只投明显更优的岗位", metric: "长期推进", progress: 8, tone: "coral" },
@@ -150,13 +177,13 @@ const initialData: AppData = {
     { id: "ta", code: "TA · SFWRENG", title: "Tutorial T01 · T02 · T03", kind: "TA", days: ["We"], start: "12:30", end: "14:20", room: "待确认", color: "blue" },
   ],
   tasks: [
-    { id: "stephnie", title: "解决 Stephnie 发的邮件", category: "生活", date: BASE_DATE, time: "09:00", priority: "high", status: "todo" },
-    { id: "leetcode", title: "开始刷题", category: "求职", date: BASE_DATE, time: "09:00", priority: "high", status: "todo" },
+    { id: "stephnie", title: "解决 Stephnie 发的邮件", category: "生活", goalId: "graduate", date: BASE_DATE, time: "09:00", priority: "high", status: "todo" },
+    { id: "leetcode", title: "开始刷题", category: "求职", goalId: "career", date: BASE_DATE, time: "09:00", priority: "high", status: "todo" },
     { id: "medical", title: "报销医药费", category: "生活", date: BASE_DATE, time: "09:00", priority: "high", status: "todo" },
-    { id: "fees", title: "交学费和房租", category: "学业", date: BASE_DATE, time: "09:00", priority: "high", status: "todo" },
-    { id: "applications", title: "开始筛选并投递更好的工作", category: "求职", date: BASE_DATE, time: "09:00", priority: "normal", status: "todo" },
-    { id: "pte", title: "准备英语毕业要求并报名 PTE", category: "学业", date: BASE_DATE, time: "09:00", priority: "high", status: "todo" },
-    { id: "irene", title: "给 Irene 发邮件确认上课", category: "学业", date: BASE_DATE, time: "14:00", priority: "high", status: "todo" },
+    { id: "fees", title: "交学费和房租", category: "学业", goalId: "graduate", date: BASE_DATE, time: "09:00", priority: "high", status: "todo" },
+    { id: "applications", title: "开始筛选并投递更好的工作", category: "求职", goalId: "career", date: BASE_DATE, time: "09:00", priority: "normal", status: "todo" },
+    { id: "pte", title: "准备英语毕业要求并报名 PTE", category: "学业", goalId: "graduate", date: BASE_DATE, time: "09:00", priority: "high", status: "todo" },
+    { id: "irene", title: "给 Irene 发邮件确认上课", category: "学业", goalId: "graduate", date: BASE_DATE, time: "14:00", priority: "high", status: "todo" },
     { id: "travel", title: "决定去哪里旅行", category: "生活", date: BASE_DATE, time: "22:00", priority: "normal", status: "todo" },
     { id: "passport", title: "开始续护照，避免影响工签期限", category: "生活", date: "2026-08-24", time: "09:00", priority: "high", status: "todo" },
     { id: "haircut", title: "剪头发", category: "生活", date: "2026-08-25", time: "14:00", priority: "normal", status: "todo" },
@@ -210,6 +237,42 @@ function formatDate(date: string) {
   return `${value.getMonth() + 1}月${value.getDate()}日`;
 }
 
+function formatShortDate(date: string) {
+  const value = new Date(`${date}T12:00:00Z`);
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "2-digit", timeZone: "UTC" }).format(value);
+}
+
+function daysBetween(from: string, to: string) {
+  return Math.ceil((Date.parse(`${to}T12:00:00Z`) - Date.parse(`${from}T12:00:00Z`)) / 86400000);
+}
+
+function buildPhaseStops(phase: ActivePhase) {
+  const start = new Date(`${phase.startDate}T12:00:00Z`);
+  const end = new Date(`${phase.endDate}T12:00:00Z`);
+  const interior: string[] = [];
+  const cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1));
+  while (cursor < end && interior.length < 3) {
+    interior.push(new Intl.DateTimeFormat("en-US", { month: "short", timeZone: "UTC" }).format(cursor).toUpperCase());
+    cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+  }
+  while (interior.length < 3) interior.push(`STEP ${interior.length + 1}`);
+  return ["现在", ...interior.slice(0, 3), "完成"];
+}
+
+function buildPhaseCheckpoints(phase: ActivePhase) {
+  const start = Date.parse(`${phase.startDate}T12:00:00Z`);
+  const end = Math.max(start, Date.parse(`${phase.endDate}T12:00:00Z`));
+  const titles = ["启动阶段", "建立节奏", "中段复盘", "完成阶段"];
+  const descriptions = ["明确结果和约束，把必须发生的固定安排放进系统。", "稳定执行，不靠临时冲刺维持进度。", "检查偏差，删掉低价值动作，把风险提前暴露。", "提前收口关键事项，确认结果并记录下一阶段。"];
+  const tones = ["lime", "blue", "lavender", "coral"];
+  return titles.map((title, index) => ({
+    title,
+    text: descriptions[index],
+    tone: tones[index],
+    date: new Date(start + ((end - start) * index) / 3).toISOString().slice(0, 10),
+  }));
+}
+
 function dateCardParts(date: string) {
   const value = new Date(`${date}T12:00:00`);
   return {
@@ -252,6 +315,8 @@ export default function Home() {
   const [ready, setReady] = useState(false);
   const [taskEditor, setTaskEditor] = useState<Task | "new" | null>(null);
   const [newTaskDate, setNewTaskDate] = useState<string | null>(null);
+  const [newTaskGoalId, setNewTaskGoalId] = useState<string | null>(null);
+  const [phaseEditor, setPhaseEditor] = useState(false);
   const [scheduleEditor, setScheduleEditor] = useState<ScheduleItem | "new" | null>(null);
   const [goalEditor, setGoalEditor] = useState<Goal | "new" | null>(null);
   const [habitEditor, setHabitEditor] = useState<Habit | "new" | null>(null);
@@ -270,6 +335,7 @@ export default function Home() {
   const [aiModel, setAiModel] = useState<AIModel>("gpt-5.6-luna");
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const [filter, setFilter] = useState<"全部" | TaskCategory>("全部");
+  const [goalFilter, setGoalFilter] = useState("all");
   const [plannerStatusFilter, setPlannerStatusFilter] = useState<PlannerStatusFilter>("open");
   const [undoNotice, setUndoNotice] = useState<UndoNotice | null>(null);
   const [semesterMode, setSemesterMode] = useState<"calendar" | "week">("week");
@@ -297,8 +363,13 @@ export default function Home() {
   const voiceAbortRef = useRef<AbortController | null>(null);
   const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const todayLabel = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", weekday: "long", month: "long", day: "numeric" }).format(new Date()).toUpperCase();
-  const daysToGraduate = Math.max(0, Math.ceil((Date.parse("2026-12-28T12:00:00-05:00") - Date.parse(`${today}T12:00:00-05:00`)) / 86400000));
-  const semesterProgress = Math.max(0, Math.min(100, Math.round(((Date.parse(`${today}T12:00:00-05:00`) - Date.parse("2026-09-01T12:00:00-04:00")) / (Date.parse("2026-12-28T12:00:00-05:00") - Date.parse("2026-09-01T12:00:00-04:00"))) * 100)));
+  const phaseTiming = today < data.phase.startDate ? "before" : today > data.phase.endDate ? "after" : "active";
+  const phaseDays = phaseTiming === "before" ? Math.max(0, daysBetween(today, data.phase.startDate)) : Math.max(0, daysBetween(today, data.phase.endDate));
+  const phaseDuration = Math.max(1, daysBetween(data.phase.startDate, data.phase.endDate));
+  const phaseProgress = Math.max(0, Math.min(100, Math.round((daysBetween(data.phase.startDate, today) / phaseDuration) * 100)));
+  const phaseStops = buildPhaseStops(data.phase);
+  const phaseCheckpoints = buildPhaseCheckpoints(data.phase);
+  const phaseWeeks = Math.max(1, Math.ceil((phaseDuration + 1) / 7));
 
   useEffect(() => {
     const saved = window.localStorage.getItem(STORAGE_KEY);
@@ -308,10 +379,13 @@ export default function Home() {
     const currentWeek = getWeekKey(currentDay);
     const savedHabits = parsed.habits || initialData.habits;
     const savedWorkouts = parsed.workouts || initialData.workouts;
+    const savedGoals = parsed.goals || initialData.goals;
+    const savedPhase = { ...initialData.phase, ...(parsed.phase || {}) };
+    if (savedPhase.goalId && !savedGoals.some((goal) => goal.id === savedPhase.goalId)) savedPhase.goalId = null;
     // Hydrate device-local state after the server-rendered shell mounts.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setToday(currentDay);
-    setData({ ...initialData, ...parsed, tasks: normalizeTasks(rollOverTasks(parsed.tasks || initialData.tasks, currentDay)), schedule: normalizeSchedule(parsed.schedule || initialData.schedule), goals: parsed.goals || initialData.goals, habits: parsed.habitDate === currentDay ? savedHabits : savedHabits.map((habit) => ({ ...habit, done: false })), workouts: parsed.workoutWeek === currentWeek ? savedWorkouts : savedWorkouts.map((workout) => ({ ...workout, done: false })), applications: normalizeApplications(parsed.applications), notes: parsed.notes || initialData.notes, habitDate: currentDay, workoutWeek: currentWeek });
+    setData({ ...initialData, ...parsed, phase: savedPhase, tasks: normalizeTaskGoals(rollOverTasks(parsed.tasks || initialData.tasks, currentDay), savedGoals), schedule: normalizeSchedule(parsed.schedule || initialData.schedule), goals: savedGoals, habits: parsed.habitDate === currentDay ? savedHabits : savedHabits.map((habit) => ({ ...habit, done: false })), workouts: parsed.workoutWeek === currentWeek ? savedWorkouts : savedWorkouts.map((workout) => ({ ...workout, done: false })), applications: normalizeApplications(parsed.applications), notes: parsed.notes || initialData.notes, habitDate: currentDay, workoutWeek: currentWeek });
     setReady(true);
   }, []);
 
@@ -396,7 +470,7 @@ export default function Home() {
   const monthStart = `${calendarCursor}-01`;
   const monthEnd = calendarCells.filter((cell) => cell.inMonth).at(-1)?.key || monthStart;
   const visibleTaskCount = data.tasks.filter((task) => task.date <= monthEnd && (task.endDate || task.date) >= monthStart).length;
-  const visibleScheduleCount = calendarCells.filter((cell) => cell.inMonth && cell.key >= "2026-09-01" && cell.key <= "2026-12-31").reduce((count, cell) => count + data.schedule.filter((item) => item.days.includes(cell.dayCode)).length, 0);
+  const visibleScheduleCount = calendarCells.filter((cell) => cell.inMonth && cell.key >= data.phase.startDate && cell.key <= data.phase.endDate).reduce((count, cell) => count + data.schedule.filter((item) => item.days.includes(cell.dayCode)).length, 0);
   const applicationDateCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const application of data.applications) if (application.date) counts.set(application.date, (counts.get(application.date) || 0) + 1);
@@ -408,14 +482,20 @@ export default function Home() {
   const courseCount = useMemo(() => new Set(data.schedule.filter((item) => item.kind === "课程").map((item) => item.code)).size, [data.schedule]);
   const taCount = data.schedule.filter((item) => item.kind === "TA").length;
   const statusFilteredTasks = useMemo(() => data.tasks.filter((task) => plannerStatusFilter === "all" || (plannerStatusFilter === "done" ? task.status === "done" : task.status === "todo")), [data.tasks, plannerStatusFilter]);
-  const plannerTasks = useMemo(() => statusFilteredTasks.filter((task) => filter === "全部" || task.category === filter).slice().sort((a, b) => Number(a.status === "done") - Number(b.status === "done") || a.date.localeCompare(b.date) || (a.time || "99:99").localeCompare(b.time || "99:99")), [statusFilteredTasks, filter]);
+  const plannerTasks = useMemo(() => statusFilteredTasks.filter((task) => (filter === "全部" || task.category === filter) && (goalFilter === "all" || (goalFilter === "none" ? !task.goalId : task.goalId === goalFilter))).slice().sort((a, b) => Number(a.status === "done") - Number(b.status === "done") || a.date.localeCompare(b.date) || (a.time || "99:99").localeCompare(b.time || "99:99")), [statusFilteredTasks, filter, goalFilter]);
+  const goalById = useMemo(() => new Map(data.goals.map((goal) => [goal.id, goal])), [data.goals]);
+  const goalTaskStats = useMemo(() => new Map(data.goals.map((goal) => {
+    const tasks = data.tasks.filter((task) => task.goalId === goal.id);
+    return [goal.id, { open: tasks.filter((task) => task.status === "todo").length, done: tasks.filter((task) => task.status === "done").length }];
+  })), [data.goals, data.tasks]);
   const visibleNotes = useMemo(() => {
     const query = noteQuery.trim().toLocaleLowerCase();
     return data.notes.filter((note) => !query || note.content.toLocaleLowerCase().includes(query) || note.category.toLocaleLowerCase().includes(query)).slice().sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt));
   }, [data.notes, noteQuery]);
 
-  function openNewTask(date?: string) {
+  function openNewTask(date?: string, goalId?: string) {
     setNewTaskDate(date || null);
+    setNewTaskGoalId(goalId || null);
     setTaskEditor("new");
   }
 
@@ -488,6 +568,26 @@ export default function Home() {
     });
   }
 
+  function deleteGoal(id: string) {
+    const goal = data.goals.find((item) => item.id === id);
+    if (!goal) return;
+    const index = data.goals.findIndex((item) => item.id === id);
+    const linkedTaskIds = new Set(data.tasks.filter((task) => task.goalId === id).map((task) => task.id));
+    const phaseWasLinked = data.phase.goalId === id;
+    setData((current) => ({
+      ...current,
+      phase: current.phase.goalId === id ? { ...current.phase, goalId: null } : current.phase,
+      goals: current.goals.filter((item) => item.id !== id),
+      tasks: current.tasks.map((task) => task.goalId === id ? { ...task, goalId: null } : task),
+    }));
+    showUndo(`已删除目标「${goal.title}」并解除任务关联`, (current) => {
+      if (current.goals.some((item) => item.id === id)) return current;
+      const goals = [...current.goals];
+      goals.splice(Math.min(index, goals.length), 0, goal);
+      return { ...current, phase: phaseWasLinked && !current.phase.goalId ? { ...current.phase, goalId: id } : current.phase, goals, tasks: current.tasks.map((task) => linkedTaskIds.has(task.id) && !task.goalId ? { ...task, goalId: id } : task) };
+    });
+  }
+
   function exportData() {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -506,7 +606,10 @@ export default function Home() {
         const parsed = JSON.parse(String(reader.result)) as AppData;
         if (!parsed || !Array.isArray(parsed.tasks) || !Array.isArray(parsed.schedule) || !Array.isArray(parsed.goals)) throw new Error("invalid backup");
         const previous = data;
-        setData({ ...initialData, ...parsed, tasks: normalizeTasks(rollOverTasks(parsed.tasks, today)), schedule: normalizeSchedule(parsed.schedule), applications: normalizeApplications(parsed.applications), notes: parsed.notes || [] });
+        const importedGoals = parsed.goals || initialData.goals;
+        const importedPhase = { ...initialData.phase, ...(parsed.phase || {}) };
+        if (importedPhase.goalId && !importedGoals.some((goal) => goal.id === importedPhase.goalId)) importedPhase.goalId = null;
+        setData({ ...initialData, ...parsed, phase: importedPhase, goals: importedGoals, tasks: normalizeTaskGoals(rollOverTasks(parsed.tasks, today), importedGoals), schedule: normalizeSchedule(parsed.schedule), applications: normalizeApplications(parsed.applications), notes: parsed.notes || [] });
         showUndo("备份已导入", () => previous);
       } catch { window.alert("这个文件不是有效的 MAP 备份，当前数据没有改变。"); }
     };
@@ -642,7 +745,8 @@ export default function Home() {
         const operatedData = applyAIOperations(data, result.operations, () => `ai-${uid()}`) as AppData;
         const nextData = {
           ...operatedData,
-          tasks: normalizeTasks(operatedData.tasks),
+          phase: operatedData.phase.goalId && !operatedData.goals.some((goal) => goal.id === operatedData.phase.goalId) ? { ...operatedData.phase, goalId: null } : operatedData.phase,
+          tasks: normalizeTaskGoals(operatedData.tasks, operatedData.goals),
           schedule: normalizeSchedule(operatedData.schedule),
           applications: normalizeApplications(operatedData.applications),
         };
@@ -679,7 +783,7 @@ export default function Home() {
         <nav aria-label="主导航">
           <NavButton active={view === "today"} label="今日指挥台" icon="01" onClick={() => setView("today")} />
           <NavButton active={view === "goals"} label="长期目标" icon="02" onClick={() => setView("goals")} />
-          <NavButton active={view === "semester"} label="学期地图" icon="03" onClick={() => setView("semester")} />
+          <NavButton active={view === "semester"} label="阶段地图" icon="03" onClick={() => setView("semester")} />
           <NavButton active={view === "career"} label="求职记录" icon="04" onClick={() => setView("career")} />
           <NavButton active={view === "planner"} label="任务计划" icon="05" onClick={() => setView("planner")} />
           <NavButton active={view === "notes"} label="灵感笔记" icon="06" onClick={openNotes} />
@@ -687,12 +791,13 @@ export default function Home() {
         </nav>
 
         <div className="sidebar-spacer" />
-        <div className="semester-card">
-          <div className="semester-card-top"><span>FALL · 2026</span><strong>{semesterProgress}%</strong></div>
-          <div className="progress-track"><span style={{ width: `${semesterProgress}%` }} /></div>
-          <p>9月1日 — 12月28日</p>
-          <small>{daysToGraduate > 0 ? `距离毕业还有 ${daysToGraduate} 天` : "本学期已经结束"}</small>
-        </div>
+        <button className="semester-card" onClick={() => setPhaseEditor(true)} aria-label="编辑当前阶段">
+          <div className="semester-card-top"><span>{data.phase.label}</span><strong>{phaseProgress}%</strong></div>
+          <div className="progress-track"><span style={{ width: `${phaseProgress}%` }} /></div>
+          <p>{data.phase.title} · {formatDate(data.phase.startDate)}—{formatDate(data.phase.endDate)}</p>
+          <small>{phaseTiming === "before" ? `${phaseDays} 天后开始` : phaseTiming === "active" ? `距离「${data.phase.outcome}」还有 ${phaseDays} 天` : "阶段已结束 · 点击设置下一阶段"}</small>
+          <i>点击编辑当前阶段 →</i>
+        </button>
         <div className="data-tools">
           <button onClick={exportData}>导出备份</button>
           <button onClick={() => importRef.current?.click()}>导入</button>
@@ -706,7 +811,7 @@ export default function Home() {
         <header className="topbar">
           <div>
             <p className="eyebrow">{todayLabel}</p>
-            <h1>{view === "today" ? "今天，先把生活拉回正轨。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "你的四个月毕业路线。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : view === "notes" ? "先把想法接住，再慢慢整理。" : "健康不是剩余时间。"}</h1>
+            <h1>{view === "today" ? "今天，先把最重要的事情往前推。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "看清当前阶段的时间与节奏。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : view === "notes" ? "先把想法接住，再慢慢整理。" : "健康不是剩余时间。"}</h1>
           </div>
           <div className="topbar-actions"><button className="quick-note-top" onClick={openNotes}><span>✎</span> 记一笔</button><button className="primary-button" onClick={() => openNewTask()}><span>＋</span> 新建任务</button></div>
         </header>
@@ -715,18 +820,18 @@ export default function Home() {
           <div className="page-content">
             <section className="countdown-hero">
               <div className="countdown-copy">
-                <p className="section-kicker">THE MAIN THING</p>
-                <h2><span>{daysToGraduate}</span> 天后毕业</h2>
-                <p>从 9 月 1 日开始，课程、TA、求职和身体状态都服务于同一个结果：年底稳稳完成学业，同时不把自己耗尽。</p>
-                <button className="text-link" onClick={() => setView("semester")}>查看完整学期地图 <span>→</span></button>
+                <p className="section-kicker">CURRENT PHASE · {data.phase.label}</p>
+                <h2>{phaseTiming === "before" ? <><span>{phaseDays}</span> 天后开始</> : phaseTiming === "active" ? <><span>{phaseDays}</span> 天后{data.phase.outcome}</> : <>设置你的<br />下一阶段</>}</h2>
+                <p>{data.phase.description}</p>
+                <button className="text-link" onClick={() => phaseTiming === "after" ? setPhaseEditor(true) : setView("semester")}>{phaseTiming === "after" ? "设置新的当前阶段" : "查看完整阶段地图"} <span>→</span></button>
               </div>
-              <div className="route-graphic" aria-label="八月至十二月毕业路线">
+              <div className="route-graphic" aria-label={`${data.phase.title}阶段路线`}>
                 <div className="route-line" />
-                {["现在", "SEP", "OCT", "NOV", "毕业"].map((label, index) => (
+                {phaseStops.map((label, index) => (
                   <div className={`route-stop stop-${index}`} key={label}><i>{index === 0 ? "●" : index === 4 ? "★" : ""}</i><span>{label}</span></div>
                 ))}
-                <div className="route-note note-one">开学</div>
-                <div className="route-note note-two">期末冲刺</div>
+                <div className="route-note note-one">{formatDate(data.phase.startDate)} 启动</div>
+                <div className="route-note note-two">{formatDate(data.phase.endDate)} 完成</div>
               </div>
             </section>
 
@@ -739,7 +844,7 @@ export default function Home() {
                 <div className="today-progress"><span style={{ width: `${taskProgress}%` }} /></div>
                 <div className="task-stack">
                   {todayDisplayTasks.slice().sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99")).map((task) => (
-                    <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} onEdit={() => setTaskEditor(task)} onDelete={() => deleteTask(task.id)} compact />
+                    <TaskRow key={task.id} task={task} goal={task.goalId ? goalById.get(task.goalId) : undefined} onToggle={() => toggleTask(task.id)} onEdit={() => setTaskEditor(task)} onDelete={() => deleteTask(task.id)} compact />
                   ))}
                 </div>
                 <button className="add-row" onClick={() => openNewTask(today)}>＋ 添加今天的任务</button>
@@ -767,15 +872,17 @@ export default function Home() {
             <section className="goals-section">
               <div className="section-heading-row"><div><p className="section-kicker">NORTH STARS</p><h2>当前最重要的三条主线</h2></div><button className="ghost-button" onClick={() => setView("goals")}>管理长期目标</button></div>
               <div className="goal-grid">
-                {data.goals.map((goal, index) => (
-                  <article draggable className={`goal-card ${goal.tone} ${draggedGoalId === goal.id ? "dragging" : ""} ${dragOverGoalId === goal.id ? "drag-over" : ""}`} key={goal.id} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", goal.id); setDraggedGoalId(goal.id); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverGoalId(goal.id); }} onDrop={(event) => { event.preventDefault(); const sourceId = event.dataTransfer.getData("text/plain") || draggedGoalId; if (sourceId) moveGoal(sourceId, goal.id); setDraggedGoalId(null); setDragOverGoalId(null); }} onDragEnd={() => { setDraggedGoalId(null); setDragOverGoalId(null); }}>
+                {data.goals.slice(0, 3).map((goal, index) => {
+                  const stats = goalTaskStats.get(goal.id) || { open: 0, done: 0 };
+                  return <article draggable className={`goal-card ${goal.tone} ${draggedGoalId === goal.id ? "dragging" : ""} ${dragOverGoalId === goal.id ? "drag-over" : ""}`} key={goal.id} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", goal.id); setDraggedGoalId(goal.id); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverGoalId(goal.id); }} onDrop={(event) => { event.preventDefault(); const sourceId = event.dataTransfer.getData("text/plain") || draggedGoalId; if (sourceId) moveGoal(sourceId, goal.id); setDraggedGoalId(null); setDragOverGoalId(null); }} onDragEnd={() => { setDraggedGoalId(null); setDragOverGoalId(null); }}>
                     <div className="goal-number">0{index + 1} · {goalPriorityLabel(index)}</div><span className="goal-drag-handle" aria-hidden="true">⋮⋮</span>
                     <button className="more-button" onClick={() => setGoalEditor(goal)} aria-label={`编辑${goal.title}`}>•••</button>
                     <h3>{goal.title}</h3><p>{goal.description}</p>
+                    <div className={`goal-next-step ${stats.open === 0 ? "empty" : ""}`}><span>{stats.open > 0 ? `${stats.open} 个待完成下一步` : "还没有可执行的下一步"}{stats.done > 0 ? ` · ${stats.done} 已完成` : ""}</span><button onClick={(event) => { event.stopPropagation(); openNewTask(today, goal.id); }}>＋ 添加下一步</button></div>
                     <div className="goal-footer"><span>{goal.metric}</span><strong>{goal.progress}%</strong></div>
                     <div className="goal-progress"><span style={{ width: `${goal.progress}%` }} /></div>
                   </article>
-                ))}
+                })}
               </div>
             </section>
           </div>
@@ -791,7 +898,10 @@ export default function Home() {
               <div className="horizon-line"><span>NOW</span><i /><span>1 YEAR</span><i /><span>3 YEARS</span><i /><span>5+ YEARS</span></div>
               <div className="goal-order-guide"><span>优先级按从左到右、从上到下排列</span><strong>拖动卡片即可改变顺序</strong></div>
               <div className="goal-grid expanded">
-                {data.goals.map((goal, index) => <article draggable className={`goal-card ${goal.tone} ${draggedGoalId === goal.id ? "dragging" : ""} ${dragOverGoalId === goal.id ? "drag-over" : ""}`} key={goal.id} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", goal.id); setDraggedGoalId(goal.id); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverGoalId(goal.id); }} onDrop={(event) => { event.preventDefault(); const sourceId = event.dataTransfer.getData("text/plain") || draggedGoalId; if (sourceId) moveGoal(sourceId, goal.id); setDraggedGoalId(null); setDragOverGoalId(null); }} onDragEnd={() => { setDraggedGoalId(null); setDragOverGoalId(null); }}><div className="goal-number">0{index + 1} · {goalPriorityLabel(index)}</div><span className="goal-drag-handle" aria-hidden="true">⋮⋮</span><button className="more-button" onClick={() => setGoalEditor(goal)} aria-label={`编辑${goal.title}`}>•••</button><h3>{goal.title}</h3><p>{goal.description}</p><div className="goal-footer"><span>{goal.metric}</span><strong>{goal.progress}%</strong></div><div className="goal-progress"><span style={{ width: `${goal.progress}%` }} /></div></article>)}
+                {data.goals.map((goal, index) => {
+                  const stats = goalTaskStats.get(goal.id) || { open: 0, done: 0 };
+                  return <article draggable className={`goal-card ${goal.tone} ${draggedGoalId === goal.id ? "dragging" : ""} ${dragOverGoalId === goal.id ? "drag-over" : ""}`} key={goal.id} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", goal.id); setDraggedGoalId(goal.id); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverGoalId(goal.id); }} onDrop={(event) => { event.preventDefault(); const sourceId = event.dataTransfer.getData("text/plain") || draggedGoalId; if (sourceId) moveGoal(sourceId, goal.id); setDraggedGoalId(null); setDragOverGoalId(null); }} onDragEnd={() => { setDraggedGoalId(null); setDragOverGoalId(null); }}><div className="goal-number">0{index + 1} · {goalPriorityLabel(index)}</div><span className="goal-drag-handle" aria-hidden="true">⋮⋮</span><button className="more-button" onClick={() => setGoalEditor(goal)} aria-label={`编辑${goal.title}`}>•••</button><h3>{goal.title}</h3><p>{goal.description}</p><div className={`goal-next-step ${stats.open === 0 ? "empty" : ""}`}><span>{stats.open > 0 ? `${stats.open} 个待完成下一步` : "还没有可执行的下一步"}{stats.done > 0 ? ` · ${stats.done} 已完成` : ""}</span><button onClick={(event) => { event.stopPropagation(); openNewTask(today, goal.id); }}>＋ 添加下一步</button></div><div className="goal-footer"><span>{goal.metric}</span><strong>{goal.progress}%</strong></div><div className="goal-progress"><span style={{ width: `${goal.progress}%` }} /></div></article>;
+                })}
                 <button className="goal-add-card" onClick={() => setGoalEditor("new")}><span>＋</span><strong>添加下一条人生主线</strong><small>买房、家庭、工作、个人项目……</small></button>
               </div>
             </section>
@@ -802,12 +912,12 @@ export default function Home() {
         {view === "semester" && (
           <div className="page-content semester-page">
             <section className="semester-summary">
-              <div><p className="section-kicker">SEMESTER MAP</p><h2>Sep 01 <span>→</span> Dec 28</h2><p>{courseCount} 门课 · {taCount} 份 TA · 17 周 · 目标：毕业</p></div>
-              <button className="ghost-button" onClick={() => setScheduleEditor("new")}>＋ 添加固定安排</button>
+              <div><p className="section-kicker">CURRENT PHASE · {data.phase.label}</p><h2>{formatShortDate(data.phase.startDate)} <span>→</span> {formatShortDate(data.phase.endDate)}</h2><p>{phaseWeeks} 周 · {courseCount} 门课 · {taCount} 份 TA · {data.phase.goalId && goalById.get(data.phase.goalId) ? `服务目标：${goalById.get(data.phase.goalId)?.title}` : `结果：${data.phase.outcome}`}</p></div>
+              <div className="semester-summary-actions"><button className="ghost-button" onClick={() => setPhaseEditor(true)}>编辑阶段</button><button className="ghost-button" onClick={() => setScheduleEditor("new")}>＋ 添加固定安排</button></div>
             </section>
 
             <div className="semester-viewbar">
-              <div className="view-switch" role="group" aria-label="学期地图视图"><button className={semesterMode === "week" ? "active" : ""} onClick={() => setSemesterMode("week")}>周课表</button><button className={semesterMode === "calendar" ? "active" : ""} onClick={() => setSemesterMode("calendar")}>月历</button></div>
+              <div className="view-switch" role="group" aria-label="阶段地图视图"><button className={semesterMode === "week" ? "active" : ""} onClick={() => setSemesterMode("week")}>周课表</button><button className={semesterMode === "calendar" ? "active" : ""} onClick={() => setSemesterMode("calendar")}>月历</button></div>
               <p>周课表集中显示本周任务与固定课程；月历显示整个月的全部安排。</p>
             </div>
 
@@ -821,7 +931,7 @@ export default function Home() {
                   {CALENDAR_DAY_LABEL.map((label, index) => <div className={`calendar-weekday ${index > 4 ? "weekend" : ""}`} key={label}>{label}</div>)}
                   {calendarCells.map((cell) => {
                     const tasks = data.tasks.filter((task) => task.date <= cell.key && (task.endDate || task.date) >= cell.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
-                    const schedules = cell.key >= "2026-09-01" && cell.key <= "2026-12-31" ? data.schedule.filter((item) => item.days.includes(cell.dayCode)).sort((a, b) => a.start.localeCompare(b.start)) : [];
+                    const schedules = cell.key >= data.phase.startDate && cell.key <= data.phase.endDate ? data.schedule.filter((item) => item.days.includes(cell.dayCode)).sort((a, b) => a.start.localeCompare(b.start)) : [];
                     const events = [...tasks.map((task) => ({ type: "task" as const, time: task.date === cell.key ? task.time : "", item: task })), ...schedules.map((item) => ({ type: "schedule" as const, time: item.start, item }))].sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
                     return <article className={`calendar-day ${cell.inMonth ? "" : "outside"} ${cell.key === today ? "today" : ""}`} key={cell.key}>
                       <header><span>{cell.day}</span>{cell.key === today && <strong>今天</strong>}<button onClick={() => openNewTask(cell.key)} aria-label={`在 ${cell.key} 新建任务`}>＋</button></header>
@@ -849,7 +959,7 @@ export default function Home() {
                       <header><strong>{DAY_LABEL[day]}</strong><small>{day.toUpperCase()}</small></header>
                       <div className="day-body">
                         {[0, 1, 2, 3, 4, 5].map((line) => <i key={line} style={{ top: `${line * 20}%` }} />)}
-                        {data.schedule.filter((item) => item.days.includes(day)).map((item) => {
+                        {data.schedule.filter((item) => item.days.includes(day) && (weekDays.find((weekDay) => weekDay.dayCode === day)?.key || "") >= data.phase.startDate && (weekDays.find((weekDay) => weekDay.dayCode === day)?.key || "") <= data.phase.endDate).map((item) => {
                           const top = ((timeToMinutes(item.start) - 480) / 600) * 100;
                           const height = ((timeToMinutes(item.end) - timeToMinutes(item.start)) / 600) * 100;
                           return <button key={item.id} className={`schedule-block ${item.color}`} style={{ top: `${top}%`, height: `${height}%` }} onClick={() => setScheduleEditor(item)}><strong>{item.code}</strong><span>{item.start}—{item.end}</span><small>{item.room}</small></button>;
@@ -880,7 +990,7 @@ export default function Home() {
             </section>}
 
             <section className="month-map">
-              {[{ month: "SEP", title: "建立系统", text: "开学、确认课程与 TA、报名 PTE，把固定节奏跑起来。", tone: "lime" }, { month: "OCT", title: "稳住产出", text: "课程作业进入密集区，求职保持少量高质量投递。", tone: "blue" }, { month: "NOV", title: "提前收口", text: "项目与考试准备前移，不把所有风险留到十二月。", tone: "lavender" }, { month: "DEC", title: "完成毕业", text: "期末、课程收尾、材料确认，然后真正关掉这一章。", tone: "coral" }].map((item) => <article key={item.month} className={`month-card ${item.tone}`}><span>{item.month}</span><h3>{item.title}</h3><p>{item.text}</p></article>)}
+              {phaseCheckpoints.map((item) => <article key={item.title} className={`month-card ${item.tone} ${item.date <= today ? "reached" : ""}`}><span>{formatDate(item.date)}</span><h3>{item.title}</h3><p>{item.text}</p></article>)}
             </section>
           </div>
         )}
@@ -907,11 +1017,11 @@ export default function Home() {
           <div className="page-content planner-page">
             <div className="planner-toolbar">
               <div className="filter-row">{(["全部", "学业", "求职", "生活", "健康"] as const).map((item) => <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}<span>{item === "全部" ? statusFilteredTasks.length : statusFilteredTasks.filter((task) => task.category === item).length}</span></button>)}</div>
-              <div className="status-switch" role="group" aria-label="任务状态筛选"><button className={plannerStatusFilter === "open" ? "active" : ""} onClick={() => setPlannerStatusFilter("open")}>待处理</button><button className={plannerStatusFilter === "done" ? "active" : ""} onClick={() => setPlannerStatusFilter("done")}>已完成</button><button className={plannerStatusFilter === "all" ? "active" : ""} onClick={() => setPlannerStatusFilter("all")}>全部</button></div>
+              <div className="planner-controls"><label className="goal-filter"><span>关联目标</span><select value={goalFilter} onChange={(event) => setGoalFilter(event.target.value)}><option value="all">全部目标</option><option value="none">未关联目标</option>{data.goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.title}</option>)}</select></label><div className="status-switch" role="group" aria-label="任务状态筛选"><button className={plannerStatusFilter === "open" ? "active" : ""} onClick={() => setPlannerStatusFilter("open")}>待处理</button><button className={plannerStatusFilter === "done" ? "active" : ""} onClick={() => setPlannerStatusFilter("done")}>已完成</button><button className={plannerStatusFilter === "all" ? "active" : ""} onClick={() => setPlannerStatusFilter("all")}>全部</button></div></div>
             </div>
             <section className="panel task-library">
               <div className="task-table-head"><span>任务</span><span>日期</span><span>类别</span><span>状态</span><span /></div>
-              {plannerTasks.map((task) => <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} onEdit={() => setTaskEditor(task)} onDelete={() => deleteTask(task.id)} />)}
+              {plannerTasks.map((task) => <TaskRow key={task.id} task={task} goal={task.goalId ? goalById.get(task.goalId) : undefined} onToggle={() => toggleTask(task.id)} onEdit={() => setTaskEditor(task)} onDelete={() => deleteTask(task.id)} />)}
               {plannerTasks.length === 0 && <div className="empty-state">这里暂时没有符合条件的任务。</div>}
             </section>
           </div>
@@ -987,9 +1097,10 @@ export default function Home() {
         <p className="ai-privacy">分析会读取完整 MAP；明确的数据修改只发送相关模块。语音会发送至 OpenAI 转写，MAP 不保存录音。</p>
       </aside>}
 
-      {taskEditor && <TaskModal value={taskEditor} defaultDate={newTaskDate || undefined} onClose={() => { setTaskEditor(null); setNewTaskDate(null); }} onSave={(task) => { setData((current) => { const tasks = taskEditor === "new" ? [...current.tasks, task] : current.tasks.map((item) => item.id === task.id ? task : item); return { ...current, tasks: rollOverTasks(tasks, today) }; }); setTaskEditor(null); setNewTaskDate(null); }} onDelete={taskEditor === "new" ? undefined : () => { deleteTask(taskEditor.id); setTaskEditor(null); setNewTaskDate(null); }} />}
+      {taskEditor && <TaskModal value={taskEditor} goals={data.goals} defaultDate={newTaskDate || undefined} defaultGoalId={newTaskGoalId || undefined} onClose={() => { setTaskEditor(null); setNewTaskDate(null); setNewTaskGoalId(null); }} onSave={(task) => { setData((current) => { const tasks = taskEditor === "new" ? [...current.tasks, task] : current.tasks.map((item) => item.id === task.id ? task : item); return { ...current, tasks: rollOverTasks(tasks, today) }; }); setTaskEditor(null); setNewTaskDate(null); setNewTaskGoalId(null); }} onDelete={taskEditor === "new" ? undefined : () => { deleteTask(taskEditor.id); setTaskEditor(null); setNewTaskDate(null); setNewTaskGoalId(null); }} />}
+      {phaseEditor && <PhaseModal value={data.phase} goals={data.goals} onClose={() => setPhaseEditor(false)} onSave={(phase) => { setData((current) => ({ ...current, phase })); setCalendarCursor(phase.startDate.slice(0, 7)); setPhaseEditor(false); }} />}
       {scheduleEditor && <ScheduleModal value={scheduleEditor} onClose={() => setScheduleEditor(null)} onSave={(schedule) => { setData((current) => ({ ...current, schedule: scheduleEditor === "new" ? [...current.schedule, schedule] : current.schedule.map((item) => item.id === schedule.id ? schedule : item) })); setScheduleEditor(null); }} onDelete={scheduleEditor === "new" ? undefined : () => { removeRecord("schedule", scheduleEditor.id, `已删除安排「${scheduleEditor.code}」`); setScheduleEditor(null); }} />}
-      {goalEditor && <GoalModal value={goalEditor} onClose={() => setGoalEditor(null)} onSave={(goal) => { setData((current) => ({ ...current, goals: goalEditor === "new" ? [...current.goals, goal] : current.goals.map((item) => item.id === goal.id ? goal : item) })); setGoalEditor(null); }} onDelete={goalEditor === "new" ? undefined : () => { removeRecord("goals", goalEditor.id, `已删除目标「${goalEditor.title}」`); setGoalEditor(null); }} />}
+      {goalEditor && <GoalModal value={goalEditor} onClose={() => setGoalEditor(null)} onSave={(goal) => { setData((current) => ({ ...current, goals: goalEditor === "new" ? [...current.goals, goal] : current.goals.map((item) => item.id === goal.id ? goal : item) })); setGoalEditor(null); }} onDelete={goalEditor === "new" ? undefined : () => { deleteGoal(goalEditor.id); setGoalEditor(null); }} />}
       {habitEditor && <HabitModal value={habitEditor} onClose={() => setHabitEditor(null)} onSave={(habit) => { setData((current) => ({ ...current, habits: habitEditor === "new" ? [...current.habits, habit] : current.habits.map((item) => item.id === habit.id ? habit : item) })); setHabitEditor(null); }} onDelete={habitEditor === "new" ? undefined : () => { removeRecord("habits", habitEditor.id, `已删除健康项目「${habitEditor.label}」`); setHabitEditor(null); }} />}
       {workoutEditor && <WorkoutModal value={workoutEditor} onClose={() => setWorkoutEditor(null)} onSave={(workout) => { setData((current) => ({ ...current, workouts: workoutEditor === "new" ? [...current.workouts, workout] : current.workouts.map((item) => item.id === workout.id ? workout : item) })); setWorkoutEditor(null); }} onDelete={workoutEditor === "new" ? undefined : () => { removeRecord("workouts", workoutEditor.id, `已删除运动「${workoutEditor.title}」`); setWorkoutEditor(null); }} />}
       {applicationEditor && <ApplicationModal value={applicationEditor} onClose={() => setApplicationEditor(null)} onSave={(application) => { setData((current) => ({ ...current, applications: applicationEditor === "new" ? [...current.applications, application] : current.applications.map((item) => item.id === application.id ? application : item) })); setApplicationEditor(null); }} onDelete={applicationEditor === "new" ? undefined : () => { removeRecord("applications", applicationEditor.id, `已删除求职记录「${applicationEditor.company}」`); setApplicationEditor(null); }} />}
@@ -1003,11 +1114,11 @@ function NavButton({ active, label, icon, onClick }: { active: boolean; label: s
   return <button className={active ? "active" : ""} onClick={onClick}><span>{icon}</span>{label}<i>→</i></button>;
 }
 
-function TaskRow({ task, onToggle, onEdit, onDelete, compact = false }: { task: Task; onToggle: () => void; onEdit: () => void; onDelete: () => void; compact?: boolean }) {
+function TaskRow({ task, goal, onToggle, onEdit, onDelete, compact = false }: { task: Task; goal?: Goal; onToggle: () => void; onEdit: () => void; onDelete: () => void; compact?: boolean }) {
   const carried = Boolean(task.carriedFrom) && task.status === "todo";
   return <div className={`task-row ${task.status === "done" ? "done" : ""} ${carried ? "carried" : ""} ${compact ? "compact" : ""}`}>
     <button className="task-check" onClick={onToggle} aria-label={task.status === "done" ? "标记未完成" : "标记完成"}>{task.status === "done" ? "✓" : ""}</button>
-    <div className="task-main"><strong>{task.title}</strong>{task.details && <p className="task-details">{task.details}</p>}{compact && <span><i className={`dot ${categoryTone[task.category]}`} />{task.category}{task.endDate ? ` · 截止 ${formatDate(task.endDate)}` : ""}{carried && <b className="rollover-label">未完成顺延 · 原定 {formatDate(task.carriedFrom!)}</b>}</span>}{!compact && carried && <span className="rollover-meta">未完成顺延 · 原定 {formatDate(task.carriedFrom!)}</span>}</div>
+    <div className="task-main"><strong>{task.title}</strong>{task.details && <p className="task-details">{task.details}</p>}{compact && <span><i className={`dot ${categoryTone[task.category]}`} />{task.category}{goal ? <b className="task-goal-label">→ {goal.title}</b> : null}{task.endDate ? ` · 截止 ${formatDate(task.endDate)}` : ""}{carried && <b className="rollover-label">未完成顺延 · 原定 {formatDate(task.carriedFrom!)}</b>}</span>}{!compact && <span className="task-meta-line">{goal && <b className="task-goal-label">服务目标：{goal.title}</b>}{carried && <b className="rollover-meta">未完成顺延 · 原定 {formatDate(task.carriedFrom!)}</b>}</span>}</div>
     {!compact && <><span className="task-date">{formatDate(task.date)}{task.endDate ? ` → ${formatDate(task.endDate)}` : ""}{task.time ? ` · ${task.time}` : ""}</span><span className={`category-pill ${categoryTone[task.category]}`}>{task.category}</span><span className={`status-label ${carried ? "carried" : ""}`}>{task.status === "done" ? "已完成" : carried ? "未完成顺延" : task.priority === "high" ? "优先" : task.endDate ? "进行中" : "待处理"}</span></>}
     {compact && <time>{task.time || "今天"}</time>}
     <div className="task-actions"><button onClick={onEdit}>编辑</button><button onClick={onDelete}>删除</button></div>
@@ -1021,12 +1132,23 @@ function ModalFrame({ title, subtitle, onClose, onDelete, children }: { title: s
 
 function Field({ label, children, wide = false }: { label: string; children: React.ReactNode; wide?: boolean }) { return <label className={wide ? "wide" : ""}><span>{label}</span>{children}</label>; }
 
-function TaskModal({ value, defaultDate, onClose, onSave, onDelete }: { value: Task | "new"; defaultDate?: string; onClose: () => void; onSave: (task: Task) => void; onDelete?: () => void }) {
+function TaskModal({ value, goals, defaultDate, defaultGoalId, onClose, onSave, onDelete }: { value: Task | "new"; goals: Goal[]; defaultDate?: string; defaultGoalId?: string; onClose: () => void; onSave: (task: Task) => void; onDelete?: () => void }) {
   const existing = value === "new" ? null : value;
   const titleInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => { titleInputRef.current?.focus(); }, []);
-  const [title, setTitle] = useState(existing?.title || ""); const [details, setDetails] = useState(existing?.details || ""); const [category, setCategory] = useState<TaskCategory>(existing?.category || "生活"); const [date, setDate] = useState(existing?.date || defaultDate || getTorontoToday()); const [endDate, setEndDate] = useState(existing?.endDate || ""); const [time, setTime] = useState(existing?.time || "09:00"); const [priority, setPriority] = useState<"high" | "normal">(existing?.priority || "normal");
-  return <ModalFrame title={existing ? "编辑任务" : "新建任务"} subtitle="TASK" onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); if (!title.trim()) return; onSave({ id: existing?.id || uid(), title: title.trim(), details: details.trim() || null, category, date, time, endDate: endDate && endDate > date ? endDate : null, carriedFrom: existing && existing.date === date ? existing.carriedFrom : null, completedAt: existing?.completedAt || null, priority, status: existing?.status || "todo" }); }}><div className="form-grid"><Field label="任务名称" wide><input ref={titleInputRef} value={title} onChange={(e) => setTitle(e.target.value)} required /></Field><Field label="任务细节" wide><textarea value={details} onChange={(e) => setDetails(e.target.value)} placeholder="补充地点、材料、步骤、联系人或任何执行时需要的信息……" /></Field><Field label="类别"><select value={category} onChange={(e) => setCategory(e.target.value as TaskCategory)}><option>学业</option><option>求职</option><option>生活</option><option>健康</option></select></Field><Field label="优先级"><select value={priority} onChange={(e) => setPriority(e.target.value as "high" | "normal")}><option value="normal">普通</option><option value="high">优先</option></select></Field><Field label="开始日期"><input type="date" value={date} onChange={(e) => { const nextDate = e.target.value; setDate(nextDate); if (endDate && endDate < nextDate) setEndDate(nextDate); }} required /></Field><Field label="结束日期（可选）"><input type="date" value={endDate} min={date} onChange={(e) => setEndDate(e.target.value)} /></Field><Field label="时间"><input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">保存任务</button></div></form></ModalFrame>;
+  const [title, setTitle] = useState(existing?.title || ""); const [details, setDetails] = useState(existing?.details || ""); const [category, setCategory] = useState<TaskCategory>(existing?.category || "生活"); const [goalId, setGoalId] = useState(existing?.goalId || defaultGoalId || ""); const [date, setDate] = useState(existing?.date || defaultDate || getTorontoToday()); const [endDate, setEndDate] = useState(existing?.endDate || ""); const [time, setTime] = useState(existing?.time || "09:00"); const [priority, setPriority] = useState<"high" | "normal">(existing?.priority || "normal");
+  return <ModalFrame title={existing ? "编辑任务" : "新建任务"} subtitle="TASK" onClose={onClose} onDelete={onDelete}><form onSubmit={(event) => { event.preventDefault(); if (!title.trim()) return; onSave({ id: existing?.id || uid(), title: title.trim(), details: details.trim() || null, category, goalId: goalId || null, date, time, endDate: endDate && endDate > date ? endDate : null, carriedFrom: existing && existing.date === date ? existing.carriedFrom : null, completedAt: existing?.completedAt || null, priority, status: existing?.status || "todo" }); }}><div className="form-grid"><Field label="任务名称" wide><input ref={titleInputRef} value={title} onChange={(e) => setTitle(e.target.value)} required /></Field><Field label="任务细节" wide><textarea value={details} onChange={(e) => setDetails(e.target.value)} placeholder="补充地点、材料、步骤、联系人或任何执行时需要的信息……" /></Field><Field label="类别"><select value={category} onChange={(e) => setCategory(e.target.value as TaskCategory)}><option>学业</option><option>求职</option><option>生活</option><option>健康</option></select></Field><Field label="关联长期目标"><select value={goalId} onChange={(e) => setGoalId(e.target.value)}><option value="">不关联目标</option>{goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.title}</option>)}</select></Field><Field label="优先级"><select value={priority} onChange={(e) => setPriority(e.target.value as "high" | "normal")}><option value="normal">普通</option><option value="high">优先</option></select></Field><Field label="开始日期"><input type="date" value={date} onChange={(e) => { const nextDate = e.target.value; setDate(nextDate); if (endDate && endDate < nextDate) setEndDate(nextDate); }} required /></Field><Field label="结束日期（可选）"><input type="date" value={endDate} min={date} onChange={(e) => setEndDate(e.target.value)} /></Field><Field label="时间"><input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit">保存任务</button></div></form></ModalFrame>;
+}
+
+function PhaseModal({ value, goals, onClose, onSave }: { value: ActivePhase; goals: Goal[]; onClose: () => void; onSave: (phase: ActivePhase) => void }) {
+  const [goalId, setGoalId] = useState(value.goalId || "");
+  const [label, setLabel] = useState(value.label);
+  const [title, setTitle] = useState(value.title);
+  const [outcome, setOutcome] = useState(value.outcome);
+  const [description, setDescription] = useState(value.description);
+  const [startDate, setStartDate] = useState(value.startDate);
+  const [endDate, setEndDate] = useState(value.endDate);
+  return <ModalFrame title="编辑当前阶段" subtitle="CURRENT PHASE" onClose={onClose}><form onSubmit={(event) => { event.preventDefault(); if (!title.trim() || !outcome.trim() || !startDate || !endDate || endDate < startDate) return; onSave({ goalId: goalId || null, label: label.trim() || "CURRENT PHASE", title: title.trim(), outcome: outcome.trim(), description: description.trim(), startDate, endDate }); }}><div className="form-grid"><Field label="阶段标签"><input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="例如 FALL · 2026" /></Field><Field label="关联长期目标"><select value={goalId} onChange={(event) => setGoalId(event.target.value)}><option value="">不关联目标</option>{goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.title}</option>)}</select></Field><Field label="阶段名称" wide><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如 毕业冲刺" required /></Field><Field label="这一阶段要得到的结果" wide><input value={outcome} onChange={(event) => setOutcome(event.target.value)} placeholder="例如 顺利毕业、完成产品 MVP、找到新工作" required /></Field><Field label="为什么重要 / 约束条件" wide><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="说明这一阶段的重点、边界和你不想牺牲的东西。" /></Field><Field label="开始日期"><input type="date" value={startDate} onChange={(event) => { const next = event.target.value; setStartDate(next); if (endDate < next) setEndDate(next); }} required /></Field><Field label="结束日期"><input type="date" min={startDate} value={endDate} onChange={(event) => setEndDate(event.target.value)} required /></Field></div><p className="phase-modal-note">阶段用于决定首页倒计时、进度、时间地图范围和固定安排的显示周期。阶段结束后，直接在这里换成工作、买房、个人项目或任何下一阶段。</p><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" type="submit" disabled={endDate < startDate}>保存阶段</button></div></form></ModalFrame>;
 }
 
 function NoteModal({ value, onClose, onSave, onDelete }: { value: Note; onClose: () => void; onSave: (note: Note) => void; onDelete: () => void }) {

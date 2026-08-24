@@ -54,6 +54,24 @@ test("workflow controls expose ranges, friendly weekdays, status filters, and un
   assert.match(source, /upcomingTask/);
 });
 
+test("current phase is editable and drives the long-term time map", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /type ActivePhase/);
+  assert.match(source, /编辑当前阶段/);
+  assert.match(source, /data\.phase\.startDate/);
+  assert.match(source, /buildPhaseCheckpoints/);
+  assert.match(source, /阶段已结束 · 点击设置下一阶段/);
+});
+
+test("tasks can link to goals and be filtered by that execution path", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /goalId\?: string \| null/);
+  assert.match(source, /关联长期目标/);
+  assert.match(source, /goalTaskStats/);
+  assert.match(source, /添加下一步/);
+  assert.match(source, /未关联目标/);
+});
+
 test("voice input is exposed in the MAP AI composer", async () => {
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(source, /开始语音输入/);

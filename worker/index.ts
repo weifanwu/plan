@@ -41,15 +41,16 @@ function detectFocusedMutation(latestMessage: string, priorContext: string): Dat
 function focusedData(data: Record<string, unknown>, collection: DataCollection) {
   const relatedCollections: Record<DataCollection, DataCollection[]> = {
     applications: ["applications"],
-    tasks: ["tasks", "schedule"],
+    tasks: ["tasks", "schedule", "goals"],
     schedule: ["schedule", "tasks"],
-    goals: ["goals"],
+    goals: ["goals", "tasks"],
     habits: ["habits"],
     workouts: ["workouts", "schedule"],
     notes: ["notes"],
   };
   return Object.fromEntries([
     ...relatedCollections[collection].map((key) => [key, Array.isArray(data[key]) ? data[key] : []]),
+    ["phase", data.phase ?? null],
     ["habitDate", data.habitDate ?? ""],
     ["workoutWeek", data.workoutWeek ?? ""],
   ]);
@@ -129,8 +130,8 @@ async function handleAIChat(request: Request, env: Env): Promise<Response> {
 WHAT MAP IS
 MAP is a long-term personal operating system, not only a graduation planner. It helps the user connect life directions to schedules and concrete actions. The app has these modules:
 1. 今日指挥台: today's unfinished tasks, completion progress, daily nutrition checks, and current top goals.
-2. 长期目标: ordered life directions. Array order is priority order: first is most important, second is second most important. Goals may cover study, career, health, housing, marriage, or personal projects.
-3. 学期地图: recurring weekly course/TA schedule plus dated tasks in weekly and monthly calendar views.
+2. 长期目标: ordered life directions. Array order is priority order: first is most important, second is second most important. Goals may cover study, career, health, housing, marriage, or personal projects. Tasks can link to a goal through goalId so each direction has concrete next steps.
+3. 阶段地图: the editable current phase (for example graduation, a new job, moving, or a personal project), recurring weekly schedule, and dated tasks in weekly and monthly calendar views.
 4. 求职记录: a Kanban pipeline with exactly four stages: 已投, 面试, Offer, 拒绝. Each application stores company, role, job link, contact, application date, and notes/next step. The date powers daily application counts and filtering, so preserve the actual application date.
 5. 任务计划: one-off dated actions. title is concise; details stores execution context such as location, steps, materials, links, or contacts. Unfinished tasks may roll forward automatically.
 6. 灵感笔记: free-form ideas and reference material grouped as 课程, 项目, 求职, 生活, or 想法. Notes can be searched and pinned.
@@ -156,7 +157,7 @@ DATA RULES
 - The browser applies operations locally to the current data. You never return the complete MAP dataset.
 - For new records create a unique id beginning with ai-. Resolve relative dates against today. Use YYYY-MM-DD dates and 24-hour HH:MM times.
 - Tasks are one-off actions; schedule is only recurring weekly blocks; goals are long-term directions; applications are job opportunities; notes are free-form ideas/reference; habits are daily nutrition checks; workouts are weekly exercise plans.
-- Preserve details, carriedFrom, and completedAt on existing tasks unless explicitly changing completion. Use null for missing optional task fields. Preserve note timestamps unless changed; use valid ISO timestamps for new or updated notes.
+- Preserve details, goalId, carriedFrom, and completedAt on existing tasks unless explicitly changing them. For a new task, set goalId to the matching existing goal id when the connection is clear; otherwise use null. Use null for missing optional task fields. Preserve note timestamps unless changed; use valid ISO timestamps for new or updated notes.
 - Each operation has collection, operation, recordId, and recordJson. collection is one MAP array. operation is add, update, delete, or reorder.
 - For add, recordJson is a JSON string containing one complete new record. For update, it is a JSON string containing only the fields explicitly requested to change; the browser merges it into recordId. For delete, recordJson is an empty string. For reorder, recordJson is a JSON string containing the ordered id array.
 - For action=answer: reply conversationally; summary is empty and operations is empty.
