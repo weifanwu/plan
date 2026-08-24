@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { applyAIOperations } from "../lib/ai-operations.mjs";
 import { rollOverTasks } from "../lib/task-rollover.mjs";
 
 type View = "today" | "goals" | "semester" | "career" | "planner" | "notes" | "wellness";
@@ -49,9 +50,11 @@ type ApplicationStage = "已投" | "面试" | "Offer" | "拒绝";
 type Application = { id: string; company: string; role: string; stage: ApplicationStage; link: string; contact: string; date: string; notes: string };
 type Note = { id: string; content: string; category: NoteCategory; pinned: boolean; createdAt: string; updatedAt: string };
 type AIPlanPreview = { summary: string; changes: string[]; nextData: AppData };
-type AIModel = "gpt-5.4-mini" | "gpt-5.4";
+type AIModel = "gpt-5.6-luna" | "gpt-5.6-terra" | "gpt-5.6-sol" | "gpt-5.4-mini" | "gpt-5.4";
 type AIChatMessage = { id: string; role: "user" | "assistant"; content: string };
-type AIChatResponse = AIPlanPreview & { reply: string; action: "answer" | "proposal"; error?: string };
+type AICollection = "tasks" | "schedule" | "goals" | "habits" | "workouts" | "applications" | "notes";
+type AIOperation = { collection: AICollection; operation: "add" | "update" | "delete" | "reorder"; recordId: string; recordJson: string };
+type AIChatResponse = { reply: string; action: "answer" | "proposal"; summary: string; changes: string[]; operations: AIOperation[]; error?: string };
 type PWAInstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
 
 type AppData = {
@@ -249,7 +252,7 @@ export default function Home() {
   const [aiError, setAiError] = useState("");
   const [aiPreview, setAiPreview] = useState<AIPlanPreview | null>(null);
   const [aiMessages, setAiMessages] = useState<AIChatMessage[]>([AI_WELCOME_MESSAGE]);
-  const [aiModel, setAiModel] = useState<AIModel>("gpt-5.4-mini");
+  const [aiModel, setAiModel] = useState<AIModel>("gpt-5.6-luna");
   const [filter, setFilter] = useState<"全部" | TaskCategory>("全部");
   const [semesterMode, setSemesterMode] = useState<"calendar" | "week">("week");
   const [calendarCursor, setCalendarCursor] = useState(() => getTorontoToday().slice(0, 7));
@@ -472,12 +475,20 @@ export default function Home() {
       const response = await fetch("/api/ai-chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: nextMessages.map(({ role, content: messageContent }) => ({ role, content: messageContent })), currentData: data, today, model: aiModel }) });
       const result = await response.json() as AIChatResponse;
       if (!response.ok) throw new Error(result.error || "MAP AI 暂时无法回复。");
-      if (!result.nextData || !Array.isArray(result.changes) || !Array.isArray(result.nextData.tasks) || !Array.isArray(result.nextData.goals) || !Array.isArray(result.nextData.notes)) throw new Error("AI 返回的数据格式不完整，请再试一次。");
+      if (typeof result.reply !== "string" || !Array.isArray(result.operations)) throw new Error("AI 返回的数据格式不完整，请再试一次。");
       if (session !== aiSessionRef.current) return;
       setAiMessages((current) => [...current, { id: uid(), role: "assistant", content: result.reply }]);
       if (result.action === "proposal") {
-        const changes = deriveAIChanges(data, result.nextData);
-        if (!(changes.length === 1 && changes[0] === "没有检测到实际数据变化。")) setAiPreview({ summary: result.summary, changes, nextData: result.nextData });
+        const operatedData = applyAIOperations(data, result.operations, () => `ai-${uid()}`) as AppData;
+        const nextData = {
+          ...operatedData,
+          tasks: normalizeTasks(operatedData.tasks),
+          schedule: normalizeSchedule(operatedData.schedule),
+          applications: normalizeApplications(operatedData.applications),
+        };
+        const changes = deriveAIChanges(data, nextData);
+        if (changes.length === 1 && changes[0] === "没有检测到实际数据变化。") throw new Error("AI 没有生成有效的数据修改，请换一种说法再试。 ");
+        setAiPreview({ summary: result.summary || "应用本次修改", changes, nextData });
       }
     } catch (error) {
       if (session !== aiSessionRef.current) return;
@@ -793,7 +804,7 @@ export default function Home() {
 
       <button className={`ai-launcher ${aiOpen ? "active" : ""} ${!online ? "offline" : ""}`} onClick={toggleAIChat} aria-label={aiOpen ? "关闭 MAP AI" : "打开 MAP AI"}><span>✦</span><strong>{online ? "MAP AI" : "AI 离线"}</strong></button>
       {aiOpen && <aside className="ai-panel ai-chat-panel" aria-label="MAP AI 对话助手">
-        <header><div><p className="section-kicker">YOUR LIFE · IN CONTEXT</p><h2>MAP AI</h2></div><div className="ai-header-actions"><label><span>模型</span><select value={aiModel} onChange={(event) => setAiModel(event.target.value as AIModel)} disabled={aiLoading}><option value="gpt-5.4-mini">快速 · GPT-5.4 mini</option><option value="gpt-5.4">深度 · GPT-5.4</option></select></label><button onClick={closeAIChat} aria-label="关闭并清空本次对话">×</button></div></header>
+        <header><div><p className="section-kicker">YOUR LIFE · IN CONTEXT</p><h2>MAP AI</h2></div><div className="ai-header-actions"><label><span>模型</span><select value={aiModel} onChange={(event) => setAiModel(event.target.value as AIModel)} disabled={aiLoading}><option value="gpt-5.6-luna">最快 · GPT-5.6 Luna</option><option value="gpt-5.6-terra">均衡 · GPT-5.6 Terra</option><option value="gpt-5.6-sol">最强 · GPT-5.6 Sol</option><option value="gpt-5.4-mini">旧版快速 · GPT-5.4 mini</option><option value="gpt-5.4">旧版深度 · GPT-5.4</option></select></label><button onClick={closeAIChat} aria-label="关闭并清空本次对话">×</button></div></header>
         <div className="ai-quick-prompts" aria-label="快捷提问">{["分析我这周最需要注意什么", "帮我梳理当前所有课程项目", "把这段职业信息加入求职看板"].map((prompt) => <button key={prompt} onClick={() => void sendAIMessage(prompt)} disabled={aiLoading || !online}>{prompt}</button>)}</div>
         <div className="ai-conversation" ref={aiConversationRef}>
           {aiMessages.map((message) => <div className={`ai-message ${message.role}`} key={message.id}><span>{message.role === "assistant" ? "✦" : "你"}</span><div><p>{message.content}</p></div></div>)}
