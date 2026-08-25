@@ -116,7 +116,7 @@ type SyncedAppData = AppData;
 type SyncStatus = "local" | "syncing" | "synced" | "pending" | "conflict" | "error";
 type SyncEnvelope = { initialized: boolean; data: SyncedAppData | null; revision: number; updatedAt: string | null; error?: string };
 type SyncMeta = { revision: number; baseData: SyncedAppData };
-type VoiceTarget = "ai" | "draft" | "idea";
+type VoiceTarget = "ai" | "quick-ai" | "draft" | "idea";
 
 const DAY_ORDER = ["Mo", "Tu", "We", "Th", "Fr"];
 const DAY_LABEL: Record<string, string> = { Mo: "周一", Tu: "周二", We: "周三", Th: "周四", Fr: "周五" };
@@ -594,7 +594,8 @@ export default function Home() {
   const phaseStops = buildPhaseStops(data.phase);
   const phaseCheckpoints = buildPhaseCheckpoints(data.phase);
   const phaseWeeks = Math.max(1, Math.ceil((phaseDuration + 1) / 7));
-  const aiVoiceState: VoiceState = voiceTarget === "ai" ? voiceState : "idle";
+  const aiVoiceState: VoiceState = voiceTarget === "ai" || voiceTarget === "quick-ai" ? voiceState : "idle";
+  const quickAiVoiceState: VoiceState = voiceTarget === "quick-ai" ? voiceState : "idle";
   const draftVoiceState: VoiceState = voiceTarget === "draft" ? voiceState : "idle";
   const ideaVoiceState: VoiceState = voiceTarget === "idea" ? voiceState : "idle";
 
@@ -1285,8 +1286,8 @@ export default function Home() {
       if (mediaRecorderRef.current?.state !== "inactive") mediaRecorderRef.current?.stop();
       return;
     }
-    if (voiceState !== "idle" || (target === "ai" && aiLoading) || !online) return;
-    const showVoiceError = (message: string) => target === "ai" ? setAiError(message) : target === "idea" ? setIdeaVoiceError(message) : setDraftVoiceError(message);
+    if (voiceState !== "idle" || ((target === "ai" || target === "quick-ai") && aiLoading) || !online) return;
+    const showVoiceError = (message: string) => target === "ai" || target === "quick-ai" ? setAiError(message) : target === "idea" ? setIdeaVoiceError(message) : setDraftVoiceError(message);
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       showVoiceError("这个浏览器不支持直接录音，请使用最新版 Chrome 或 Safari。");
       return;
@@ -1294,7 +1295,7 @@ export default function Home() {
 
     const session = ++voiceSessionRef.current;
     setVoiceTarget(target);
-    if (target === "ai") setAiError("");
+    if (target === "ai" || target === "quick-ai") setAiError("");
     else if (target === "idea") setIdeaVoiceError("");
     else setDraftVoiceError("");
     try {
@@ -1342,6 +1343,11 @@ export default function Home() {
               if (result.warning) setIdeaVoiceError(result.warning);
               window.requestAnimationFrame(() => ideaDocumentRef.current?.focus());
             }
+          } else if (target === "quick-ai") {
+            setAiOpen(true);
+            setVoiceState("idle");
+            setVoiceTarget(null);
+            await sendAIMessage(result.text, true);
           } else {
             setAiText((current) => `${current}${current.trim() ? "\n" : ""}${result.text}`);
             window.requestAnimationFrame(() => aiInputRef.current?.focus());
@@ -1366,7 +1372,7 @@ export default function Home() {
 
   function closeAIChat() {
     aiSessionRef.current += 1;
-    if (voiceTarget === "ai") {
+    if (voiceTarget === "ai" || voiceTarget === "quick-ai") {
       voiceSessionRef.current += 1;
       voiceAbortRef.current?.abort();
       voiceAbortRef.current = null;
@@ -1395,9 +1401,9 @@ export default function Home() {
     window.requestAnimationFrame(() => aiInputRef.current?.focus());
   }
 
-  async function sendAIMessage(text = aiText) {
+  async function sendAIMessage(text = aiText, allowVoiceBusy = false) {
     const content = text.trim();
-    if (!content || aiLoading || voiceState !== "idle") return;
+    if (!content || aiLoading || (!allowVoiceBusy && voiceState !== "idle")) return;
     if (!online) { setAiError("当前处于离线模式。MAP 的其他功能仍可使用，恢复网络后再继续对话。"); return; }
     const userMessage: AIChatMessage = { id: uid(), role: "user", content };
     const nextMessages = [...aiMessages, userMessage];
@@ -1909,6 +1915,7 @@ export default function Home() {
         </aside>
       </div>}
 
+      {!aiOpen && <button className={`ai-voice-launcher ${quickAiVoiceState} ${!online ? "offline" : ""}`} onClick={() => void toggleVoiceInput("quick-ai")} disabled={!online || aiLoading || (voiceState !== "idle" && voiceTarget !== "quick-ai")} aria-label={quickAiVoiceState === "recording" ? "停止并发送语音给 MAP AI" : quickAiVoiceState === "transcribing" ? "正在转写并发送给 MAP AI" : "语音问 MAP AI"}><span>{quickAiVoiceState === "recording" ? "■" : quickAiVoiceState === "transcribing" ? "…" : "麦"}</span><strong>{quickAiVoiceState === "recording" ? "停止" : quickAiVoiceState === "transcribing" ? "发送中" : "语音问 AI"}</strong></button>}
       <button className={`ai-launcher ${aiOpen ? "active" : ""} ${!online ? "offline" : ""}`} onClick={toggleAIChat} aria-label={aiOpen ? "关闭 MAP AI" : "打开 MAP AI"}><span>✦</span><strong>{online ? "MAP AI" : "AI 离线"}</strong></button>
       {aiOpen && <aside className="ai-panel ai-chat-panel" aria-label="MAP AI 对话助手">
         <header><div><p className="section-kicker">YOUR LIFE · IN CONTEXT</p><h2>MAP AI</h2></div><div className="ai-header-actions"><label><span>模型</span><select value={aiModel} onChange={(event) => setAiModel(event.target.value as AIModel)} disabled={aiLoading}><option value="gpt-5.6-luna">最快 · GPT-5.6 Luna</option><option value="gpt-5.6-terra">均衡 · GPT-5.6 Terra</option><option value="gpt-5.6-sol">最强 · GPT-5.6 Sol</option><option value="gpt-5.4-mini">旧版快速 · GPT-5.4 mini</option><option value="gpt-5.4">旧版深度 · GPT-5.4</option></select></label><button onClick={closeAIChat} aria-label="关闭并清空本次对话">×</button></div></header>

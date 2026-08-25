@@ -362,11 +362,18 @@ test("tasks can link to goals and be filtered by that execution path", async () 
   assert.match(source, /未关联目标/);
 });
 
-test("voice input is exposed in the MAP AI composer", async () => {
+test("voice input supports both the MAP AI composer and one-tap auto-send", async () => {
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.match(source, /开始语音输入/);
+  assert.match(source, /toggleVoiceInput\("quick-ai"\)/);
+  assert.match(source, /语音问 AI/);
+  assert.match(source, /await sendAIMessage\(result\.text, true\)/);
+  assert.match(source, /setAiOpen\(true\)/);
   assert.match(source, /\/api\/transcribe/);
   assert.match(source, /MAP 不保存录音/);
+  assert.match(styles, /\.ai-voice-launcher\.recording/);
+  assert.match(styles, /\.ai-voice-launcher\.transcribing/);
 });
 
 test("fitness module separates plans, exercise knowledge, strength history, and activity history", async () => {
