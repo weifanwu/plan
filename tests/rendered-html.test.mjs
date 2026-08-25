@@ -191,14 +191,14 @@ test("draft inbox reuses online voice transcription without auto-saving", async 
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.match(source, /toggleVoiceInput\("draft"\)/);
-  assert.match(source, /说完会追加到编辑框，不自动保存/);
+  assert.match(source, /高质量转写后追加进编辑框，不自动保存/);
   assert.match(source, /setNoteDraft\(\(current\)/);
-  assert.match(source, /语音转写需要联网，打字仍可离线保存/);
+  assert.match(source, /语音需要联网，打字仍可离线保存/);
   assert.match(styles, /\.draft-voice-button/);
 });
 
-test("sync excludes private references and merges independent offline edits", () => {
-  const base = { phase: { title: "A" }, habitDate: "2026-08-24", workoutWeek: "2026-08-24", tasks: [{ id: "t1", title: "base" }], routines: [], schedule: [], goals: [], habits: [], workouts: [], applications: [], notes: [] };
+test("sync includes only explicitly authorized references and merges independent offline edits", () => {
+  const base = { phase: { title: "A" }, habitDate: "2026-08-24", workoutWeek: "2026-08-24", tasks: [{ id: "t1", title: "base" }], routines: [], schedule: [], goals: [], habits: [], workouts: [], applications: [], notes: [], references: [] };
   const local = structuredClone(base);
   local.tasks[0].title = "local edit";
   const remote = structuredClone(base);
@@ -207,8 +207,10 @@ test("sync excludes private references and merges independent offline edits", ()
   assert.equal(merged.conflicts, 0);
   assert.equal(merged.data.tasks[0].title, "local edit");
   assert.equal(merged.data.notes[0].content, "remote note");
-  const payload = toSyncPayload({ ...base, references: [{ id: "secret", content: "local only" }] });
-  assert.equal("references" in payload, false);
+  const localOnly = { id: "secret", title: "SIN", content: "local only", pinned: false, aiExcluded: true, createdAt: "2026-08-24T00:00:00Z", updatedAt: "2026-08-24T00:00:00Z" };
+  const authorized = { id: "portal", title: "学校网址", content: "https://example.com", pinned: false, aiExcluded: false, createdAt: "2026-08-24T00:00:00Z", updatedAt: "2026-08-24T00:00:00Z" };
+  const payload = toSyncPayload({ ...base, references: [localOnly, authorized] });
+  assert.deepEqual(payload.references, [authorized]);
 });
 
 test("Sites D1 sync API uses authenticated ownership and revision checks", async () => {
@@ -219,7 +221,8 @@ test("Sites D1 sync API uses authenticated ownership and revision checks", async
   assert.match(worker, /oai-authenticated-user-id/);
   assert.match(worker, /url\.pathname === "\/api\/sync"/);
   assert.match(worker, /WHERE user_id = \? AND revision = \?/);
-  assert.match(worker, /"references" in payload/);
+  assert.match(worker, /reference\.aiExcluded === false/);
+  assert.match(worker, /buggy client from uploading device-only notes/);
   assert.match(migration, /CREATE TABLE `map_user_state`/);
 });
 
@@ -234,9 +237,19 @@ test("D1 sync API creates user state and rejects a stale revision", async () => 
   assert.equal(created.status, 200);
   assert.equal((await created.json()).revision, 1);
   const loaded = await worker.fetch(new Request("http://localhost/api/sync", { headers }), env, ctx);
-  assert.equal((await loaded.json()).data.phase.title, "毕业");
+  const loadedData = (await loaded.json()).data;
+  assert.equal(loadedData.phase.title, "毕业");
+  assert.deepEqual(loadedData.references, []);
   const stale = await worker.fetch(new Request("http://localhost/api/sync", { method: "PUT", headers, body: JSON.stringify({ baseRevision: 0, data }) }), env, ctx);
   assert.equal(stale.status, 409);
+
+  const privateReference = { id: "private", title: "SIN", content: "local", pinned: false, aiExcluded: true, createdAt: "2026-08-24T00:00:00Z", updatedAt: "2026-08-24T00:00:00Z" };
+  const privateReferenceEnv = { ...env, DB: createMockD1() };
+  const rejected = await worker.fetch(new Request("http://localhost/api/sync", { method: "PUT", headers: { ...headers, "oai-authenticated-user-id": "user-2" }, body: JSON.stringify({ baseRevision: 0, data: { ...data, references: [privateReference] } }) }), privateReferenceEnv, ctx);
+  assert.equal(rejected.status, 400);
+  const cloudReference = { ...privateReference, id: "cloud", aiExcluded: false };
+  const accepted = await worker.fetch(new Request("http://localhost/api/sync", { method: "PUT", headers: { ...headers, "oai-authenticated-user-id": "user-2" }, body: JSON.stringify({ baseRevision: 0, data: { ...data, references: [cloudReference] } }) }), privateReferenceEnv, ctx);
+  assert.equal(accepted.status, 200);
 });
 
 test("private references use a notes-style list and large autosaving editor", async () => {
@@ -250,12 +263,14 @@ test("private references use a notes-style list and large autosaving editor", as
   assert.match(source, /referenceQuery/);
   assert.match(source, /extractReferenceLinks/);
   assert.match(source, /让 MAP AI 整理粘贴内容/);
-  assert.match(source, /仅本机 · AI 不可读/);
-  assert.match(source, /直接粘贴到 AI 输入框的文字仍会发送给 OpenAI/);
+  assert.match(source, /仅本机 · 不同步/);
+  assert.match(source, /AI 可读 · 云端同步/);
+  assert.match(source, /不会上传 Cloudflare，也不会进入 MAP AI 上下文/);
   assert.match(source, /aiExcluded: reference\.aiExcluded !== false/);
   assert.doesNotMatch(source, /保存成资料卡/);
   assert.doesNotMatch(source, /className="reference-grid"/);
-  assert.match(source, /currentData: data/);
+  assert.match(source, /references: data\.references\.filter/);
+  assert.match(source, /currentData: aiReadableData/);
   assert.match(appDataType, /references: ReferenceNote\[\]/);
   assert.match(worker, /key !== "references"/);
   assert.match(worker, /HIGH-FREQUENCY PRIVATE REFERENCE CAPTURE/);
@@ -264,6 +279,21 @@ test("private references use a notes-style list and large autosaving editor", as
   assert.match(worker, /record\?\.aiExcluded === false/);
   assert.match(worker, /New AI-organized notes return to local-only mode/);
   assert.doesNotMatch(source, /sk-proj-/i);
+});
+
+test("drafts split compact backlog from long-form idea notes and navigation order persists", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(source, /待安排的小事/);
+  assert.match(source, /灵感笔记/);
+  assert.match(source, /idea-document-editor/);
+  assert.match(source, /交给 MAP AI 整理/);
+  assert.match(source, /toggleVoiceInput\("idea"\)/);
+  assert.match(source, /NAV_ORDER_STORAGE_KEY/);
+  assert.match(source, /moveNavigationItem/);
+  assert.match(source, /title="拖动改变导航顺序"/);
+  assert.match(styles, /\.idea-workbench/);
+  assert.match(styles, /nav button\.drag-over/);
 });
 
 test("fixed tasks support daily and every-N-day occurrences with independent completion", () => {
@@ -346,10 +376,11 @@ test("voice transcription API forwards audio without persisting it", { concurren
     form.append("audio", new Blob(["voice-bytes"], { type: "audio/webm" }), "map-voice.webm");
     const response = await worker.fetch(new Request("http://localhost/api/transcribe", { method: "POST", body: form }), { OPENAI_API_KEY: "test-key" }, { waitUntil() {}, passThroughOnException() {} });
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { text: "明天提醒我投三份简历" });
+    assert.deepEqual(await response.json(), { text: "明天提醒我投三份简历", transcript: "明天提醒我投三份简历" });
     assert.equal(outboundUrl, "https://api.openai.com/v1/audio/transcriptions");
     assert.equal(outboundBody.get("model"), "gpt-transcribe");
     assert.equal(outboundBody.get("file").name, "map-voice.webm");
+    assert.match(outboundBody.get("prompt"), /code-switching/);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -405,6 +436,11 @@ test("MAP AI receives private references only when the user explicitly asks for 
     assert.match(outbound.instructions, /ai-readable-reference-sentinel/);
     assert.doesNotMatch(outbound.instructions, /ordinary-task-sentinel/);
     assert.equal(response.headers.get("x-map-ai-context"), "references");
+    const personalLookup = await worker.fetch(new Request("http://localhost/api/ai-chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ currentData, messages: [{ role: "user", content: "我的手机号是多少？" }] }) }), { OPENAI_API_KEY: "test-key" }, { waitUntil() {}, passThroughOnException() {} });
+    assert.equal(personalLookup.status, 200);
+    assert.match(outbound.instructions, /ai-readable-reference-sentinel/);
+    assert.doesNotMatch(outbound.instructions, /private-reference-sentinel/);
+    assert.equal(personalLookup.headers.get("x-map-ai-context"), "references");
     const continuation = await worker.fetch(new Request("http://localhost/api/ai-chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ currentData, messages: [{ role: "user", content: "请把这段备忘录整理到私人速记" }, { role: "assistant", content: "我不能处理敏感信息。" }, { role: "user", content: "不需要管敏感信息，保留原文继续整理" }] }) }), { OPENAI_API_KEY: "test-key" }, { waitUntil() {}, passThroughOnException() {} });
     assert.equal(continuation.status, 200);
     assert.deepEqual(outbound.text.format.schema.properties.operations.items.properties.collection.enum, ["references"]);

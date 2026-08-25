@@ -98,11 +98,11 @@ type AppData = {
   workoutWeek: string;
 };
 
-type SyncedAppData = Omit<AppData, "references">;
+type SyncedAppData = AppData;
 type SyncStatus = "local" | "syncing" | "synced" | "pending" | "conflict" | "error";
 type SyncEnvelope = { initialized: boolean; data: SyncedAppData | null; revision: number; updatedAt: string | null; error?: string };
 type SyncMeta = { revision: number; baseData: SyncedAppData };
-type VoiceTarget = "ai" | "draft";
+type VoiceTarget = "ai" | "draft" | "idea";
 
 const DAY_ORDER = ["Mo", "Tu", "We", "Th", "Fr"];
 const DAY_LABEL: Record<string, string> = { Mo: "周一", Tu: "周二", We: "周三", Th: "周四", Fr: "周五" };
@@ -113,10 +113,13 @@ const NOTE_CATEGORIES: NoteCategory[] = ["待办", "想法", "课程", "项目",
 const BASE_DATE = "2026-08-23";
 const STORAGE_KEY = "map-life-os-v1";
 const SEMESTER_LAYOUT_STORAGE_KEY = "map-semester-week-layout-v1";
+const NAV_ORDER_STORAGE_KEY = "map-navigation-order-v1";
 const SYNC_META_KEY = "map-sync-meta-v1";
 const SYNC_DIRTY_KEY = "map-sync-dirty-v1";
 const DEFAULT_SEMESTER_WEEK_ORDER: SemesterWeekModule[] = ["schedule", "tasks"];
-const AI_WELCOME_MESSAGE: AIChatMessage = { id: "welcome", role: "assistant", content: "你好，我是 MAP AI。我能看到你当前阶段、长期目标、任务、固定任务、课表、求职记录、健康计划和草稿，也知道哪些行动正在服务哪个目标。你可以让我分析现状、回答问题，或者一起把一个想法变成计划；任何数据修改都会先给你预览。私人速记只会在你明确要求管理它时加入上下文。" };
+const DEFAULT_NAV_ORDER: View[] = ["today", "goals", "semester", "career", "planner", "notes", "vault", "wellness"];
+const NAV_LABELS: Record<View, string> = { today: "今日指挥台", goals: "长期目标", semester: "阶段地图", career: "求职记录", planner: "任务计划", notes: "草稿箱", vault: "私人速记", wellness: "健康运动" };
+const AI_WELCOME_MESSAGE: AIChatMessage = { id: "welcome", role: "assistant", content: "你好，我是 MAP AI。我能看到你当前阶段、长期目标、任务、固定任务、课表、求职记录、健康计划和草稿，也知道哪些行动正在服务哪个目标。你可以让我分析现状、回答问题，或者一起把一个想法变成计划；任何数据修改都会先给你预览。私人速记只有在你明确开启“AI 可读 · 云端同步”并要求管理它时才会加入上下文。" };
 const LEGACY_TASK_GOALS: Record<string, string> = { stephnie: "graduate", leetcode: "career", fees: "graduate", applications: "career", pte: "graduate", irene: "graduate" };
 
 function getTorontoToday() {
@@ -207,6 +210,26 @@ function normalizeReferences(references: ReferenceNote[] = []) {
     const now = new Date().toISOString();
     return [{ id: reference.id, title: typeof reference.title === "string" && reference.title.trim() ? reference.title : referenceTitleFromContent(reference.content), content: reference.content, pinned: Boolean(reference.pinned), aiExcluded: reference.aiExcluded !== false, createdAt: typeof reference.createdAt === "string" ? reference.createdAt : now, updatedAt: typeof reference.updatedAt === "string" ? reference.updatedAt : now }];
   });
+}
+
+function normalizeNavOrder(value: unknown) {
+  if (!Array.isArray(value)) return DEFAULT_NAV_ORDER;
+  const valid = value.filter((item): item is View => typeof item === "string" && DEFAULT_NAV_ORDER.includes(item as View));
+  return [...new Set([...valid, ...DEFAULT_NAV_ORDER])];
+}
+
+function mergeDeviceAndCloudReferences(deviceReferences: ReferenceNote[], cloudReferences: ReferenceNote[]) {
+  const cloudById = new Map(normalizeReferences(cloudReferences).filter((reference) => reference.aiExcluded === false).map((reference) => [reference.id, reference]));
+  const result: ReferenceNote[] = [];
+  const seen = new Set<string>();
+  for (const reference of normalizeReferences(deviceReferences)) {
+    // A local-only record always wins over a cloud record with the same id.
+    // Opted-in records are refreshed from the merged cloud payload.
+    const next = reference.aiExcluded ? reference : cloudById.get(reference.id);
+    if (next) { result.push(next); seen.add(next.id); }
+  }
+  for (const reference of cloudById.values()) if (!seen.has(reference.id)) result.push(reference);
+  return result;
 }
 
 const initialData: AppData = {
@@ -451,6 +474,9 @@ export default function Home() {
   const [noteCategory, setNoteCategory] = useState<NoteCategory>("待办");
   const [noteFilter, setNoteFilter] = useState<"全部" | NoteCategory>("全部");
   const [noteQuery, setNoteQuery] = useState("");
+  const [notesMode, setNotesMode] = useState<"backlog" | "ideas">("backlog");
+  const [ideaQuery, setIdeaQuery] = useState("");
+  const [ideaEditor, setIdeaEditor] = useState<Note | null>(null);
   const [referenceQuery, setReferenceQuery] = useState("");
   const [referenceEditor, setReferenceEditor] = useState<ReferenceNote | null>(null);
   const [referenceCopiedId, setReferenceCopiedId] = useState<string | null>(null);
@@ -466,6 +492,7 @@ export default function Home() {
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const [voiceTarget, setVoiceTarget] = useState<VoiceTarget | null>(null);
   const [draftVoiceError, setDraftVoiceError] = useState("");
+  const [ideaVoiceError, setIdeaVoiceError] = useState("");
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("local");
   const [syncMessage, setSyncMessage] = useState("仅保存在这台设备");
   const [filter, setFilter] = useState<"全部" | TaskCategory>("全部");
@@ -476,6 +503,9 @@ export default function Home() {
   const [semesterWeekOrder, setSemesterWeekOrder] = useState<SemesterWeekModule[]>(DEFAULT_SEMESTER_WEEK_ORDER);
   const [draggedSemesterModule, setDraggedSemesterModule] = useState<SemesterWeekModule | null>(null);
   const [dragOverSemesterModule, setDragOverSemesterModule] = useState<SemesterWeekModule | null>(null);
+  const [navOrder, setNavOrder] = useState<View[]>(DEFAULT_NAV_ORDER);
+  const [draggedNavView, setDraggedNavView] = useState<View | null>(null);
+  const [dragOverNavView, setDragOverNavView] = useState<View | null>(null);
   const [calendarCursor, setCalendarCursor] = useState(() => getTorontoToday().slice(0, 7));
   const [mobileCalendarDate, setMobileCalendarDate] = useState(() => getTorontoToday());
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -491,6 +521,7 @@ export default function Home() {
   const [today, setToday] = useState(() => getTorontoToday());
   const importRef = useRef<HTMLInputElement>(null);
   const noteDraftRef = useRef<HTMLTextAreaElement>(null);
+  const ideaDocumentRef = useRef<HTMLTextAreaElement>(null);
   const referenceDocumentRef = useRef<HTMLTextAreaElement>(null);
   const aiConversationRef = useRef<HTMLDivElement>(null);
   const aiInputRef = useRef<HTMLTextAreaElement>(null);
@@ -523,16 +554,20 @@ export default function Home() {
   const phaseWeeks = Math.max(1, Math.ceil((phaseDuration + 1) / 7));
   const aiVoiceState: VoiceState = voiceTarget === "ai" ? voiceState : "idle";
   const draftVoiceState: VoiceState = voiceTarget === "draft" ? voiceState : "idle";
+  const ideaVoiceState: VoiceState = voiceTarget === "idea" ? voiceState : "idle";
 
   useEffect(() => {
     const saved = window.localStorage.getItem(STORAGE_KEY);
     const savedSemesterLayout = window.localStorage.getItem(SEMESTER_LAYOUT_STORAGE_KEY);
+    const savedNavOrder = window.localStorage.getItem(NAV_ORDER_STORAGE_KEY);
     const savedSyncMeta = window.localStorage.getItem(SYNC_META_KEY);
     let parsed: Partial<AppData> = {};
     let parsedSemesterLayout: unknown = null;
+    let parsedNavOrder: unknown = null;
     if (saved) try { parsed = JSON.parse(saved) as Partial<AppData>; } catch { /* keep safe defaults */ }
     hadLocalDataRef.current = Boolean(saved);
     if (savedSemesterLayout) try { parsedSemesterLayout = JSON.parse(savedSemesterLayout); } catch { /* keep the default module order */ }
+    if (savedNavOrder) try { parsedNavOrder = JSON.parse(savedNavOrder); } catch { /* keep the default navigation order */ }
     if (savedSyncMeta) try {
       const meta = JSON.parse(savedSyncMeta) as SyncMeta;
       if (Number.isInteger(meta.revision) && meta.revision >= 0 && meta.baseData) {
@@ -546,6 +581,7 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setToday(currentDay);
     setSemesterWeekOrder(normalizeSemesterWeekOrder(parsedSemesterLayout));
+    setNavOrder(normalizeNavOrder(parsedNavOrder));
     dataRef.current = hydratedData;
     setData(hydratedData);
     syncReadyRef.current = true;
@@ -577,10 +613,15 @@ export default function Home() {
   }, [ready, semesterWeekOrder]);
 
   useEffect(() => {
-    if (view === "notes") window.requestAnimationFrame(() => noteDraftRef.current?.focus());
+    if (ready) window.localStorage.setItem(NAV_ORDER_STORAGE_KEY, JSON.stringify(navOrder));
+  }, [ready, navOrder]);
+
+  useEffect(() => {
+    if (view === "notes" && notesMode === "backlog") window.requestAnimationFrame(() => noteDraftRef.current?.focus());
+    if (view === "notes" && notesMode === "ideas") window.requestAnimationFrame(() => ideaDocumentRef.current?.focus());
     if (view === "vault") window.requestAnimationFrame(() => referenceDocumentRef.current?.focus());
     window.scrollTo({ top: 0, behavior: "auto" });
-  }, [view]);
+  }, [view, notesMode]);
 
   useEffect(() => {
     if (!aiOpen) return;
@@ -723,9 +764,14 @@ export default function Home() {
   })), [data.goals, data.tasks]);
   const visibleNotes = useMemo(() => {
     const query = noteQuery.trim().toLocaleLowerCase();
-    return data.notes.filter((note) => (noteFilter === "全部" || note.category === noteFilter) && (!query || note.content.toLocaleLowerCase().includes(query) || note.category.toLocaleLowerCase().includes(query))).slice().sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt));
+    return data.notes.filter((note) => note.category !== "想法" && (noteFilter === "全部" || note.category === noteFilter) && (!query || note.content.toLocaleLowerCase().includes(query) || note.category.toLocaleLowerCase().includes(query))).slice().sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt));
   }, [data.notes, noteFilter, noteQuery]);
-  const backlogCount = data.notes.filter((note) => note.category === "待办").length;
+  const backlogNotes = useMemo(() => data.notes.filter((note) => note.category !== "想法"), [data.notes]);
+  const ideaNotes = useMemo(() => {
+    const query = ideaQuery.trim().toLocaleLowerCase();
+    return data.notes.filter((note) => note.category === "想法" && (!query || note.content.toLocaleLowerCase().includes(query))).slice().sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt));
+  }, [data.notes, ideaQuery]);
+  const backlogCount = backlogNotes.length;
   const visibleReferences = useMemo(() => {
     const query = referenceQuery.trim().toLocaleLowerCase();
     return data.references.filter((reference) => !query || reference.title.toLocaleLowerCase().includes(query) || reference.content.toLocaleLowerCase().includes(query)).slice().sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updatedAt.localeCompare(left.updatedAt));
@@ -785,7 +831,7 @@ export default function Home() {
 
   function openNotes() {
     setView("notes");
-    window.requestAnimationFrame(() => noteDraftRef.current?.focus());
+    window.requestAnimationFrame(() => notesMode === "ideas" ? ideaDocumentRef.current?.focus() : noteDraftRef.current?.focus());
   }
 
   function saveQuickNote() {
@@ -795,6 +841,38 @@ export default function Home() {
     setData((current) => ({ ...current, notes: [{ id: uid(), content, category: noteCategory, pinned: false, createdAt: now, updatedAt: now }, ...current.notes] }));
     setNoteDraft("");
     window.requestAnimationFrame(() => noteDraftRef.current?.focus());
+  }
+
+  function openIdeaNotes() {
+    setNotesMode("ideas");
+    if (!ideaEditor && ideaNotes[0] && !window.matchMedia("(max-width: 760px)").matches) setIdeaEditor(ideaNotes[0]);
+    window.requestAnimationFrame(() => ideaDocumentRef.current?.focus());
+  }
+
+  function createIdeaNote() {
+    const now = new Date().toISOString();
+    const note: Note = { id: uid(), content: "", category: "想法", pinned: false, createdAt: now, updatedAt: now };
+    setData((current) => ({ ...current, notes: [note, ...current.notes] }));
+    setIdeaEditor(note);
+    setNotesMode("ideas");
+    window.requestAnimationFrame(() => ideaDocumentRef.current?.focus());
+  }
+
+  function openIdeaOrganizerAI(note: Note) {
+    setAiOpen(true);
+    setAiText(`请帮我整理灵感笔记「${noteTitle(note)}」。保留原意和具体信息，改善结构与表达；修改前先给我预览。`);
+    window.requestAnimationFrame(() => aiInputRef.current?.focus());
+  }
+
+  function updateIdeaNote(note: Note, patch: Partial<Note>) {
+    const next: Note = { ...note, ...patch, category: "想法", updatedAt: new Date().toISOString() };
+    setIdeaEditor(next);
+    setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? next : item) }));
+  }
+
+  function deleteIdeaNote(note: Note) {
+    removeRecord("notes", note.id, `已删除灵感「${noteTitle(note)}」`);
+    setIdeaEditor(null);
   }
 
   function openVault() {
@@ -980,6 +1058,23 @@ export default function Home() {
     });
   }
 
+  function moveNavigationItem(source: View, target: View) {
+    if (source === target) return;
+    setNavOrder((current) => {
+      const targetIndex = current.indexOf(target);
+      if (targetIndex < 0 || !current.includes(source)) return current;
+      const next = current.filter((item) => item !== source);
+      next.splice(targetIndex, 0, source);
+      return next;
+    });
+  }
+
+  function openNavigationView(target: View) {
+    if (target === "notes") openNotes();
+    else if (target === "vault") openVault();
+    else setView(target);
+  }
+
   function deleteGoal(id: string) {
     const goal = data.goals.find((item) => item.id === id);
     if (!goal) return;
@@ -1098,7 +1193,8 @@ export default function Home() {
       }
 
       rememberSync(server.revision, server.data || desired);
-      const nextData = hydrateAppData({ ...nextPayload, references: dataRef.current.references }, getTorontoToday(), dataRef.current.references);
+      const mergedReferences = mergeDeviceAndCloudReferences(dataRef.current.references, nextPayload.references);
+      const nextData = hydrateAppData({ ...nextPayload, references: mergedReferences }, getTorontoToday(), mergedReferences);
       if (!syncPayloadEquals(toSyncPayload(dataRef.current), nextPayload)) {
         skipNextSyncRef.current = !hasFollowUpChanges;
         dataRef.current = nextData;
@@ -1144,7 +1240,7 @@ export default function Home() {
       return;
     }
     if (voiceState !== "idle" || (target === "ai" && aiLoading) || !online) return;
-    const showVoiceError = (message: string) => target === "ai" ? setAiError(message) : setDraftVoiceError(message);
+    const showVoiceError = (message: string) => target === "ai" ? setAiError(message) : target === "idea" ? setIdeaVoiceError(message) : setDraftVoiceError(message);
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       showVoiceError("这个浏览器不支持直接录音，请使用最新版 Chrome 或 Safari。");
       return;
@@ -1153,6 +1249,7 @@ export default function Home() {
     const session = ++voiceSessionRef.current;
     setVoiceTarget(target);
     if (target === "ai") setAiError("");
+    else if (target === "idea") setIdeaVoiceError("");
     else setDraftVoiceError("");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -1182,13 +1279,23 @@ export default function Home() {
         try {
           const form = new FormData();
           form.append("audio", audio, recordedType.includes("mp4") ? "map-voice.mp4" : "map-voice.webm");
+          form.append("mode", target === "idea" ? "idea" : target === "draft" ? "backlog" : "plain");
           const response = await fetch("/api/transcribe", { method: "POST", body: form, signal: controller.signal });
-          const result = await response.json() as { text?: string; error?: string };
+          const result = await response.json() as { text?: string; error?: string; warning?: string; polished?: boolean };
           if (!response.ok || !result.text) throw new Error(result.error || "语音暂时无法转写。");
           if (session !== voiceSessionRef.current) return;
           if (target === "draft") {
             setNoteDraft((current) => `${current}${current.trim() ? "\n" : ""}${result.text}`);
+            if (result.warning) setDraftVoiceError(result.warning);
             window.requestAnimationFrame(() => noteDraftRef.current?.focus());
+          } else if (target === "idea") {
+            const targetId = ideaEditor?.id;
+            if (targetId) {
+              setData((current) => ({ ...current, notes: current.notes.map((note) => note.id === targetId ? { ...note, content: `${note.content}${note.content.trim() ? "\n\n" : ""}${result.text}`, updatedAt: new Date().toISOString() } : note) }));
+              setIdeaEditor((current) => current?.id === targetId ? { ...current, content: `${current.content}${current.content.trim() ? "\n\n" : ""}${result.text}`, updatedAt: new Date().toISOString() } : current);
+              if (result.warning) setIdeaVoiceError(result.warning);
+              window.requestAnimationFrame(() => ideaDocumentRef.current?.focus());
+            }
           } else {
             setAiText((current) => `${current}${current.trim() ? "\n" : ""}${result.text}`);
             window.requestAnimationFrame(() => aiInputRef.current?.focus());
@@ -1255,7 +1362,8 @@ export default function Home() {
     setAiError("");
     setAiPreview(null);
     try {
-      const response = await fetch("/api/ai-chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: nextMessages.map(({ role, content: messageContent }) => ({ role, content: messageContent })), currentData: data, today, model: aiModel }) });
+      const aiReadableData = { ...data, references: data.references.filter((reference) => reference.aiExcluded === false) };
+      const response = await fetch("/api/ai-chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: nextMessages.map(({ role, content: messageContent }) => ({ role, content: messageContent })), currentData: aiReadableData, today, model: aiModel }) });
       const result = await response.json() as AIChatResponse;
       if (!response.ok) throw new Error(result.error || "MAP AI 暂时无法回复。");
       if (typeof result.reply !== "string" || !Array.isArray(result.operations)) throw new Error("AI 返回的数据格式不完整，请再试一次。");
@@ -1303,14 +1411,19 @@ export default function Home() {
         </button>
 
         <nav aria-label="主导航">
-          <NavButton active={view === "today"} label="今日指挥台" icon="01" onClick={() => setView("today")} />
-          <NavButton active={view === "goals"} label="长期目标" icon="02" onClick={() => setView("goals")} />
-          <NavButton active={view === "semester"} label="阶段地图" icon="03" onClick={() => setView("semester")} />
-          <NavButton active={view === "career"} label="求职记录" icon="04" onClick={() => setView("career")} />
-          <NavButton active={view === "planner"} label="任务计划" icon="05" onClick={() => setView("planner")} />
-          <NavButton active={view === "notes"} label="草稿箱" icon="06" onClick={openNotes} />
-          <NavButton active={view === "vault"} label="私人速记" icon="07" onClick={openVault} />
-          <NavButton active={view === "wellness"} label="健康运动" icon="08" onClick={() => setView("wellness")} />
+          {navOrder.map((item, index) => <NavButton
+            key={item}
+            active={view === item}
+            label={NAV_LABELS[item]}
+            icon={String(index + 1).padStart(2, "0")}
+            dragging={draggedNavView === item}
+            dragOver={dragOverNavView === item}
+            onClick={() => openNavigationView(item)}
+            onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", item); setDraggedNavView(item); }}
+            onDragOver={(event) => { if (!draggedNavView) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverNavView(item); }}
+            onDrop={(event) => { event.preventDefault(); if (draggedNavView) moveNavigationItem(draggedNavView, item); setDraggedNavView(null); setDragOverNavView(null); }}
+            onDragEnd={() => { setDraggedNavView(null); setDragOverNavView(null); }}
+          />)}
         </nav>
 
         <div className="sidebar-spacer" />
@@ -1327,7 +1440,7 @@ export default function Home() {
           <input ref={importRef} type="file" accept="application/json" hidden onChange={(event) => { importData(event.target.files?.[0]); event.currentTarget.value = ""; }} />
         </div>
         {!standalone && <button className="install-app-button" onClick={installMapApp}><span>↓</span><div><strong>安装 MAP App</strong><small>独立窗口 · 支持离线</small></div></button>}
-        <button className={`sync-note ${syncStatus}`} onClick={() => void synchronizeData()} disabled={!online || syncStatus === "syncing"} title={syncMessage}><span /><div><strong>{syncMessage}</strong><small>私人速记仅保存在本机</small></div></button>
+        <button className={`sync-note ${syncStatus}`} onClick={() => void synchronizeData()} disabled={!online || syncStatus === "syncing"} title={syncMessage}><span /><div><strong>{syncMessage}</strong><small>只同步已授权的私人速记</small></div></button>
       </aside>
 
       <section className="workspace">
@@ -1623,31 +1736,54 @@ export default function Home() {
 
         {view === "notes" && (
           <div className="page-content notes-page">
-            <section className="draft-workbench">
+            <section className="notes-mode-bar" aria-label="草稿箱模式">
+              <div><button className={notesMode === "backlog" ? "active" : ""} onClick={() => { setNotesMode("backlog"); setNoteFilter("全部"); }}>待安排的小事 <span>{backlogCount}</span></button><button className={notesMode === "ideas" ? "active" : ""} onClick={openIdeaNotes}>灵感笔记 <span>{ideaNotes.length}</span></button></div>
+              <p>{notesMode === "backlog" ? "短小、未排期，准备好后直接变成任务。" : "像备忘录一样自由写长内容；第一行自动成为标题。"}</p>
+            </section>
+
+            {notesMode === "backlog" ? <section className="draft-workbench">
               <aside className="draft-capture">
-                <div className="draft-capture-head"><div><p className="section-kicker">QUICK INBOX</p><h2>先记下来，<br />不用现在安排。</h2></div><span><strong>{backlogCount}</strong> 个待办草稿</span></div>
-                <p>未排期任务、突然想到的事情和不成熟的想法都先放这里。准备执行时，再把它安排成正式任务。</p>
+                <div className="draft-capture-head"><div><p className="section-kicker">QUICK BACKLOG</p><h2>先记小事，<br />暂时不排期。</h2></div><span><strong>{backlogCount}</strong> 条待安排</span></div>
+                <p>适合要买的东西、待处理的小事和还没决定哪天做的 backlog。长篇想法请放进“灵感笔记”。</p>
                 <div className={`draft-input-shell ${draftVoiceState}`}>
-                  <textarea ref={noteDraftRef} value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); saveQuickNote(); } }} placeholder={draftVoiceState === "recording" ? "正在听…说完后再点一次停止" : draftVoiceState === "transcribing" ? "正在把语音变成文字…" : "写一个待办或想法……\n\n例如：研究三家 AI Platform 公司，之后再决定哪天开始。"} aria-label="快速记录草稿" />
+                  <textarea ref={noteDraftRef} value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); saveQuickNote(); } }} placeholder={draftVoiceState === "recording" ? "正在听…说完后再点一次停止" : draftVoiceState === "transcribing" ? "正在转写并整理成清晰的小事…" : "例如：买眼药水；之后再决定哪天去。"} aria-label="快速记录待安排的小事" />
                   <button type="button" className={`draft-voice-button ${draftVoiceState}`} onClick={() => void toggleVoiceInput("draft")} disabled={!online || draftVoiceState === "transcribing" || (voiceState !== "idle" && voiceTarget !== "draft")} aria-label={draftVoiceState === "recording" ? "停止草稿录音" : draftVoiceState === "transcribing" ? "正在转写草稿语音" : "用语音记录草稿"}><span>{draftVoiceState === "recording" ? "■" : draftVoiceState === "transcribing" ? "…" : "麦"}</span>{draftVoiceState === "recording" ? "停止" : draftVoiceState === "transcribing" ? "转写中" : "语音记录"}</button>
                 </div>
-                <div className="draft-voice-meta"><span>{online ? "说完会追加到编辑框，不自动保存" : "语音转写需要联网，打字仍可离线保存"}</span><strong>最长 2 分钟</strong></div>
-                {draftVoiceError && <p className="draft-voice-error" role="alert">{draftVoiceError}</p>}
-                <div className="draft-type-label">这是什么？</div>
-                <div className="note-category-switch" role="group" aria-label="草稿分类">{NOTE_CATEGORIES.map((category) => <button key={category} className={noteCategory === category ? "active" : ""} onClick={() => setNoteCategory(category)}>{category}</button>)}</div>
-                <div className="draft-save"><span>⌘ / Ctrl + Enter</span><button onClick={saveQuickNote} disabled={!noteDraft.trim()}>放进草稿箱 →</button></div>
+                <div className="draft-voice-meta"><span>{online ? "高质量转写后追加进编辑框，不自动保存" : "语音需要联网，打字仍可离线保存"}</span><strong>最长 2 分钟</strong></div>
+                {draftVoiceError && <p className="draft-voice-error" role="status">{draftVoiceError}</p>}
+                <div className="draft-type-label">归到哪里？</div>
+                <div className="note-category-switch" role="group" aria-label="草稿分类">{(["待办", "课程", "项目", "求职", "生活"] as NoteCategory[]).map((category) => <button key={category} className={noteCategory === category ? "active" : ""} onClick={() => setNoteCategory(category)}>{category}</button>)}</div>
+                <div className="draft-save"><span>⌘ / Ctrl + Enter</span><button onClick={saveQuickNote} disabled={!noteDraft.trim()}>放进待安排 →</button></div>
               </aside>
 
               <section className="draft-inbox">
-                <header><div><p className="section-kicker">DRAFT INBOX</p><h2>草稿箱</h2><span>{data.notes.length} 条草稿 · 置顶优先 · 准备好后可安排成任务</span></div><label className="note-search"><span>⌕</span><input value={noteQuery} onChange={(event) => setNoteQuery(event.target.value)} placeholder="搜索草稿" /></label></header>
-                <div className="draft-filter-row" role="group" aria-label="筛选草稿">{(["全部", ...NOTE_CATEGORIES] as const).map((category) => <button key={category} className={noteFilter === category ? "active" : ""} onClick={() => setNoteFilter(category)}>{category}<span>{category === "全部" ? data.notes.length : data.notes.filter((note) => note.category === category).length}</span></button>)}</div>
+                <header><div><p className="section-kicker">UNSCHEDULED</p><h2>待安排</h2><span>{backlogCount} 条 · 置顶优先 · 准备好后可安排成任务</span></div><label className="note-search"><span>⌕</span><input value={noteQuery} onChange={(event) => setNoteQuery(event.target.value)} placeholder="搜索待安排" /></label></header>
+                <div className="draft-filter-row" role="group" aria-label="筛选草稿">{(["全部", "待办", "课程", "项目", "求职", "生活"] as const).map((category) => <button key={category} className={noteFilter === category ? "active" : ""} onClick={() => setNoteFilter(category)}>{category}<span>{category === "全部" ? backlogCount : backlogNotes.filter((note) => note.category === category).length}</span></button>)}</div>
                 {visibleNotes.length > 0 ? <div className="draft-list">{visibleNotes.map((note) => <article className={`draft-row note-${note.category} ${note.pinned ? "pinned" : ""}`} key={note.id}>
                   <button className="draft-pin" onClick={() => setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? { ...item, pinned: !item.pinned } : item) }))} aria-label={note.pinned ? "取消置顶" : "置顶草稿"} title={note.pinned ? "取消置顶" : "置顶"}>{note.pinned ? "●" : "○"}</button>
                   <button className="draft-row-body" onClick={() => setNoteEditor(note)}><span className="draft-category">{note.category}</span><div><h3>{noteTitle(note)}</h3>{notePreview(note) !== noteTitle(note) && <p>{notePreview(note)}</p>}</div><time>{formatNoteTime(note.updatedAt)}</time></button>
                   <div className="draft-row-actions"><button className="draft-schedule" onClick={() => promoteNoteToTask(note)}>安排成任务</button><button className="draft-delete" onClick={() => removeRecord("notes", note.id, `已删除草稿「${noteTitle(note)}」`)} aria-label={`删除草稿：${noteTitle(note)}`} title="删除草稿">×</button></div>
-                </article>)}</div> : <div className="notes-empty"><span>{noteQuery || noteFilter !== "全部" ? "没有符合条件的草稿" : "草稿箱还是空的"}</span><p>{noteQuery || noteFilter !== "全部" ? "换一个筛选条件或关键词。" : "把暂时不想排期的任务和想法先写在左边。"}</p></div>}
+                </article>)}</div> : <div className="notes-empty"><span>{noteQuery || noteFilter !== "全部" ? "没有符合条件的小事" : "待安排还是空的"}</span><p>{noteQuery || noteFilter !== "全部" ? "换一个筛选条件或关键词。" : "把暂时不想排期的小事写在左边。"}</p></div>}
               </section>
-            </section>
+            </section> : <section className={`idea-workbench ${ideaEditor ? "editing" : "browsing"}`}>
+              <aside className="idea-sidebar panel">
+                <header><div><p className="section-kicker">IDEA NOTEBOOK</p><h2>灵感笔记</h2><span>{ideaNotes.length} 篇 · 自动保存</span></div><button className="idea-new" onClick={createIdeaNote}>＋ 新笔记</button></header>
+                <label className="idea-search"><span>⌕</span><input value={ideaQuery} onChange={(event) => setIdeaQuery(event.target.value)} placeholder="搜索灵感" /></label>
+                <div className="idea-note-list">{ideaNotes.map((note) => <button className={`idea-note-row ${note.pinned ? "pinned" : ""} ${ideaEditor?.id === note.id ? "active" : ""}`} key={note.id} onClick={() => { setIdeaEditor(note); window.requestAnimationFrame(() => ideaDocumentRef.current?.focus()); }}><span>{note.pinned ? "●" : "✎"}</span><div><strong>{noteTitle(note)}</strong><p>{notePreview(note) || "空白灵感"}</p></div><time>{formatNoteTime(note.updatedAt)}</time></button>)}</div>
+                {ideaNotes.length === 0 && <div className="idea-list-empty">{ideaQuery ? "没有找到相关灵感" : "突然有想法时，点“新笔记”就直接开始写"}</div>}
+                <div className="idea-sidebar-tip"><strong>两种入口</strong><span>打字可完全离线；语音会联网做高质量转写。需要整理时，再交给 MAP AI 并确认预览。</span></div>
+              </aside>
+
+              <section className="idea-document panel">
+                {ideaEditor ? <>
+                  <header className="idea-document-toolbar"><div><button className="mobile-idea-back" onClick={() => setIdeaEditor(null)}>← 返回灵感列表</button><span>{ideaEditor.pinned ? "置顶灵感" : "自由笔记"}</span><time>自动保存 · {formatNoteTime(ideaEditor.updatedAt)}</time></div><div><button className="idea-ai-organize" onClick={() => openIdeaOrganizerAI(ideaEditor)} disabled={!online}>✦ 交给 MAP AI 整理</button><button className={`idea-voice-action ${ideaVoiceState}`} onClick={() => void toggleVoiceInput("idea")} disabled={!online || ideaVoiceState === "transcribing" || (voiceState !== "idle" && voiceTarget !== "idea")}>{ideaVoiceState === "recording" ? "■ 停止录音" : ideaVoiceState === "transcribing" ? "… 转写中" : "◉ 语音转文字"}</button><button onClick={() => updateIdeaNote(ideaEditor, { pinned: !ideaEditor.pinned })}>{ideaEditor.pinned ? "取消置顶" : "置顶"}</button><button className="idea-delete" onClick={() => deleteIdeaNote(ideaEditor)}>删除</button></div></header>
+                  {ideaVoiceError && <p className="idea-voice-error" role="status">{ideaVoiceError}</p>}
+                  <div className="idea-document-editor">
+                    <textarea ref={ideaDocumentRef} value={ideaEditor.content} onChange={(event) => updateIdeaNote(ideaEditor, { content: event.target.value })} placeholder={ideaVoiceState === "recording" ? "正在听…说完后再点一次停止。" : ideaVoiceState === "transcribing" ? "正在做高质量语音转写…" : "第一行写标题，然后直接展开你的想法……\n\n你可以写一段推理、项目构想、观察或任何还不需要变成任务的内容。"} aria-label="灵感笔记内容" />
+                  </div>
+                </> : <div className="idea-document-empty"><span>✦</span><h2>记录完整想法，<br />不用把它压成一张小卡片。</h2><p>这里是自由文本编辑器。第一行自动成为标题；语音负责准确转成文字，需要改善结构时再交给 MAP AI。</p><button className="primary-button" onClick={createIdeaNote}>＋ 写第一篇灵感</button></div>}
+              </section>
+            </section>}
           </div>
         )}
 
@@ -1657,15 +1793,16 @@ export default function Home() {
               <aside className="reference-sidebar panel">
                 <header><div><p className="section-kicker">PERSONAL NOTES</p><h2>私人速记</h2><span>{data.references.length} 条 · 自动保存</span></div><button className="reference-new" onClick={createReference}>＋ 新建</button></header>
                 <label className="reference-search"><span>⌕</span><input value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} placeholder="搜索全部笔记" /></label>
-                <div className="reference-note-list">{visibleReferences.map((reference) => <button className={`reference-note-row ${reference.pinned ? "pinned" : ""} ${referenceEditor?.id === reference.id ? "active" : ""}`} key={reference.id} onClick={() => { setReferenceEditor(reference); window.requestAnimationFrame(() => referenceDocumentRef.current?.focus()); }}><span title={reference.aiExcluded ? "仅本机，AI 不可读" : "已允许 MAP AI 读取"}>{reference.pinned ? "●" : reference.aiExcluded ? "⌁" : "✦"}</span><div><strong>{reference.title || "无标题速记"}</strong><p>{referencePreview(reference) || "空白笔记"}</p></div><time>{formatNoteTime(reference.updatedAt)}</time></button>)}</div>
+                <div className="reference-note-list">{visibleReferences.map((reference) => <button className={`reference-note-row ${reference.pinned ? "pinned" : ""} ${referenceEditor?.id === reference.id ? "active" : ""}`} key={reference.id} onClick={() => { setReferenceEditor(reference); window.requestAnimationFrame(() => referenceDocumentRef.current?.focus()); }}><span title={reference.aiExcluded ? "仅本机：不进入 Cloudflare，AI 不可读" : "已允许 MAP AI 读取并同步到 Cloudflare"}>{reference.pinned ? "●" : reference.aiExcluded ? "⌁" : "✦"}</span><div><strong>{reference.title || "无标题速记"}</strong><p>{referencePreview(reference) || "空白笔记"}</p></div><time>{formatNoteTime(reference.updatedAt)}</time></button>)}</div>
                 {visibleReferences.length === 0 && <div className="reference-list-empty">{referenceQuery ? "没有找到相关笔记" : "点击“新建”即可开始记录"}</div>}
                 <button className="reference-ai-organize" onClick={openReferenceOrganizerAI}><span>✦</span><div><strong>让 MAP AI 整理粘贴内容</strong><small>只粘贴你愿意发送的内容；SIN 等可在右侧手动保存</small></div></button>
-                <p className="reference-privacy-note">新笔记默认仅本机，MAP AI 不可读取。直接粘贴到 AI 输入框的文字仍会发送给 OpenAI。</p>
+                <p className="reference-privacy-note">新笔记默认仅本机，不进入 Cloudflare，也不会提供给 AI。SSN / SIN / 密码等建议保持此状态。</p>
               </aside>
 
               <section className="reference-document panel">
                 {referenceEditor ? <>
-                  <header className="reference-document-toolbar"><div><button className="mobile-reference-back" onClick={() => setReferenceEditor(null)}>← 返回笔记列表</button><span>{referenceEditor.pinned ? "置顶笔记" : "私人笔记"}</span><time>自动保存 · {formatNoteTime(referenceEditor.updatedAt)}</time></div><div><button className={`reference-ai-access ${referenceEditor.aiExcluded ? "local-only" : "ai-readable"}`} onClick={() => updateReference(referenceEditor, { aiExcluded: !referenceEditor.aiExcluded })}>{referenceEditor.aiExcluded ? "仅本机 · AI 不可读" : "✦ MAP AI 可读取"}</button><button onClick={() => toggleReferencePin(referenceEditor)}>{referenceEditor.pinned ? "取消置顶" : "置顶"}</button><button className={referenceCopiedId === referenceEditor.id ? "copied" : ""} onClick={() => void copyReference(referenceEditor)}>{referenceCopiedId === referenceEditor.id ? "已复制" : "复制全文"}</button><button className="reference-delete" onClick={() => deleteReference(referenceEditor)}>删除</button></div></header>
+                  <header className="reference-document-toolbar"><div><button className="mobile-reference-back" onClick={() => setReferenceEditor(null)}>← 返回笔记列表</button><span>{referenceEditor.pinned ? "置顶笔记" : "私人笔记"}</span><time>自动保存 · {formatNoteTime(referenceEditor.updatedAt)}</time></div><div><button className={`reference-ai-access ${referenceEditor.aiExcluded ? "local-only" : "ai-readable"}`} onClick={() => updateReference(referenceEditor, { aiExcluded: !referenceEditor.aiExcluded })}>{referenceEditor.aiExcluded ? "仅本机 · 不同步" : "✦ AI 可读 · 云端同步"}</button><button onClick={() => toggleReferencePin(referenceEditor)}>{referenceEditor.pinned ? "取消置顶" : "置顶"}</button><button className={referenceCopiedId === referenceEditor.id ? "copied" : ""} onClick={() => void copyReference(referenceEditor)}>{referenceCopiedId === referenceEditor.id ? "已复制" : "复制全文"}</button><button className="reference-delete" onClick={() => deleteReference(referenceEditor)}>删除</button></div></header>
+                  <p className={`reference-cloud-policy ${referenceEditor.aiExcluded ? "local-only" : "cloud-enabled"}`}>{referenceEditor.aiExcluded ? "只存在当前设备：不会上传 Cloudflare，也不会进入 MAP AI 上下文。" : "已授权：这条笔记会同步到你的 Cloudflare 私有数据，并可在你明确要求时提供给 MAP AI。"}</p>
                   <div className="reference-document-editor">
                     <input className="reference-title-input" value={referenceEditor.title === "无标题速记" ? "" : referenceEditor.title} onChange={(event) => updateReference(referenceEditor, { title: event.target.value || "无标题速记" })} placeholder="无标题速记" aria-label="笔记标题" />
                     <textarea ref={referenceDocumentRef} value={referenceEditor.content} onChange={(event) => { const content = event.target.value; const titleWasAutomatic = referenceEditor.title === "无标题速记" || referenceEditor.title === referenceTitleFromContent(referenceEditor.content); const nextTitle = titleWasAutomatic ? referenceTitleFromContent(content) : referenceEditor.title; updateReference(referenceEditor, { content, title: content.trim() ? nextTitle : "无标题速记" }); }} placeholder={"直接开始输入或粘贴……\n\n像备忘录一样自由记录；每条笔记独立保存，所以不会挤成一整篇。"} aria-label="私人速记内容" spellCheck={false} />
@@ -1751,7 +1888,7 @@ export default function Home() {
           <button type="button" className={`voice-button ${aiVoiceState}`} onClick={() => void toggleVoiceInput("ai")} disabled={aiLoading || aiVoiceState === "transcribing" || voiceTarget === "draft" || !online} aria-label={aiVoiceState === "recording" ? "停止录音" : aiVoiceState === "transcribing" ? "正在转写语音" : "开始语音输入"}>{aiVoiceState === "recording" ? "■" : aiVoiceState === "transcribing" ? "…" : "麦"}</button>
           <button type="submit" className="ai-send-button" disabled={!aiText.trim() || aiLoading || aiVoiceState !== "idle" || voiceTarget === "draft" || !online} aria-label="发送消息">↑</button>
         </form>
-        <p className="ai-privacy">普通分析不会附带私人速记；只有你明确要求管理私人速记时才发送相关资料。语音会发送至 OpenAI 转写，MAP 不保存录音。</p>
+        <p className="ai-privacy">普通分析不会附带私人速记；只有已开启“AI 可读 · 云端同步”的资料，才可能在你明确要求管理私人速记时发送给 OpenAI。语音会发送至 OpenAI 转写，MAP 不保存录音。</p>
       </aside>}
 
       {taskEditor && <TaskModal value={taskEditor} goals={data.goals} prefill={taskPrefill || undefined} sourceDraft={Boolean(promotingNoteId)} defaultDate={newTaskDate || undefined} defaultGoalId={newTaskGoalId || undefined} onClose={closeTaskEditor} onSave={saveTaskFromEditor} onDelete={taskEditor === "new" ? undefined : () => { deleteTask(taskEditor.id); closeTaskEditor(); }} />}
@@ -1763,13 +1900,13 @@ export default function Home() {
       {workoutEditor && <WorkoutModal value={workoutEditor} onClose={() => setWorkoutEditor(null)} onSave={(workout) => { setData((current) => ({ ...current, workouts: workoutEditor === "new" ? [...current.workouts, workout] : current.workouts.map((item) => item.id === workout.id ? workout : item) })); setWorkoutEditor(null); }} onDelete={workoutEditor === "new" ? undefined : () => { removeRecord("workouts", workoutEditor.id, `已删除运动「${workoutEditor.title}」`); setWorkoutEditor(null); }} />}
       {applicationEditor && <ApplicationModal value={applicationEditor} onClose={() => setApplicationEditor(null)} onSave={(application) => { setData((current) => ({ ...current, applications: applicationEditor === "new" ? [...current.applications, application] : current.applications.map((item) => item.id === application.id ? application : item) })); setApplicationEditor(null); }} onDelete={applicationEditor === "new" ? undefined : () => { removeRecord("applications", applicationEditor.id, `已删除求职记录「${applicationEditor.company}」`); setApplicationEditor(null); }} />}
       {noteEditor && <NoteModal value={noteEditor} onClose={() => setNoteEditor(null)} onSave={(note) => { setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? note : item) })); setNoteEditor(null); }} onDelete={() => { removeRecord("notes", noteEditor.id, `已删除草稿「${noteTitle(noteEditor)}」`); setNoteEditor(null); }} />}
-      {installHelp && <ModalFrame title="安装 MAP 到 Mac" subtitle="OFFLINE APP" onClose={() => setInstallHelp(false)}><div className="install-guide"><p>这台浏览器没有提供一键安装按钮。你仍然可以把 MAP 安装成独立的 Mac App：</p><ol><li>使用 Safari 打开 MAP 网站。</li><li>选择菜单栏的“文件”→“添加到程序坞”。</li><li>首次联网打开一次；之后断网也能查看和编辑计划。</li></ol><p className="install-guide-note">任务、草稿、目标、课表、求职和健康会在联网后跨设备同步；私人速记只留在当前设备。MAP AI 和语音转写需要联网。</p><div className="modal-actions"><button className="primary-button" onClick={() => setInstallHelp(false)}>知道了</button></div></div></ModalFrame>}
+      {installHelp && <ModalFrame title="安装 MAP 到 Mac" subtitle="OFFLINE APP" onClose={() => setInstallHelp(false)}><div className="install-guide"><p>这台浏览器没有提供一键安装按钮。你仍然可以把 MAP 安装成独立的 Mac App：</p><ol><li>使用 Safari 打开 MAP 网站。</li><li>选择菜单栏的“文件”→“添加到程序坞”。</li><li>首次联网打开一次；之后断网也能查看和编辑计划。</li></ol><p className="install-guide-note">任务、草稿、目标、课表、求职和健康会在联网后跨设备同步；私人速记只有逐条开启授权后才同步，其他资料仍只留当前设备。MAP AI 和语音转写需要联网。</p><div className="modal-actions"><button className="primary-button" onClick={() => setInstallHelp(false)}>知道了</button></div></div></ModalFrame>}
     </main>
   );
 }
 
-function NavButton({ active, label, icon, onClick }: { active: boolean; label: string; icon: string; onClick: () => void }) {
-  return <button className={active ? "active" : ""} onClick={onClick}><span>{icon}</span>{label}<i>→</i></button>;
+function NavButton({ active, label, icon, dragging, dragOver, onClick, onDragStart, onDragOver, onDrop, onDragEnd }: { active: boolean; label: string; icon: string; dragging: boolean; dragOver: boolean; onClick: () => void; onDragStart: (event: React.DragEvent<HTMLButtonElement>) => void; onDragOver: (event: React.DragEvent<HTMLButtonElement>) => void; onDrop: (event: React.DragEvent<HTMLButtonElement>) => void; onDragEnd: () => void }) {
+  return <button draggable className={`${active ? "active" : ""} ${dragging ? "dragging" : ""} ${dragOver ? "drag-over" : ""}`} onClick={onClick} onDragStart={onDragStart} onDragOver={onDragOver} onDrop={onDrop} onDragEnd={onDragEnd} title="拖动改变导航顺序"><span>{icon}</span>{label}<i>{active ? "→" : "⋮⋮"}</i></button>;
 }
 
 function TaskCalendarCheck({ task, onToggle }: { task: Task; onToggle: () => void }) {

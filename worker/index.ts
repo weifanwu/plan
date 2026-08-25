@@ -26,6 +26,7 @@ type SyncRow = {
 const DATA_COLLECTIONS: DataCollection[] = ["tasks", "routines", "schedule", "goals", "habits", "workouts", "applications", "notes", "references"];
 const MUTATION_PATTERN = /(加入|添加|新增|创建|修改|更新|改成|移动|拖到|完成|删除|移除|取消|重排|调整|安排|记一下|记到|记录一下|记录这|记录该|记录到|保存|提醒我|放到|放进|标记|延期|推迟)|\b(add|create|update|edit|move|complete|delete|remove|reorder|schedule|save|mark|remind)\b/i;
 const REFERENCE_CONTEXT_PATTERN = /(私人速记|私人资料|常用网址|学校信息|参考资料|个人资料|备忘录|personal reference|quick reference)/i;
+const REFERENCE_LOOKUP_PATTERN = /(?:(?:我的|本人|查找|找到|告诉我|能不能拿到|what(?:'s| is) my)[^。！？\n]{0,24}(?:手机(?:号|号码)?|电话号码|phone\s*(?:number)?|地址|address|邮箱|email|学号|student\s*(?:number|id)|房间号|room\s*number|SIN|SSN|API\s*key|密码|password|账号|账户|confirmation\s*number|token|常用命令|网址)|(?:手机(?:号|号码)?|电话号码|phone\s*(?:number)?|地址|address|邮箱|email|学号|student\s*(?:number|id)|房间号|room\s*number|SIN|SSN|API\s*key|密码|password|账号|账户|confirmation\s*number|token|常用命令|网址)[^。！？\n]{0,12}(?:多少|是什么|在哪|有没有|找出来|告诉我|给我|\?|？))/i;
 const REFERENCE_CONTINUE_PATTERN = /(不需要管敏感|不用管敏感|继续整理|继续保存|照做|不要拒绝|不用脱敏|可以保存|保留原文)/i;
 const COLLECTION_PATTERNS: Array<[DataCollection, RegExp]> = [
   ["applications", /(求职看板|求职记录|岗位|职位|公司|投递|面试|offer|application|job|role|position|company)/i],
@@ -41,6 +42,18 @@ const COLLECTION_PATTERNS: Array<[DataCollection, RegExp]> = [
 
 const SYNC_ARRAY_KEYS = ["tasks", "routines", "schedule", "goals", "habits", "workouts", "applications", "notes"] as const;
 
+function isCloudReference(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const reference = value as Record<string, unknown>;
+  return typeof reference.id === "string"
+    && typeof reference.title === "string"
+    && typeof reference.content === "string"
+    && typeof reference.pinned === "boolean"
+    && reference.aiExcluded === false
+    && typeof reference.createdAt === "string"
+    && typeof reference.updatedAt === "string";
+}
+
 function syncResponse(body: Record<string, unknown>, status = 200) {
   return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
 }
@@ -52,15 +65,23 @@ function authenticatedUserId(request: Request) {
 function isValidSyncPayload(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const payload = value as Record<string, unknown>;
-  if ("references" in payload || !payload.phase || typeof payload.phase !== "object") return false;
+  if (!payload.phase || typeof payload.phase !== "object") return false;
   if (typeof payload.habitDate !== "string" || typeof payload.workoutWeek !== "string") return false;
-  return SYNC_ARRAY_KEYS.every((key) => Array.isArray(payload[key]));
+  if (!SYNC_ARRAY_KEYS.every((key) => Array.isArray(payload[key]))) return false;
+  // Missing references is accepted for payloads written by older MAP builds.
+  // When present, every record must carry an explicit opt-in marker. This
+  // prevents a buggy client from uploading device-only notes by accident.
+  return !("references" in payload) || (Array.isArray(payload.references) && payload.references.every(isCloudReference));
+}
+
+function normalizeSyncPayload(payload: Record<string, unknown>) {
+  return { ...payload, references: Array.isArray(payload.references) ? payload.references : [] };
 }
 
 function parseSyncRow(row: SyncRow) {
   const data = JSON.parse(row.payload_json) as unknown;
   if (!isValidSyncPayload(data)) throw new Error("Stored sync payload is invalid");
-  return { initialized: true, data, revision: row.revision, updatedAt: row.updated_at };
+  return { initialized: true, data: normalizeSyncPayload(data), revision: row.revision, updatedAt: row.updated_at };
 }
 
 async function handleSync(request: Request, env: Env): Promise<Response> {
@@ -99,12 +120,13 @@ async function handleSync(request: Request, env: Env): Promise<Response> {
     }
 
     const updatedAt = new Date().toISOString();
-    const payloadJson = JSON.stringify(body.data);
+    const normalizedData = normalizeSyncPayload(body.data);
+    const payloadJson = JSON.stringify(normalizedData);
     if (!current) {
       await env.DB.prepare("INSERT INTO map_user_state (user_id, payload_json, revision, updated_at) VALUES (?, ?, 1, ?)")
         .bind(userId, payloadJson, updatedAt)
         .run();
-      return syncResponse({ initialized: true, data: body.data, revision: 1, updatedAt });
+      return syncResponse({ initialized: true, data: normalizedData, revision: 1, updatedAt });
     }
 
     const nextRevision = currentRevision + 1;
@@ -117,7 +139,7 @@ async function handleSync(request: Request, env: Env): Promise<Response> {
         .first<SyncRow>();
       return syncResponse({ error: "云端计划已经更新。", ...(latest ? parseSyncRow(latest) : { initialized: false, revision: 0, data: null, updatedAt: null }) }, 409);
     }
-    return syncResponse({ initialized: true, data: body.data, revision: nextRevision, updatedAt });
+    return syncResponse({ initialized: true, data: normalizedData, revision: nextRevision, updatedAt });
   } catch {
     return syncResponse({ error: "暂时无法写入云端，本机改动已保留，联网后会重试。" }, 500);
   }
@@ -171,6 +193,7 @@ async function handleTranscription(request: Request, env: Env): Promise<Response
     const form = new FormData();
     form.append("model", "gpt-transcribe");
     form.append("file", audio, audio.name || "map-voice.webm");
+    form.append("prompt", "This is a personal planning note, usually spoken in Mandarin Chinese with English technical terms, company names, course codes, dates, URLs, and product names. Preserve code-switching and proper nouns accurately. Add punctuation without changing meaning.");
     const openAIResponse = await fetch("https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",
       headers: { "Authorization": `Bearer ${env.OPENAI_API_KEY}` },
@@ -179,7 +202,8 @@ async function handleTranscription(request: Request, env: Env): Promise<Response
     const payload = await openAIResponse.json() as { text?: unknown; error?: { message?: string } };
     if (!openAIResponse.ok) return Response.json({ error: payload.error?.message || "语音暂时无法转写，请再试一次。" }, { status: openAIResponse.status });
     if (typeof payload.text !== "string" || !payload.text.trim()) return Response.json({ error: "没有识别到清晰的语音。" }, { status: 422 });
-    return Response.json({ text: payload.text.trim() });
+    const transcript = payload.text.trim();
+    return Response.json({ text: transcript, transcript });
   } catch {
     return Response.json({ error: "语音转写失败，请检查网络后再试。" }, { status: 500 });
   }
@@ -207,7 +231,7 @@ async function handleAIChat(request: Request, env: Env): Promise<Response> {
     const priorUserContext = messages.slice(0, latestUserIndex).filter((message) => message.role === "user").slice(-2).map((message) => message.content).join("\n");
     const detectedFocus = detectFocusedMutation(latestUserMessage, priorUserContext);
     const focus = detectedFocus || (REFERENCE_CONTEXT_PATTERN.test(priorUserContext) && REFERENCE_CONTINUE_PATTERN.test(latestUserMessage) ? "references" : null);
-    const referenceContext = REFERENCE_CONTEXT_PATTERN.test(latestUserMessage) || REFERENCE_CONTEXT_PATTERN.test(priorUserContext);
+    const referenceContext = REFERENCE_CONTEXT_PATTERN.test(latestUserMessage) || REFERENCE_CONTEXT_PATTERN.test(priorUserContext) || REFERENCE_LOOKUP_PATTERN.test(latestUserMessage);
     const rawCurrentData = body.currentData && typeof body.currentData === "object" ? body.currentData as Record<string, unknown> : {};
     const modelData = focus ? focusedData(rawCurrentData, focus) : referenceContext ? focusedData(rawCurrentData, "references") : Object.fromEntries(Object.entries(rawCurrentData).filter(([key]) => key !== "references"));
     const currentData = JSON.stringify(modelData);
@@ -229,7 +253,7 @@ async function handleAIChat(request: Request, env: Env): Promise<Response> {
         reasoning: { effort: reasoningEffort },
         max_output_tokens: maxOutputTokens,
         ...(model.startsWith("gpt-5.6") ? { prompt_cache_key: `map-ai-v4-${model}-${focus || (referenceContext ? "references" : "full")}` } : {}),
-        instructions: `You are MAP AI, the conversational copilot inside a private, device-local life management app. Reply in the user's language, normally Chinese. Today is ${today} in America/Toronto.
+        instructions: `You are MAP AI, the conversational copilot inside a private, offline-first life management app. Reply in the user's language, normally Chinese. Today is ${today} in America/Toronto.
 
 WHAT MAP IS
 MAP is a long-term personal operating system, not only a graduation planner. It helps the user connect life directions to schedules and concrete actions. The app has these modules:
@@ -240,7 +264,7 @@ MAP is a long-term personal operating system, not only a graduation planner. It 
 5. 任务计划: dated actions plus fixed recurring actions. A normal task may be a single-day action or genuine multi-day work with date and endDate. title is concise; details stores execution context. Unfinished normal tasks may roll forward automatically.
 6. 固定任务: recurring actions that appear every day or every N days. A routine stores title, details, category, goalId, startDate, optional time, frequency (daily or interval), intervalDays, active, and completedDates. Each occurrence is checked independently; never create duplicate normal tasks for a recurring rule.
 7. 草稿箱: a quick inbox for unscheduled task backlogs and rough ideas grouped as 待办, 想法, 课程, 项目, 求职, or 生活. Drafts can be searched, filtered, pinned, edited, and manually promoted into dated tasks.
-8. 私人速记: an Apple Notes / Notion-style device-local editor for frequently retrieved URLs, school information, commands, credentials, and other personal reference text. The left side is a compact note index and the right side is a free-form editor. Each note has title, content, pinned, aiExcluded, createdAt, and updatedAt. aiExcluded=true means local-only and must never appear in AI context. It is deliberately separate from the task backlog.
+8. 私人速记: an Apple Notes / Notion-style editor for frequently retrieved URLs, school information, commands, credentials, and other personal reference text. The left side is a compact note index and the right side is a free-form editor. Each note has title, content, pinned, aiExcluded, createdAt, and updatedAt. aiExcluded=true means device-local only: it must never appear in AI context or cloud sync. aiExcluded=false is an explicit user opt-in that permits both MAP AI access and Cloudflare sync. It is deliberately separate from the task backlog.
 9. 健康运动: daily nutrition checks and weekly workout plans.
 
 CONVERSATION BEHAVIOR
@@ -258,8 +282,8 @@ HIGH-FREQUENCY JOB CAPTURE
 - Avoid duplicate applications by checking company, role, and link against existing records. If a likely duplicate exists, explain it and ask whether to update the existing record.
 
 HIGH-FREQUENCY PRIVATE REFERENCE CAPTURE
-- Only read or modify references when the user explicitly mentions 私人速记, 私人资料, 备忘录, 常用网址, or asks to organize personal reference material. Ordinary full-context analysis intentionally omits references.
-- The supplied references array is already privacy-filtered and contains only records whose owner explicitly enabled AI access (aiExcluded=false). Never infer, request, or claim access to excluded notes.
+- Only read or modify references when the user explicitly mentions 私人速记, 私人资料, 备忘录, 常用网址, asks to organize personal reference material, or asks for a specific personal value such as their phone number, address, student number, saved URL, or command. Ordinary full-context analysis intentionally omits references.
+- The supplied references array is already privacy-filtered and contains only records whose owner explicitly enabled AI access and Cloudflare sync (aiExcluded=false). Never infer, request, or claim access to excluded notes.
 - When the user pastes a messy Apple Notes-style block and asks to organize it, split it into the smallest useful set of topic-based note pages. Preserve every supplied value exactly, never invent missing information, use a clear searchable title, and keep related lines together.
 - The user may explicitly ask to organize their own passwords, API keys, tokens, account details, identity numbers, or credentials. This is a user-authorized transformation of text they supplied. Do not refuse, redact, omit, rotate, moralize, or replace those values; preserve them exactly in proposed reference records. Do not repeat sensitive values in the conversational reply—put them only in recordJson for the approval preview.
 - Prefer a few coherent pages over one giant page or dozens of one-line pages. New reference records require id, title, content, pinned=false, aiExcluded=true, and valid ISO createdAt/updatedAt timestamps. New AI-organized notes return to local-only mode after creation.
