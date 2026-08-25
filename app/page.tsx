@@ -131,8 +131,20 @@ const NAV_ORDER_STORAGE_KEY = "map-navigation-order-v1";
 const SYNC_META_KEY = "map-sync-meta-v1";
 const SYNC_DIRTY_KEY = "map-sync-dirty-v1";
 const DEFAULT_SEMESTER_WEEK_ORDER: SemesterWeekModule[] = ["schedule", "tasks"];
-const DEFAULT_NAV_ORDER: View[] = ["today", "goals", "semester", "career", "planner", "notes", "vault", "meals", "wellness"];
+const LEGACY_DEFAULT_NAV_ORDER: View[] = ["today", "goals", "semester", "career", "planner", "notes", "vault", "meals", "wellness"];
+const DEFAULT_NAV_ORDER: View[] = ["semester", "today", "goals", "career", "planner", "notes", "vault", "meals", "wellness"];
 const NAV_LABELS: Record<View, string> = { today: "今日指挥台", goals: "长期目标", semester: "阶段地图", career: "求职记录", planner: "任务计划", notes: "草稿箱", vault: "私人速记", meals: "饮食计划", wellness: "健身与健康" };
+const MOBILE_NAV_META: Record<View, { icon: string; label: string; description: string }> = {
+  today: { icon: "⌂", label: "今天", description: "查看今天要推进的事情" },
+  goals: { icon: "◎", label: "目标", description: "管理人生主线" },
+  semester: { icon: "▦", label: "阶段", description: "查看阶段地图与本周安排" },
+  career: { icon: "↗", label: "求职", description: "跟踪投递进度" },
+  planner: { icon: "✓", label: "任务", description: "管理任务与固定节奏" },
+  notes: { icon: "✎", label: "草稿", description: "记录 backlog 与灵感" },
+  vault: { icon: "⌁", label: "速记", description: "资料与常用信息" },
+  meals: { icon: "食", label: "饮食", description: "选主题、采购与备菜" },
+  wellness: { icon: "＋", label: "健康", description: "训练、进步与动作库" },
+};
 const AI_WELCOME_MESSAGE: AIChatMessage = { id: "welcome", role: "assistant", content: "你好，我是 MAP AI。我能看到你当前阶段、长期目标、任务、固定任务、课表、求职记录、饮食与训练计划和草稿，也知道哪些行动正在服务哪个目标。你可以让我分析现状、回答问题，或者一起把一个想法变成计划；任何数据修改都会先给你预览。私人速记只有在你明确开启“AI 可读 · 云端同步”并要求管理它时才会加入上下文。" };
 const LEGACY_TASK_GOALS: Record<string, string> = { stephnie: "graduate", leetcode: "career", fees: "graduate", applications: "career", pte: "graduate", irene: "graduate" };
 
@@ -229,6 +241,7 @@ function normalizeReferences(references: ReferenceNote[] = []) {
 function normalizeNavOrder(value: unknown) {
   if (!Array.isArray(value)) return DEFAULT_NAV_ORDER;
   const valid = value.filter((item): item is View => typeof item === "string" && DEFAULT_NAV_ORDER.includes(item as View));
+  if (valid.length === LEGACY_DEFAULT_NAV_ORDER.length && valid.every((item, index) => item === LEGACY_DEFAULT_NAV_ORDER[index])) return DEFAULT_NAV_ORDER;
   return [...new Set([...valid, ...DEFAULT_NAV_ORDER])];
 }
 
@@ -546,6 +559,7 @@ export default function Home() {
   const [installPrompt, setInstallPrompt] = useState<PWAInstallPrompt | null>(null);
   const [installHelp, setInstallHelp] = useState(false);
   const [standalone, setStandalone] = useState(false);
+  const mobileQuickViews = useMemo(() => [...new Set([navOrder[0] ?? DEFAULT_NAV_ORDER[0], "today", "semester", "notes", "planner"] as View[])].slice(0, 4), [navOrder]);
   const [today, setToday] = useState(() => getTorontoToday());
   const importRef = useRef<HTMLInputElement>(null);
   const noteDraftRef = useRef<HTMLTextAreaElement>(null);
@@ -1875,11 +1889,8 @@ export default function Home() {
       </section>
 
       <nav className="mobile-nav" aria-label="手机主导航">
-        <button className={view === "today" ? "active" : ""} onClick={() => setView("today")}><span>⌂</span><strong>今天</strong></button>
-        <button className={view === "semester" ? "active" : ""} onClick={() => setView("semester")}><span>▦</span><strong>日程</strong></button>
-        <button className={view === "notes" ? "active" : ""} onClick={openNotes}><span>✎</span><strong>草稿</strong></button>
-        <button className={view === "planner" ? "active" : ""} onClick={() => setView("planner")}><span>✓</span><strong>任务</strong></button>
-        <button className={mobileMenuOpen || ["goals", "career", "vault", "meals", "wellness"].includes(view) ? "active" : ""} onClick={() => setMobileMenuOpen((open) => !open)} aria-expanded={mobileMenuOpen}><span>•••</span><strong>更多</strong></button>
+        {mobileQuickViews.map((item, index) => <button className={view === item ? "active" : ""} onClick={() => openNavigationView(item)} key={item} aria-label={`${index === 0 ? "置顶 · " : ""}${NAV_LABELS[item]}`}><span>{MOBILE_NAV_META[item].icon}</span><strong>{MOBILE_NAV_META[item].label}</strong></button>)}
+        <button className={mobileMenuOpen || !mobileQuickViews.includes(view) ? "active" : ""} onClick={() => setMobileMenuOpen((open) => !open)} aria-expanded={mobileMenuOpen}><span>•••</span><strong>更多</strong></button>
       </nav>
 
       {mobileMenuOpen && <div className="mobile-more-layer">
@@ -1887,11 +1898,7 @@ export default function Home() {
         <aside className="mobile-more-sheet" role="dialog" aria-modal="true" aria-label="更多功能">
           <header><div><small>ALL MODULES</small><h2>更多功能</h2></div><button onClick={() => setMobileMenuOpen(false)} aria-label="关闭更多功能">×</button></header>
           <div className="mobile-more-grid">
-            <button className={view === "goals" ? "active" : ""} onClick={() => { setView("goals"); setMobileMenuOpen(false); }}><span>◎</span><strong>长期目标</strong><small>管理人生主线</small></button>
-            <button className={view === "career" ? "active" : ""} onClick={() => { setView("career"); setMobileMenuOpen(false); }}><span>↗</span><strong>求职记录</strong><small>跟踪投递进度</small></button>
-            <button className={view === "vault" ? "active" : ""} onClick={() => { openVault(); setMobileMenuOpen(false); }}><span>⌁</span><strong>私人速记</strong><small>资料与常用信息</small></button>
-            <button className={view === "meals" ? "active" : ""} onClick={() => { setView("meals"); setMobileMenuOpen(false); }}><span>食</span><strong>饮食计划</strong><small>选主题、采购与备菜</small></button>
-            <button className={view === "wellness" ? "active" : ""} onClick={() => { setView("wellness"); setMobileMenuOpen(false); }}><span>＋</span><strong>健身健康</strong><small>训练、进步与动作库</small></button>
+            {navOrder.filter((item) => !mobileQuickViews.includes(item)).map((item) => <button className={view === item ? "active" : ""} onClick={() => { openNavigationView(item); setMobileMenuOpen(false); }} key={item}><span>{MOBILE_NAV_META[item].icon}</span><strong>{NAV_LABELS[item]}</strong><small>{MOBILE_NAV_META[item].description}</small></button>)}
           </div>
           <div className="mobile-system-actions">
             <button onClick={() => void synchronizeData()} disabled={!online || syncStatus === "syncing"}><span className={`sync-dot ${syncStatus}`} />{syncMessage}</button>

@@ -62,8 +62,11 @@ test("mobile shell prioritizes five touch targets and keeps every module reachab
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   const manifest = JSON.parse(await readFile(new URL("../public/manifest.webmanifest", import.meta.url), "utf8"));
   assert.match(source, /className="mobile-nav"/);
-  for (const label of ["今天", "日程", "草稿", "任务", "更多"]) assert.match(source, new RegExp(`<strong>${label}<\\/strong>`));
-  for (const label of ["长期目标", "求职记录", "私人速记", "饮食计划", "健身健康"]) assert.match(source, new RegExp(`<strong>${label}<\\/strong>`));
+  assert.match(source, /const DEFAULT_NAV_ORDER: View\[\] = \["semester", "today"/);
+  assert.match(source, /mobileQuickViews\.map/);
+  assert.match(source, /index === 0 \? "置顶 · " : ""/);
+  assert.match(source, /navOrder\.filter\(\(item\) => !mobileQuickViews\.includes\(item\)\)\.map/);
+  for (const label of ["今天", "阶段", "草稿", "任务", "更多"]) assert.match(source, new RegExp(label));
   assert.match(styles, /env\(safe-area-inset-bottom\)/);
   assert.match(styles, /100dvh/);
   assert.equal(manifest.orientation, "portrait-primary");
