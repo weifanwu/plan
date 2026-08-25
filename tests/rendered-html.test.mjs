@@ -372,6 +372,14 @@ test("fitness module separates plans, exercise knowledge, strength history, and 
   assert.match(page, /activityLogs: ActivityLog\[\]/);
   for (const label of ["今日", "本周", "进步", "动作库"]) assert.match(component, new RegExp(`["']${label}["']`));
   assert.match(component, /不用追连续打卡/);
+  assert.match(component, /计划给方向/);
+  assert.match(component, /记录讲事实/);
+  assert.match(component, /今天实际做了这些/);
+  assert.match(component, /本周计划与实际/);
+  assert.match(component, /查看完整训练/);
+  assert.match(component, /TECHNIQUE CHECKLIST/);
+  assert.match(component, /String\(index \+ 1\)\.padStart\(2, "0"\)/);
+  assert.match(component, /同一天可以保存徒步、散步等多条记录/);
   assert.match(component, /Math\.min\(40/);
   assert.match(component, /辅助重量/);
   assert.match(component, /纠正训练记录/);
@@ -382,6 +390,9 @@ test("fitness module separates plans, exercise knowledge, strength history, and 
     assert.match(worker, new RegExp(collection));
   }
   assert.match(worker, /Never use the legacy workouts collection for new fitness changes/);
+  assert.match(worker, /trainingPlans as recurring intentions/);
+  assert.match(worker, /create two separate activityLogs/);
+  assert.match(worker, /Use the actual duration even when a free activity such as hiking exceeds 40 minutes/);
 });
 
 test("voice transcription API forwards audio without persisting it", { concurrency: false }, async () => {
@@ -438,6 +449,40 @@ test("MAP AI sends conversation, selected model, app context, and approval schem
     assert.equal(outbound.text.verbosity, "low");
     assert.equal(outbound.max_output_tokens, 5000);
     assert.equal(outbound.prompt_cache_key, "map-ai-v4-gpt-5.6-sol-full");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("MAP AI treats an improvised activity as actual history without rewriting the weekly plan", { concurrency: false }, async () => {
+  const worker = await loadWorker();
+  const currentData = {
+    phase: { title: "Fall" }, habitDate: "2026-08-24", workoutWeek: "2026-08-24",
+    tasks: [], routines: [], schedule: [], goals: [], habits: [], workouts: [], applications: [], notes: [], references: [],
+    trainingPlans: [{ id: "plan-a", title: "全身力量 A", weekday: 1 }], exercises: [], exerciseLogs: [], activityLogs: [],
+  };
+  const proposed = {
+    reply: "实际运动预览已准备好。", action: "proposal", summary: "记录徒步和散步",
+    operations: [
+      { collection: "activityLogs", operation: "add", recordId: "ai-hike", recordJson: JSON.stringify({ id: "ai-hike", type: "徒步 Hiking", date: "2026-08-24", durationMinutes: 120, distance: null, distanceUnit: "km", intensity: "中等", notes: "", planId: null }) },
+      { collection: "trainingPlans", operation: "update", recordId: "plan-a", recordJson: JSON.stringify({ title: "不应被改写" }) },
+    ],
+  };
+  const originalFetch = globalThis.fetch;
+  let outbound;
+  globalThis.fetch = async (_url, init) => {
+    outbound = JSON.parse(init.body);
+    return Response.json({ output_text: JSON.stringify(proposed) });
+  };
+  try {
+    const response = await worker.fetch(new Request("http://localhost/api/ai-chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ currentData, today: "2026-08-24", messages: [{ role: "user", content: "记录一下今天 hiking 两个小时" }] }) }), { OPENAI_API_KEY: "test-key" }, { waitUntil() {}, passThroughOnException() {} });
+    const result = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-map-ai-context"), "activityLogs");
+    assert.deepEqual(result.operations.map((operation) => operation.collection), ["activityLogs"]);
+    assert.deepEqual(outbound.text.format.schema.properties.operations.items.properties.collection.enum, ["activityLogs"]);
+    assert.match(outbound.instructions, /全身力量 A/);
+    assert.match(outbound.instructions, /create two separate activityLogs/);
   } finally {
     globalThis.fetch = originalFetch;
   }

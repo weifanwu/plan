@@ -39,7 +39,7 @@ const REFERENCE_CONTINUE_PATTERN = /(不需要管敏感|不用管敏感|继续�
 const COLLECTION_PATTERNS: Array<[DataCollection, RegExp]> = [
   ["applications", /(求职看板|求职记录|岗位|职位|公司|投递|面试|offer|application|job|role|position|company)/i],
   ["exerciseLogs", /(力量记录|训练记录|重量记录|训练历史|工作重量历史|RIR|几组|每组|(?:今天|昨天|前天|\d{4}-\d{2}-\d{2})?[^。！？\n]{0,20}(?:练了|做了)[^。！？\n]{0,24}(?:lb|kg|磅|公斤|组|次)|exercise\s*log|strength\s*log|weight\s*history)/i],
-  ["activityLogs", /(运动打卡|活动记录|散步记录|跑步记录|篮球记录|徒步记录|游泳记录|骑车记录|activity\s*log|运动记录)/i],
+  ["activityLogs", /(运动打卡|活动记录|实际运动|实际活动|散步记录|跑步记录|篮球记录|徒步记录|游泳记录|骑车记录|散步|快走|跑步|篮球|徒步|hiking|hike|骑车|游泳|拉伸|activity\s*log|运动记录)/i],
   ["exercises", /(动作库|动作要点|技术要点|我会的动作|掌握动作|当前工作重量|exercise\s*library|exercise\s*technique)/i],
   ["trainingPlans", /(训练计划|每周训练|力量\s*[ABCＡＢＣ]|稳态有氧|训练安排|健身安排|健身计划|锻炼计划|training\s*plan|workout\s*plan)/i],
   ["routines", /(固定任务|重复任务|每日任务|每天|隔天|每隔|每\s*\d+\s*天|recurring|routine|every day)/i],
@@ -293,6 +293,9 @@ FITNESS DATA SHAPES AND RULES
 - exercises record: {id,name,bodyPart,mastered,notes,currentWeight,unit,loadMode,defaultSets,defaultReps}. bodyPart is one of 胸部, 背部, 肩部, 二头, 三头, 腹部, 腿部, 有氧与活动. unit is lb or kg. loadMode is weight, bodyweight, assisted, or added. currentWeight is the stable working weight, not a one-rep maximum.
 - exerciseLogs record: {id,exerciseId,date,loadMode,weight,unit,sets,reps,rir,notes,planId}. reps is an array with one number per set; rir and planId may be null. A new weight log preserves all earlier logs. When a clear new stable working weight is recorded, also update only that exercise's currentWeight/unit/loadMode.
 - activityLogs record: {id,type,date,durationMinutes,distance,distanceUnit,intensity,notes,planId}. distance may be null; distanceUnit is km or mi; intensity is empty, 轻松, 中等, or 较高; planId may be null. A completed planned session should create one activityLog and its strength exercises should create individual exerciseLogs.
+- Treat trainingPlans as recurring intentions, never as evidence of completed activity. activityLogs and exerciseLogs are the only record of what actually happened. If Monday planned Strength A but the user says they instead hiked for 120 minutes and walked for 15 minutes, create two separate activityLogs for the stated date with planId=null; do not create Strength A logs, mark Strength A completed, or change the Monday template.
+- Multiple real activities on the same date are normal and must remain separate records so each can be corrected or deleted independently. Use the actual duration even when a free activity such as hiking exceeds 40 minutes. The 40-minute limit applies only to formal trainingPlans and planned formal-session records.
+- Update a recurring trainingPlan only when the user explicitly asks to change the ongoing weekly template. Phrases about what happened today, missing a planned session, substituting another activity, or correcting a past log must modify only activityLogs/exerciseLogs unless the user separately requests a template change.
 - Never use the legacy workouts collection for new fitness changes. Use trainingPlans, exercises, exerciseLogs, or activityLogs according to the requested outcome.
 
 CONVERSATION BEHAVIOR

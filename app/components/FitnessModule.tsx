@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import type { ActivityLog, ExerciseDefinition, ExerciseLog, FitnessHabit, LoadMode, TrainingPlan, WeightUnit } from "@/lib/fitness-types";
 
 type FitnessTab = "today" | "week" | "progress" | "library";
+type ActivityEditorState = { value: ActivityLog; isNew: boolean };
 type Props = {
   today: string;
   habits: FitnessHabit[];
@@ -37,14 +38,22 @@ function formatLoad(weight: number | null, unit: WeightUnit, mode: LoadMode) {
   return `${mode === "assisted" ? "辅助 " : mode === "added" ? "+" : ""}${weight} ${unit}`;
 }
 function kindLabel(kind: TrainingPlan["kind"]) { return ({ strength: "力量", cardio: "有氧", recovery: "恢复", flex: "自由" } as const)[kind]; }
+function techniquePoints(notes: string) {
+  return notes.split(/\n+|[；。]+/).map((point) => point.trim()).filter(Boolean);
+}
+function newActivity(today: string, type = "散步", durationMinutes = 30): ActivityLog {
+  return { id: id("activity"), type, date: today, durationMinutes, distance: null, distanceUnit: "km", intensity: type.includes("徒步") ? "中等" : "轻松", notes: "", planId: null };
+}
 
 export default function FitnessModule(props: Props) {
   const { today, habits, trainingPlans, exercises, exerciseLogs, activityLogs, onToggleHabit, onChange } = props;
   const [tab, setTab] = useState<FitnessTab>("today");
   const [planEditor, setPlanEditor] = useState<TrainingPlan | null>(null);
+  const [planDetail, setPlanDetail] = useState<TrainingPlan | null>(null);
   const [sessionPlan, setSessionPlan] = useState<TrainingPlan | null>(null);
-  const [activityEditor, setActivityEditor] = useState<ActivityLog | "new" | null>(null);
+  const [activityEditor, setActivityEditor] = useState<ActivityEditorState | null>(null);
   const [exerciseEditor, setExerciseEditor] = useState<ExerciseDefinition | "new" | null>(null);
+  const [exerciseDetailId, setExerciseDetailId] = useState<string | null>(null);
   const [historyExerciseId, setHistoryExerciseId] = useState<string | null>(null);
   const [logEditor, setLogEditor] = useState<ExerciseLog | "new" | null>(null);
   const [libraryQuery, setLibraryQuery] = useState("");
@@ -54,6 +63,8 @@ export default function FitnessModule(props: Props) {
   const todayWeekday = utcDate(today).getUTCDay();
   const todayPlan = trainingPlans.find((plan) => plan.active && plan.weekday === todayWeekday) || null;
   const todayCompletion = todayPlan ? activityLogs.find((log) => log.date === today && log.planId === todayPlan.id) : null;
+  const todayActivities = activityLogs.filter((log) => log.date === today);
+  const todayMinutes = todayActivities.reduce((sum, log) => sum + log.durationMinutes, 0);
   const weekActivities = activityLogs.filter((log) => weekSet.has(log.date));
   const weekExerciseLogs = exerciseLogs.filter((log) => weekSet.has(log.date));
   const activeDays = new Set([...weekActivities.map((log) => log.date), ...weekExerciseLogs.map((log) => log.date)]).size;
@@ -64,6 +75,7 @@ export default function FitnessModule(props: Props) {
     const query = libraryQuery.trim().toLocaleLowerCase();
     return exercises.filter((item) => (bodyPart === "全部" || item.bodyPart === bodyPart) && (!query || `${item.name} ${item.notes} ${item.bodyPart}`.toLocaleLowerCase().includes(query)));
   }, [bodyPart, exercises, libraryQuery]);
+  const openNewActivity = (type = "散步", durationMinutes = 30) => setActivityEditor({ value: newActivity(today, type, durationMinutes), isNew: true });
 
   const saveExerciseLog = (log: ExerciseLog) => {
     const nextLogs = logEditor === "new" ? [...exerciseLogs, log] : exerciseLogs.map((item) => item.id === log.id ? log : item);
@@ -76,7 +88,7 @@ export default function FitnessModule(props: Props) {
 
   return <div className="fitness-shell">
     <section className="fitness-hero">
-      <div><p className="section-kicker">FITNESS & HEALTH</p><h2>练得久，比练得狠更重要。</h2><p>每次最多 40 分钟。力量、有氧、散步和休息都算真实生活的一部分。</p></div>
+      <div><p className="section-kicker">FITNESS & HEALTH</p><h2>计划给方向，<br />记录讲事实。</h2><p>正式训练 40 分钟封顶；徒步、散步等自由活动按真实时长记录。临时换项目不算失败。</p></div>
       <div className="fitness-week-snapshot"><span>本周</span><strong>{activeDays}</strong><small>个活动日 · {totalMinutes} 分钟</small></div>
     </section>
 
@@ -85,31 +97,37 @@ export default function FitnessModule(props: Props) {
     </nav>
 
     {tab === "today" && <div className="fitness-today-grid">
-      <section className={`fitness-today-plan ${todayCompletion ? "complete" : ""}`}>
-        <header><div><p className="section-kicker">TODAY · {DAY_NAMES[todayWeekday]}</p><h3>{todayPlan?.title || "今天没有固定训练"}</h3></div><span>{todayCompletion ? "已完成" : todayPlan?.kind === "recovery" ? "可休息" : "未开始"}</span></header>
-        {todayPlan ? <>
-          <div className="fitness-duration"><strong>{todayPlan.durationMinutes}</strong><span>分钟</span><small>上限 {todayPlan.maxMinutes} 分钟</small></div>
-          {todayPlan.kind === "strength" && <div className="fitness-time-split"><span style={{ flex: todayPlan.warmupMinutes }}>热身 {todayPlan.warmupMinutes}</span><span style={{ flex: todayPlan.strengthMinutes }}>力量 {todayPlan.strengthMinutes}</span><span style={{ flex: todayPlan.cardioMinutes }}>有氧 {todayPlan.cardioMinutes}</span></div>}
-          <div className="fitness-today-exercises">{todayPlan.exerciseIds.map((exerciseId) => <span key={exerciseId}>{exerciseById.get(exerciseId)?.name || "已删除动作"}</span>)}</div>
-          <p className="fitness-plan-note">{todayPlan.notes}</p>
-          <div className="fitness-primary-actions"><button className="primary-button" onClick={() => setSessionPlan(todayPlan)}>{todayCompletion ? "再记录一次" : todayPlan.kind === "recovery" ? "记录散步 / 恢复" : "开始并记录训练"}</button><button className="ghost-button" onClick={() => setPlanEditor(todayPlan)}>调整今天的计划</button></div>
-        </> : <div className="fitness-rest-empty"><span>○</span><p>空白日也正常。你可以休息，或只记录一次散步。</p></div>}
-        <button className="fitness-quick-activity" onClick={() => setActivityEditor("new")}>＋ 记录其他运动</button>
+      <section className={`fitness-actual-card ${todayActivities.length ? "has-activity" : ""}`}>
+        <header><div><p className="section-kicker">TODAY · ACTUAL</p><h3>{todayActivities.length ? "今天实际做了这些" : "今天还没有运动记录"}</h3><p>{todayActivities.length ? "计划可以变化，这里只统计真正发生的活动。" : "休息也正常；如果临时去徒步，只记录徒步，不必先修改计划。"}</p></div><div className="fitness-actual-total"><strong>{todayMinutes}</strong><span>分钟</span></div></header>
+        {todayActivities.length ? <div className="fitness-actual-list">{todayActivities.map((log, index) => <button key={log.id} onClick={() => setActivityEditor({ value: log, isNew: false })}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{log.type}</strong><small>{log.durationMinutes} 分钟{log.distance != null ? ` · ${log.distance} ${log.distanceUnit}` : ""}{log.intensity ? ` · ${log.intensity}` : ""}</small>{log.notes && <p>{log.notes}</p>}</div><i>编辑</i></button>)}</div> : <div className="fitness-actual-empty"><span>○</span><p>没有“欠一次训练”的概念。明天继续按身体状态安排。</p></div>}
+        <div className="fitness-quick-capture"><span>快速记录</span><div><button onClick={() => openNewActivity("徒步 Hiking", 120)}>＋ 徒步</button><button onClick={() => openNewActivity("散步", 15)}>＋ 散步</button><button onClick={() => openNewActivity("跑步", 30)}>＋ 跑步</button><button onClick={() => openNewActivity("篮球", 40)}>＋ 篮球</button><button onClick={() => openNewActivity()}>＋ 其他</button></div></div>
       </section>
 
       <aside className="fitness-side-stack">
+        <section className={`fitness-card fitness-plan-reference ${todayCompletion ? "complete" : todayActivities.length ? "alternative" : ""}`}>
+          <header><div><p className="section-kicker">WEEKLY REFERENCE</p><h3>原计划</h3></div><span>{todayCompletion ? "按计划完成" : todayActivities.length ? "今天做了其他运动" : "仅供参考"}</span></header>
+          {todayPlan ? <><div className="fitness-plan-reference-main"><i>{kindLabel(todayPlan.kind)}</i><strong>{todayPlan.title}</strong><small>{todayPlan.durationMinutes} 分钟 · {todayPlan.exerciseIds.length ? `${todayPlan.exerciseIds.length} 个动作` : "自由安排"}</small></div><div className="fitness-plan-reference-actions"><button className="primary-button" onClick={() => setPlanDetail(todayPlan)}>查看完整训练</button><button className="ghost-button" onClick={() => setPlanEditor(todayPlan)}>编辑每周模板</button></div></> : <div className="fitness-reference-empty"><p>今天没有固定模板，可以自由活动或休息。</p></div>}
+        </section>
         <section className="fitness-card nutrition-card"><header><div><p className="section-kicker">SIMPLE NUTRITION</p><h3>今天吃得怎么样</h3></div><strong>{habitDone}/{habits.length}</strong></header><div className="fitness-habits">{habits.map((habit) => <button key={habit.id} className={habit.done ? "done" : ""} onClick={() => onToggleHabit(habit.id)}><span>{habit.icon}</span><strong>{habit.label}</strong><i>{habit.done ? "✓" : "+"}</i></button>)}</div></section>
         <section className="fitness-card weekly-health-card"><header><div><p className="section-kicker">THIS WEEK</p><h3>不用追连续打卡</h3></div></header><div className="fitness-week-numbers"><div><strong>{activeDays}</strong><span>活动日</span></div><div><strong>{weekActivities.length}</strong><span>运动记录</span></div><div><strong>{totalMinutes}</strong><span>总分钟</span></div></div><p>休息、跳过或改期都不会中断任何 streak；系统只记录你真正做过什么。</p></section>
       </aside>
     </div>}
 
     {tab === "week" && <div className="fitness-week-view">
-      <div className="fitness-section-head"><div><p className="section-kicker">WEEKLY PLAN</p><h2>本周训练安排</h2><span>{shortDate(week[0])}—{shortDate(week[6])} · 每一天都可以改</span></div><button className="ghost-button" onClick={() => setActivityEditor("new")}>＋ 记录运动</button></div>
+      <div className="fitness-section-head"><div><p className="section-kicker">PLAN / REALITY</p><h2>本周计划与实际</h2><span>{shortDate(week[0])}—{shortDate(week[6])} · 上半部分是模板，下半部分是真实记录</span></div><button className="ghost-button" onClick={() => openNewActivity()}>＋ 记录运动</button></div>
       <div className="fitness-week-strip">{MONDAY_ORDER.map((weekday, index) => {
-        const date = week[index]; const plan = trainingPlans.find((item) => item.weekday === weekday); const done = plan && activityLogs.some((log) => log.date === date && log.planId === plan.id);
-        return <article key={weekday} className={`${date === today ? "today" : ""} ${done ? "done" : ""}`}><header><span>{DAY_NAMES[weekday]}</span><small>{shortDate(date)}</small></header>{plan ? <><i>{kindLabel(plan.kind)}</i><h3>{plan.title}</h3><p>{plan.durationMinutes} 分钟 · {plan.exerciseIds.length ? `${plan.exerciseIds.length} 个动作` : "自由调整"}</p><div><button onClick={() => setSessionPlan(plan)}>{done ? "再记一次" : "记录"}</button><button onClick={() => setPlanEditor(plan)}>编辑</button></div></> : <button className="fitness-add-plan" onClick={() => setPlanEditor({ id: id("plan"), title: "新的训练", weekday, kind: "flex", durationMinutes: 30, maxMinutes: 40, exerciseIds: [], warmupMinutes: 0, strengthMinutes: 0, cardioMinutes: 30, notes: "", active: true })}>＋ 安排</button>}</article>;
+        const date = week[index];
+        const plan = trainingPlans.find((item) => item.weekday === weekday);
+        const actual = activityLogs.filter((log) => log.date === date);
+        const done = Boolean(plan && actual.some((log) => log.planId === plan.id));
+        return <article key={weekday} className={`${date === today ? "today" : ""} ${done ? "done" : actual.length ? "alternative" : ""}`}>
+          <header><span>{DAY_NAMES[weekday]}</span><small>{shortDate(date)}</small></header>
+          {plan ? <button className="fitness-week-plan" onClick={() => setPlanDetail(plan)}><i>{kindLabel(plan.kind)}计划</i><h3>{plan.title}</h3><p>{plan.durationMinutes} 分钟 · {plan.exerciseIds.length ? `${plan.exerciseIds.length} 个动作` : "自由调整"}</p><span>查看动作与要点 →</span></button> : <button className="fitness-add-plan" onClick={() => setPlanEditor({ id: id("plan"), title: "新的训练", weekday, kind: "flex", durationMinutes: 30, maxMinutes: 40, exerciseIds: [], warmupMinutes: 0, strengthMinutes: 0, cardioMinutes: 30, notes: "", active: true })}>＋ 安排模板</button>}
+          <div className="fitness-week-actual"><small>实际</small>{actual.length ? actual.map((log) => <button key={log.id} onClick={() => setActivityEditor({ value: log, isNew: false })}><strong>{log.type}</strong><span>{log.durationMinutes}m</span></button>) : <span className="fitness-no-actual">尚无记录</span>}</div>
+          <footer>{plan && <button onClick={() => setSessionPlan(plan)}>{done ? "再记计划" : "按计划记录"}</button>}<button onClick={() => openNewActivity()}>记实际</button></footer>
+        </article>;
       })}</div>
-      <section className="fitness-card fitness-history"><header><div><p className="section-kicker">ACTIVITY LOG</p><h3>最近的运动</h3></div><strong>{weekActivities.length} 条</strong></header>{weekActivities.length ? <div>{weekActivities.slice().sort((a, b) => b.date.localeCompare(a.date)).map((log) => <button key={log.id} onClick={() => setActivityEditor(log)}><time>{shortDate(log.date)}</time><span><strong>{log.type}</strong><small>{log.durationMinutes} 分钟{log.distance != null ? ` · ${log.distance} ${log.distanceUnit}` : ""}{log.intensity ? ` · ${log.intensity}` : ""}</small></span><i>编辑</i></button>)}</div> : <p className="fitness-empty-copy">本周还没有运动记录。散步、篮球和徒步都可以记。</p>}</section>
+      <section className="fitness-card fitness-history"><header><div><p className="section-kicker">ACTIVITY LOG</p><h3>本周真实运动</h3></div><strong>{weekActivities.length} 条</strong></header>{weekActivities.length ? <div>{weekActivities.slice().sort((a, b) => b.date.localeCompare(a.date)).map((log) => <button key={log.id} onClick={() => setActivityEditor({ value: log, isNew: false })}><time>{shortDate(log.date)}</time><span><strong>{log.type}</strong><small>{log.durationMinutes} 分钟{log.distance != null ? ` · ${log.distance} ${log.distanceUnit}` : ""}{log.intensity ? ` · ${log.intensity}` : ""}</small></span><i>编辑</i></button>)}</div> : <p className="fitness-empty-copy">本周还没有运动记录。散步、篮球和徒步都可以记。</p>}</section>
     </div>}
 
     {tab === "progress" && <div className="fitness-progress-view">
@@ -125,14 +143,29 @@ export default function FitnessModule(props: Props) {
     </div>}
 
     {tab === "library" && <div className="fitness-library-view">
-      <div className="fitness-section-head"><div><p className="section-kicker">EXERCISE LIBRARY</p><h2>我会的动作</h2><span>技术笔记留在动作里；每次做了多少，留在训练记录里。</span></div><button className="primary-button" onClick={() => setExerciseEditor("new")}>＋ 添加动作</button></div>
+      <div className="fitness-section-head"><div><p className="section-kicker">TRAINING MANUAL</p><h2>动作手册</h2><span>先快速找到动作，再进入详情看完整的编号要点；记录与技术说明彼此分开。</span></div><button className="primary-button" onClick={() => setExerciseEditor("new")}>＋ 添加动作</button></div>
       <div className="fitness-library-tools"><label><span>⌕</span><input value={libraryQuery} onChange={(event) => setLibraryQuery(event.target.value)} placeholder="搜索动作或技术要点" /></label><div><button className={bodyPart === "全部" ? "active" : ""} onClick={() => setBodyPart("全部")}>全部</button>{BODY_PARTS.map((part) => <button className={bodyPart === part ? "active" : ""} key={part} onClick={() => setBodyPart(part)}>{part}</button>)}</div></div>
-      <div className="fitness-library-grid">{visibleExercises.map((item) => <article key={item.id}><header><span>{item.bodyPart}</span><i>{item.mastered ? "已掌握" : "学习中"}</i></header><button onClick={() => setExerciseEditor(item)}><h3>{item.name}</h3><strong>{formatLoad(item.currentWeight, item.unit, item.loadMode)}</strong><p>{item.notes || "还没有动作笔记。"}</p></button><footer><span>{item.defaultSets} 组 · {item.defaultReps} 次</span><button onClick={() => setHistoryExerciseId(item.id)}>历史 {exerciseLogs.filter((log) => log.exerciseId === item.id).length}</button></footer></article>)}</div>
+      <div className="fitness-library-grid">{visibleExercises.map((item, index) => {
+        const points = techniquePoints(item.notes);
+        const historyCount = exerciseLogs.filter((log) => log.exerciseId === item.id).length;
+        return <article key={item.id}>
+          <div className="fitness-library-index">{String(index + 1).padStart(2, "0")}</div>
+          <button className="fitness-library-main" onClick={() => setExerciseDetailId(item.id)}>
+            <header><span>{item.bodyPart}</span><i>{item.mastered ? "已掌握" : "学习中"}</i></header>
+            <h3>{item.name}</h3>
+            <div className="fitness-library-metrics"><strong>{formatLoad(item.currentWeight, item.unit, item.loadMode)}</strong><span>{item.defaultSets} 组 × {item.defaultReps}</span></div>
+            {points.length ? <ol>{points.slice(0, 3).map((point, pointIndex) => <li key={`${point}-${pointIndex}`}>{point}</li>)}</ol> : <p>还没有动作要点。</p>}
+          </button>
+          <footer><button onClick={() => setExerciseDetailId(item.id)}>查看全部 {points.length} 条要点</button><button onClick={() => setHistoryExerciseId(item.id)}>训练历史 {historyCount}</button></footer>
+        </article>;
+      })}</div>
     </div>}
 
+    {planDetail && <PlanDetailModal plan={planDetail} exercises={exercises} onClose={() => setPlanDetail(null)} onStart={() => { setPlanDetail(null); setSessionPlan(planDetail); }} onEdit={() => { setPlanDetail(null); setPlanEditor(planDetail); }} />}
     {planEditor && <PlanModal value={planEditor} exercises={exercises} isNew={!trainingPlans.some((item) => item.id === planEditor.id)} onClose={() => setPlanEditor(null)} onSave={(plan) => { const withoutConflict = trainingPlans.filter((item) => item.id === plan.id || item.weekday !== plan.weekday); onChange({ trainingPlans: withoutConflict.some((item) => item.id === plan.id) ? withoutConflict.map((item) => item.id === plan.id ? plan : item) : [...withoutConflict, plan] }); setPlanEditor(null); }} onDelete={() => { onChange({ trainingPlans: trainingPlans.filter((item) => item.id !== planEditor.id) }); setPlanEditor(null); }} />}
     {sessionPlan && <SessionModal plan={sessionPlan} today={today} exercises={exercises} onClose={() => setSessionPlan(null)} onSave={(logs, activity) => { const nextExercises = exercises.map((item) => { const latest = logs.find((log) => log.exerciseId === item.id); return latest?.weight != null ? { ...item, currentWeight: latest.weight, unit: latest.unit, loadMode: latest.loadMode } : item; }); onChange({ exerciseLogs: [...exerciseLogs, ...logs], activityLogs: [...activityLogs, activity], exercises: nextExercises }); setSessionPlan(null); }} />}
-    {activityEditor && <ActivityModal value={activityEditor} today={today} onClose={() => setActivityEditor(null)} onSave={(log) => { onChange({ activityLogs: activityEditor === "new" ? [...activityLogs, log] : activityLogs.map((item) => item.id === log.id ? log : item) }); setActivityEditor(null); }} onDelete={activityEditor === "new" ? undefined : () => { onChange({ activityLogs: activityLogs.filter((item) => item.id !== activityEditor.id) }); setActivityEditor(null); }} />}
+    {activityEditor && <ActivityModal value={activityEditor.value} isNew={activityEditor.isNew} onClose={() => setActivityEditor(null)} onSave={(log) => { onChange({ activityLogs: activityEditor.isNew ? [...activityLogs, log] : activityLogs.map((item) => item.id === log.id ? log : item) }); setActivityEditor(null); }} onDelete={activityEditor.isNew ? undefined : () => { onChange({ activityLogs: activityLogs.filter((item) => item.id !== activityEditor.value.id) }); setActivityEditor(null); }} />}
+    {exerciseDetailId && <ExerciseDetailModal exercise={exerciseById.get(exerciseDetailId)} historyCount={exerciseLogs.filter((log) => log.exerciseId === exerciseDetailId).length} onClose={() => setExerciseDetailId(null)} onEdit={() => { const item = exerciseById.get(exerciseDetailId); setExerciseDetailId(null); if (item) setExerciseEditor(item); }} onHistory={() => { setExerciseDetailId(null); setHistoryExerciseId(exerciseDetailId); }} />}
     {exerciseEditor && <ExerciseModal value={exerciseEditor} onClose={() => setExerciseEditor(null)} onSave={(item) => { onChange({ exercises: exerciseEditor === "new" ? [...exercises, item] : exercises.map((current) => current.id === item.id ? item : current) }); setExerciseEditor(null); }} onDelete={exerciseEditor === "new" ? undefined : () => { onChange({ exercises: exercises.filter((item) => item.id !== exerciseEditor.id), exerciseLogs: exerciseLogs.filter((log) => log.exerciseId !== exerciseEditor.id), trainingPlans: trainingPlans.map((plan) => ({ ...plan, exerciseIds: plan.exerciseIds.filter((exerciseId) => exerciseId !== exerciseEditor.id) })) }); setExerciseEditor(null); }} />}
     {historyExerciseId && <HistoryModal exercise={exerciseById.get(historyExerciseId)} logs={exerciseLogs.filter((log) => log.exerciseId === historyExerciseId).slice().sort((a, b) => b.date.localeCompare(a.date))} onClose={() => setHistoryExerciseId(null)} onEdit={(log) => { setHistoryExerciseId(null); setLogEditor(log); }} onDelete={(logId) => onChange({ exerciseLogs: exerciseLogs.filter((log) => log.id !== logId) })} />}
     {logEditor && <ExerciseLogModal value={logEditor} today={today} exercises={exercises} onClose={() => setLogEditor(null)} onSave={saveExerciseLog} onDelete={logEditor === "new" ? undefined : () => { onChange({ exerciseLogs: exerciseLogs.filter((item) => item.id !== logEditor.id) }); setLogEditor(null); }} />}
@@ -141,6 +174,29 @@ export default function FitnessModule(props: Props) {
 
 function Modal({ title, subtitle, children, onClose }: { title: string; subtitle: string; children: React.ReactNode; onClose: () => void }) {
   return <div className="modal-backdrop fitness-modal-backdrop"><section className="modal fitness-modal"><header><div><p className="section-kicker">{subtitle}</p><h2>{title}</h2></div><button onClick={onClose} aria-label="关闭">×</button></header>{children}</section></div>;
+}
+
+function PlanDetailModal({ plan, exercises, onClose, onStart, onEdit }: { plan: TrainingPlan; exercises: ExerciseDefinition[]; onClose: () => void; onStart: () => void; onEdit: () => void }) {
+  const planExercises = plan.exerciseIds.flatMap((exerciseId) => { const item = exercises.find((exercise) => exercise.id === exerciseId); return item ? [item] : []; });
+  return <Modal title={plan.title} subtitle={`${DAY_NAMES[plan.weekday]} · ${kindLabel(plan.kind)}模板`} onClose={onClose}>
+    <div className="fitness-plan-detail-summary"><div><span>预计时长</span><strong>{plan.durationMinutes}<small> 分钟</small></strong></div><div><span>动作</span><strong>{planExercises.length}<small> 个</small></strong></div><p>{plan.notes || "暂无训练说明。"}</p></div>
+    {plan.kind === "strength" && <div className="fitness-time-split fitness-detail-time"><span style={{ flex: plan.warmupMinutes }}>热身 {plan.warmupMinutes}</span><span style={{ flex: plan.strengthMinutes }}>力量 {plan.strengthMinutes}</span><span style={{ flex: plan.cardioMinutes }}>有氧 {plan.cardioMinutes}</span></div>}
+    {planExercises.length ? <div className="fitness-plan-exercise-list">{planExercises.map((item, index) => {
+      const points = techniquePoints(item.notes);
+      return <article key={item.id}><div className="fitness-plan-exercise-number">{String(index + 1).padStart(2, "0")}</div><div><header><div><span>{item.bodyPart}</span><h3>{item.name}</h3></div><aside><strong>{formatLoad(item.currentWeight, item.unit, item.loadMode)}</strong><small>{item.defaultSets} 组 × {item.defaultReps}</small></aside></header>{points.length ? <ol>{points.map((point, pointIndex) => <li key={`${point}-${pointIndex}`}>{point}</li>)}</ol> : <p>暂无动作要点。</p>}</div></article>;
+    })}</div> : <div className="fitness-detail-empty">这是自由活动或恢复安排，不需要固定动作。</div>}
+    <div className="modal-actions"><button className="ghost-button" onClick={onEdit}>编辑每周模板</button><button className="primary-button" onClick={onStart}>{plan.kind === "recovery" ? "记录这次活动" : "开始并记录"}</button></div>
+  </Modal>;
+}
+
+function ExerciseDetailModal({ exercise, historyCount, onClose, onEdit, onHistory }: { exercise?: ExerciseDefinition; historyCount: number; onClose: () => void; onEdit: () => void; onHistory: () => void }) {
+  if (!exercise) return null;
+  const points = techniquePoints(exercise.notes);
+  return <Modal title={exercise.name} subtitle={`${exercise.bodyPart} · ${exercise.mastered ? "已掌握" : "学习中"}`} onClose={onClose}>
+    <div className="fitness-exercise-detail-stats"><div><span>当前工作重量</span><strong>{formatLoad(exercise.currentWeight, exercise.unit, exercise.loadMode)}</strong></div><div><span>建议训练</span><strong>{exercise.defaultSets} 组 × {exercise.defaultReps}</strong></div><div><span>历史</span><strong>{historyCount} 次</strong></div></div>
+    <section className="fitness-technique-sheet"><header><div><p className="section-kicker">TECHNIQUE CHECKLIST</p><h3>动作要点</h3></div><span>{points.length} 条</span></header>{points.length ? <ol>{points.map((point, index) => <li key={`${point}-${index}`}><span>{String(index + 1).padStart(2, "0")}</span><p>{point}</p></li>)}</ol> : <p className="fitness-empty-copy">还没有动作要点，可以进入编辑补充。</p>}</section>
+    <div className="modal-actions"><button className="ghost-button" onClick={onHistory}>查看训练历史</button><button className="primary-button" onClick={onEdit}>编辑动作资料</button></div>
+  </Modal>;
 }
 
 function PlanModal({ value, exercises, isNew, onClose, onSave, onDelete }: { value: TrainingPlan; exercises: ExerciseDefinition[]; isNew: boolean; onClose: () => void; onSave: (value: TrainingPlan) => void; onDelete: () => void }) {
@@ -161,14 +217,14 @@ function SessionModal({ plan, today, exercises, onClose, onSave }: { plan: Train
     const logs = rows.map((row) => ({ id: id("elog"), exerciseId: row.exerciseId, date, loadMode: row.loadMode, weight: row.loadMode === "bodyweight" || row.weight === "" ? null : Number(row.weight), unit: row.unit, sets: Math.max(1, Number(row.sets) || 1), reps: row.reps.split(/[,，\s]+/).map(Number).filter(Number.isFinite), rir: row.rir === "" ? null : Number(row.rir), notes: row.notes, planId: plan.id }));
     onSave(logs, { id: id("activity"), type: plan.title, date, durationMinutes: Math.min(40, Math.max(1, Number(duration) || plan.durationMinutes)), distance: null, distanceUnit: "km", intensity: "中等", notes, planId: plan.id });
   };
-  return <Modal title={plan.title} subtitle="LOG SESSION" onClose={onClose}><div className="fitness-session-meta"><label><span>日期</span><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label><span>总时长（最多 40）</span><input type="number" min="1" max="40" value={duration} onChange={(event) => setDuration(event.target.value)} /></label></div>{rows.length > 0 ? <div className="fitness-session-rows">{rows.map((row, index) => { const item = exercises.find((exercise) => exercise.id === row.exerciseId); return <section key={row.exerciseId}><header><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{item?.name}</strong><small>{item?.notes.split("；")[0]}</small></div></header><div><label><span>方式</span><select value={row.loadMode} onChange={(event) => updateRow(index, { loadMode: event.target.value as LoadMode })}>{Object.entries(LOAD_LABEL).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label><span>重量</span><input type="number" step="0.01" disabled={row.loadMode === "bodyweight"} value={row.weight} onChange={(event) => updateRow(index, { weight: event.target.value })} /></label><label><span>单位</span><select value={row.unit} onChange={(event) => updateRow(index, { unit: event.target.value as WeightUnit })}><option>lb</option><option>kg</option></select></label><label><span>组数</span><input type="number" min="1" max="10" value={row.sets} onChange={(event) => updateRow(index, { sets: event.target.value })} /></label><label className="wide"><span>每组次数（逗号分隔）</span><input value={row.reps} onChange={(event) => updateRow(index, { reps: event.target.value })} placeholder="10, 10, 9" /></label><label><span>RIR 可选</span><input type="number" min="0" max="10" value={row.rir} onChange={(event) => updateRow(index, { rir: event.target.value })} /></label><label className="wide"><span>备注</span><input value={row.notes} onChange={(event) => updateRow(index, { notes: event.target.value })} /></label></div></section>; })}</div> : <p className="fitness-form-hint">这次只记录活动时长；不会创建没有意义的力量组数。</p>}<label className="fitness-session-note"><span>整次训练备注</span><textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="身体状态、路线或其他感受（可选）" /></label><div className="modal-actions"><button className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" onClick={submit}>完成并保存</button></div></Modal>;
+  return <Modal title={plan.title} subtitle="LOG PLANNED SESSION" onClose={onClose}><p className="fitness-session-context">这里只记录你实际完成的组数和重量。若今天临时改成徒步或散步，请关闭这里并使用“记录实际运动”。</p><div className="fitness-session-meta"><label><span>日期</span><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label><span>正式训练总时长（最多 40）</span><input type="number" min="1" max="40" value={duration} onChange={(event) => setDuration(event.target.value)} /></label></div>{rows.length > 0 ? <div className="fitness-session-rows">{rows.map((row, index) => { const item = exercises.find((exercise) => exercise.id === row.exerciseId); const points = techniquePoints(item?.notes || ""); return <section key={row.exerciseId}><header><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{item?.name}</strong><small>{formatLoad(item?.currentWeight ?? null, item?.unit || "lb", item?.loadMode || "weight")} · {item?.defaultSets} 组 × {item?.defaultReps}</small></div></header>{points.length > 0 && <details className="fitness-session-technique" open><summary>动作要点 · {points.length} 条</summary><ol>{points.map((point, pointIndex) => <li key={`${point}-${pointIndex}`}>{point}</li>)}</ol></details>}<div><label><span>方式</span><select value={row.loadMode} onChange={(event) => updateRow(index, { loadMode: event.target.value as LoadMode })}>{Object.entries(LOAD_LABEL).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label><span>重量</span><input type="number" step="0.01" disabled={row.loadMode === "bodyweight"} value={row.weight} onChange={(event) => updateRow(index, { weight: event.target.value })} /></label><label><span>单位</span><select value={row.unit} onChange={(event) => updateRow(index, { unit: event.target.value as WeightUnit })}><option>lb</option><option>kg</option></select></label><label><span>组数</span><input type="number" min="1" max="10" value={row.sets} onChange={(event) => updateRow(index, { sets: event.target.value })} /></label><label className="wide"><span>每组次数（逗号分隔）</span><input value={row.reps} onChange={(event) => updateRow(index, { reps: event.target.value })} placeholder="10, 10, 9" /></label><label><span>RIR 可选</span><input type="number" min="0" max="10" value={row.rir} onChange={(event) => updateRow(index, { rir: event.target.value })} /></label><label className="wide"><span>备注</span><input value={row.notes} onChange={(event) => updateRow(index, { notes: event.target.value })} /></label></div></section>; })}</div> : <p className="fitness-form-hint">这次只记录活动时长；不会创建没有意义的力量组数。</p>}<label className="fitness-session-note"><span>整次训练备注</span><textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="身体状态或其他感受（可选）" /></label><div className="modal-actions"><button className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" onClick={submit}>完成并保存</button></div></Modal>;
 }
 
-function ActivityModal({ value, today, onClose, onSave, onDelete }: { value: ActivityLog | "new"; today: string; onClose: () => void; onSave: (value: ActivityLog) => void; onDelete?: () => void }) {
-  const [draft, setDraft] = useState<ActivityLog>(value === "new" ? { id: id("activity"), type: "散步", date: today, durationMinutes: 30, distance: null, distanceUnit: "km", intensity: "轻松", notes: "", planId: null } : value);
+function ActivityModal({ value, isNew, onClose, onSave, onDelete }: { value: ActivityLog; isNew: boolean; onClose: () => void; onSave: (value: ActivityLog) => void; onDelete?: () => void }) {
+  const [draft, setDraft] = useState<ActivityLog>(value);
   const update = <K extends keyof ActivityLog>(key: K, next: ActivityLog[K]) => setDraft((current) => ({ ...current, [key]: next }));
   const isCustom = !ACTIVITY_TYPES.slice(0, -1).includes(draft.type);
-  return <Modal title={value === "new" ? "记录一次运动" : "编辑运动记录"} subtitle="ACTIVITY" onClose={onClose}><div className="form-grid"><label><span>活动</span><select value={isCustom ? "其他" : draft.type} onChange={(event) => update("type", event.target.value)}>{ACTIVITY_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label><label><span>日期</span><input type="date" value={draft.date} onChange={(event) => update("date", event.target.value)} /></label>{isCustom && <label className="wide"><span>自定义活动名称</span><input value={draft.type === "其他" ? "" : draft.type} onChange={(event) => update("type", event.target.value || "其他")} placeholder="例如 羽毛球、划船机" /></label>}<label><span>分钟</span><input type="number" min="1" value={draft.durationMinutes} onChange={(event) => update("durationMinutes", Math.max(1, Number(event.target.value)))} /></label><label><span>主观强度</span><select value={draft.intensity} onChange={(event) => update("intensity", event.target.value as ActivityLog["intensity"])}><option value="">未记录</option><option>轻松</option><option>中等</option><option>较高</option></select></label><label><span>距离（可选）</span><input type="number" step="0.01" value={draft.distance ?? ""} onChange={(event) => update("distance", event.target.value === "" ? null : Number(event.target.value))} /></label><label><span>距离单位</span><select value={draft.distanceUnit} onChange={(event) => update("distanceUnit", event.target.value as ActivityLog["distanceUnit"])}><option>km</option><option>mi</option></select></label><label className="wide"><span>备注</span><textarea value={draft.notes} onChange={(event) => update("notes", event.target.value)} /></label></div><div className="modal-actions">{onDelete && <button className="danger-button" onClick={onDelete}>删除</button>}<button className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!draft.type.trim() || draft.type === "其他"} onClick={() => onSave(draft)}>保存</button></div></Modal>;
+  return <Modal title={isNew ? "记录实际运动" : "编辑实际记录"} subtitle="WHAT ACTUALLY HAPPENED" onClose={onClose}><p className="fitness-session-context">按事实填写，不需要和当天训练模板一致。同一天可以保存徒步、散步等多条记录。</p><div className="form-grid"><label><span>活动</span><select value={isCustom ? "其他" : draft.type} onChange={(event) => update("type", event.target.value)}>{ACTIVITY_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label><label><span>日期</span><input type="date" value={draft.date} onChange={(event) => update("date", event.target.value)} /></label>{isCustom && <label className="wide"><span>自定义活动名称</span><input value={draft.type === "其他" ? "" : draft.type} onChange={(event) => update("type", event.target.value || "其他")} placeholder="例如 羽毛球、划船机" /></label>}<label><span>实际分钟</span><input type="number" min="1" value={draft.durationMinutes} onChange={(event) => update("durationMinutes", Math.max(1, Number(event.target.value)))} /></label><label><span>主观强度</span><select value={draft.intensity} onChange={(event) => update("intensity", event.target.value as ActivityLog["intensity"])}><option value="">未记录</option><option>轻松</option><option>中等</option><option>较高</option></select></label><label><span>距离（可选）</span><input type="number" step="0.01" value={draft.distance ?? ""} onChange={(event) => update("distance", event.target.value === "" ? null : Number(event.target.value))} /></label><label><span>距离单位</span><select value={draft.distanceUnit} onChange={(event) => update("distanceUnit", event.target.value as ActivityLog["distanceUnit"])}><option>km</option><option>mi</option></select></label><label className="wide"><span>备注</span><textarea value={draft.notes} onChange={(event) => update("notes", event.target.value)} /></label></div><div className="modal-actions">{onDelete && <button className="danger-button" onClick={onDelete}>删除</button>}<button className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!draft.type.trim() || draft.type === "其他"} onClick={() => onSave(draft)}>保存实际记录</button></div></Modal>;
 }
 
 function ExerciseModal({ value, onClose, onSave, onDelete }: { value: ExerciseDefinition | "new"; onClose: () => void; onSave: (value: ExerciseDefinition) => void; onDelete?: () => void }) {
