@@ -1431,7 +1431,7 @@ export default function Home() {
       {!online && <div className="offline-banner"><strong>离线模式</strong><span>仍可编辑，联网后自动同步；AI 与语音暂停。</span></div>}
       {undoNotice && <div className="undo-toast" role="status"><span>{undoNotice.message}</span><button onClick={undoLastAction}>撤销</button></div>}
       <aside className="sidebar">
-        <button className="brand" onClick={() => setView("today")} aria-label="返回今日">
+        <button className="brand" onClick={() => openNavigationView(navOrder[0] ?? "today")} aria-label={`打开置顶模块：${NAV_LABELS[navOrder[0] ?? "today"]}`}>
           <span className="brand-mark">M</span>
           <span><strong>MAP</strong><small>Life operating system</small></span>
         </button>

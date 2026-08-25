@@ -292,6 +292,8 @@ test("drafts split compact backlog from long-form idea notes and navigation orde
   assert.match(source, /NAV_ORDER_STORAGE_KEY/);
   assert.match(source, /moveNavigationItem/);
   assert.match(source, /title="拖动改变导航顺序"/);
+  assert.match(source, /openNavigationView\(navOrder\[0\] \?\? "today"\)/);
+  assert.doesNotMatch(source, /className="brand" onClick=\{\(\) => setView\("today"\)\}/);
   assert.match(styles, /\.idea-workbench/);
   assert.match(styles, /nav button\.drag-over/);
 });
