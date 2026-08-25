@@ -8,6 +8,9 @@ import { shiftTaskToDate } from "../lib/task-reschedule.mjs";
 import { isCompletedTaskArchived } from "../lib/task-retention.mjs";
 import { isTaskVisibleToday } from "../lib/task-visibility.mjs";
 import { mergeSyncPayload, syncPayloadEquals, toSyncPayload } from "../lib/sync-state.mjs";
+import FitnessModule from "./components/FitnessModule";
+import { defaultExercises, defaultTrainingPlans } from "../lib/fitness-data";
+import type { ActivityLog, ExerciseDefinition, ExerciseLog, TrainingPlan } from "../lib/fitness-types";
 
 type View = "today" | "goals" | "semester" | "career" | "planner" | "notes" | "vault" | "wellness";
 type TaskCategory = "学业" | "求职" | "生活" | "健康";
@@ -39,7 +42,7 @@ type ScheduleItem = {
   start: string;
   end: string;
   room: string;
-  detail?: string;
+  detail?: string | null;
   color: "lime" | "coral" | "lavender" | "blue";
 };
 
@@ -72,13 +75,13 @@ type ReferenceNote = { id: string; title: string; content: string; pinned: boole
 type AIPlanPreview = { summary: string; changes: string[]; nextData: AppData };
 type AIModel = "gpt-5.6-luna" | "gpt-5.6-terra" | "gpt-5.6-sol" | "gpt-5.4-mini" | "gpt-5.4";
 type AIChatMessage = { id: string; role: "user" | "assistant"; content: string };
-type AICollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "applications" | "notes" | "references";
+type AICollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "trainingPlans" | "exercises" | "exerciseLogs" | "activityLogs" | "applications" | "notes" | "references";
 type AIOperation = { collection: AICollection; operation: "add" | "update" | "delete" | "reorder"; recordId: string; recordJson: string };
 type AIChatResponse = { reply: string; action: "answer" | "proposal"; summary: string; operations: AIOperation[]; error?: string };
 type VoiceState = "idle" | "recording" | "transcribing";
 type PlannerStatusFilter = "open" | "done" | "all";
 type SemesterWeekModule = "schedule" | "tasks";
-type RecordCollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "applications" | "notes" | "references";
+type RecordCollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "trainingPlans" | "exercises" | "exerciseLogs" | "activityLogs" | "applications" | "notes" | "references";
 type UndoNotice = { message: string; restore: (current: AppData) => AppData };
 type PWAInstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
 type TaskPrefill = { title: string; details: string; category: TaskCategory };
@@ -91,6 +94,10 @@ type AppData = {
   goals: Goal[];
   habits: Habit[];
   workouts: Workout[];
+  trainingPlans: TrainingPlan[];
+  exercises: ExerciseDefinition[];
+  exerciseLogs: ExerciseLog[];
+  activityLogs: ActivityLog[];
   applications: Application[];
   notes: Note[];
   references: ReferenceNote[];
@@ -118,7 +125,7 @@ const SYNC_META_KEY = "map-sync-meta-v1";
 const SYNC_DIRTY_KEY = "map-sync-dirty-v1";
 const DEFAULT_SEMESTER_WEEK_ORDER: SemesterWeekModule[] = ["schedule", "tasks"];
 const DEFAULT_NAV_ORDER: View[] = ["today", "goals", "semester", "career", "planner", "notes", "vault", "wellness"];
-const NAV_LABELS: Record<View, string> = { today: "今日指挥台", goals: "长期目标", semester: "阶段地图", career: "求职记录", planner: "任务计划", notes: "草稿箱", vault: "私人速记", wellness: "健康运动" };
+const NAV_LABELS: Record<View, string> = { today: "今日指挥台", goals: "长期目标", semester: "阶段地图", career: "求职记录", planner: "任务计划", notes: "草稿箱", vault: "私人速记", wellness: "健身与健康" };
 const AI_WELCOME_MESSAGE: AIChatMessage = { id: "welcome", role: "assistant", content: "你好，我是 MAP AI。我能看到你当前阶段、长期目标、任务、固定任务、课表、求职记录、健康计划和草稿，也知道哪些行动正在服务哪个目标。你可以让我分析现状、回答问题，或者一起把一个想法变成计划；任何数据修改都会先给你预览。私人速记只有在你明确开启“AI 可读 · 云端同步”并要求管理它时才会加入上下文。" };
 const LEGACY_TASK_GOALS: Record<string, string> = { stephnie: "graduate", leetcode: "career", fees: "graduate", applications: "career", pte: "graduate", irene: "graduate" };
 
@@ -281,6 +288,10 @@ const initialData: AppData = {
     { id: "w2", title: "有氧 / 快走", day: "周四", duration: "40 分钟", done: false },
     { id: "w3", title: "力量训练", day: "周六", duration: "45 分钟", done: false },
   ],
+  trainingPlans: defaultTrainingPlans,
+  exercises: defaultExercises,
+  exerciseLogs: [],
+  activityLogs: [],
   applications: [],
   notes: [],
   references: [],
@@ -305,6 +316,10 @@ function hydrateAppData(parsed: Partial<AppData>, currentDay: string, deviceRefe
     goals: savedGoals,
     habits: parsed.habitDate === currentDay ? savedHabits : savedHabits.map((habit) => ({ ...habit, done: false })),
     workouts: parsed.workoutWeek === currentWeek ? savedWorkouts : savedWorkouts.map((workout) => ({ ...workout, done: false })),
+    trainingPlans: Array.isArray(parsed.trainingPlans) ? parsed.trainingPlans : defaultTrainingPlans,
+    exercises: Array.isArray(parsed.exercises) ? parsed.exercises : defaultExercises,
+    exerciseLogs: Array.isArray(parsed.exerciseLogs) ? parsed.exerciseLogs : [],
+    activityLogs: Array.isArray(parsed.activityLogs) ? parsed.activityLogs : [],
     applications: normalizeApplications(parsed.applications),
     notes: parsed.notes || initialData.notes,
     references: normalizeReferences(parsed.references || deviceReferences),
@@ -320,7 +335,7 @@ function uid() {
 }
 
 function deriveAIChanges(current: AppData, next: AppData) {
-  const collections: Array<[AICollection, string]> = [["tasks", "任务"], ["routines", "固定任务"], ["schedule", "固定安排"], ["goals", "目标"], ["habits", "饮食习惯"], ["workouts", "运动"], ["applications", "求职记录"], ["notes", "草稿"], ["references", "私人速记"]];
+  const collections: Array<[AICollection, string]> = [["tasks", "任务"], ["routines", "固定任务"], ["schedule", "固定安排"], ["goals", "目标"], ["habits", "饮食习惯"], ["workouts", "旧版运动"], ["trainingPlans", "训练计划"], ["exercises", "动作"], ["exerciseLogs", "力量记录"], ["activityLogs", "运动记录"], ["applications", "求职记录"], ["notes", "草稿"], ["references", "私人速记"]];
   const changes: string[] = [];
   const displayName = (item: Record<string, unknown>) => String(item.title || item.company || item.label || item.code || item.content || item.id || "未命名记录").split("\n")[0].slice(0, 60);
   for (const [key, label] of collections) {
@@ -716,7 +731,6 @@ export default function Home() {
   const todayOpenCount = todayTasks.length + openRoutineCount;
   const todayCompletedCount = completedToday + completedRoutineCount;
   const taskProgress = todayOpenCount + todayCompletedCount === 0 ? 0 : Math.round((todayCompletedCount / (todayOpenCount + todayCompletedCount)) * 100);
-  const workoutDone = data.workouts.filter((workout) => workout.done).length;
   const habitDone = data.habits.filter((habit) => habit.done).length;
   const calendarCells = useMemo(() => buildCalendarCells(calendarCursor), [calendarCursor]);
   const weekDays = useMemo(() => buildWeekDays(today), [today]);
@@ -776,7 +790,7 @@ export default function Home() {
     const query = referenceQuery.trim().toLocaleLowerCase();
     return data.references.filter((reference) => !query || reference.title.toLocaleLowerCase().includes(query) || reference.content.toLocaleLowerCase().includes(query)).slice().sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updatedAt.localeCompare(left.updatedAt));
   }, [data.references, referenceQuery]);
-  const mobileViewTitle: Record<View, string> = { today: "今天", goals: "长期目标", semester: "阶段地图", career: "求职记录", planner: "任务计划", notes: "草稿箱", vault: "私人速记", wellness: "健康运动" };
+  const mobileViewTitle: Record<View, string> = { today: "今天", goals: "长期目标", semester: "阶段地图", career: "求职记录", planner: "任务计划", notes: "草稿箱", vault: "私人速记", wellness: "健身与健康" };
 
   function openNewTask(date?: string, goalId?: string) {
     setNewTaskDate(date || null);
@@ -1816,26 +1830,16 @@ export default function Home() {
 
         {view === "wellness" && (
           <div className="page-content wellness-page">
-            <section className="wellness-hero">
-              <div><p className="section-kicker">DAILY BASELINE</p><h2>先照顾能量，<br />再管理时间。</h2><p>不追求复杂饮食记录。第一阶段只守住最影响状态的四个底线，再保证每周三次运动。</p></div>
-              <div className="wellness-score"><strong>{Math.round(((habitDone + workoutDone) / Math.max(data.habits.length + data.workouts.length, 1)) * 100)}</strong><span>%</span><small>本周健康完成度</small></div>
-            </section>
-            <div className="wellness-columns">
-              <section className="panel habit-panel">
-                <div className="panel-heading"><div><p className="section-kicker">NUTRITION</p><h3>今天吃得怎么样？</h3></div><button className="ghost-button small" onClick={() => setHabitEditor("new")}>＋ 添加</button></div>
-                <div className="habit-list">
-                  {data.habits.map((habit) => <div className={`habit-list-row ${habit.done ? "done" : ""}`} key={habit.id}><button className="habit-check" onClick={() => setData((current) => ({ ...current, habits: current.habits.map((item) => item.id === habit.id ? { ...item, done: !item.done } : item) }))}>{habit.done ? "✓" : habit.icon}</button><span>{habit.label}</span><button className="edit-link" onClick={() => setHabitEditor(habit)}>编辑</button></div>)}
-                </div>
-                <p className="panel-note">饮食勾选每天自动重置；运动计划每周一自动开始新一周。</p>
-              </section>
-              <section className="panel workout-panel">
-                <div className="panel-heading"><div><p className="section-kicker">MOVEMENT</p><h3>本周运动计划</h3></div><button className="ghost-button small" onClick={() => setWorkoutEditor("new")}>＋ 添加</button></div>
-                <div className="workout-list">
-                  {data.workouts.map((workout, index) => <div className={`workout-row ${workout.done ? "done" : ""}`} key={workout.id}><button className="workout-index" onClick={() => setData((current) => ({ ...current, workouts: current.workouts.map((item) => item.id === workout.id ? { ...item, done: !item.done } : item) }))}>{workout.done ? "✓" : `0${index + 1}`}</button><div><strong>{workout.title}</strong><span>{workout.day} · {workout.duration}</span></div><button className="edit-link" onClick={() => setWorkoutEditor(workout)}>编辑</button></div>)}
-                </div>
-                <div className="weekly-target"><span>每周目标</span><strong>{workoutDone} / {data.workouts.length}</strong><div><i style={{ width: `${Math.round((workoutDone / Math.max(data.workouts.length, 1)) * 100)}%` }} /></div></div>
-              </section>
-            </div>
+            <FitnessModule
+              today={today}
+              habits={data.habits}
+              trainingPlans={data.trainingPlans}
+              exercises={data.exercises}
+              exerciseLogs={data.exerciseLogs}
+              activityLogs={data.activityLogs}
+              onToggleHabit={(habitId) => setData((current) => ({ ...current, habits: current.habits.map((item) => item.id === habitId ? { ...item, done: !item.done } : item) }))}
+              onChange={(change) => setData((current) => ({ ...current, ...change }))}
+            />
           </div>
         )}
       </section>
@@ -1856,7 +1860,7 @@ export default function Home() {
             <button className={view === "goals" ? "active" : ""} onClick={() => { setView("goals"); setMobileMenuOpen(false); }}><span>◎</span><strong>长期目标</strong><small>管理人生主线</small></button>
             <button className={view === "career" ? "active" : ""} onClick={() => { setView("career"); setMobileMenuOpen(false); }}><span>↗</span><strong>求职记录</strong><small>跟踪投递进度</small></button>
             <button className={view === "vault" ? "active" : ""} onClick={() => { openVault(); setMobileMenuOpen(false); }}><span>⌁</span><strong>私人速记</strong><small>资料与常用信息</small></button>
-            <button className={view === "wellness" ? "active" : ""} onClick={() => { setView("wellness"); setMobileMenuOpen(false); }}><span>＋</span><strong>健康运动</strong><small>饮食与训练签到</small></button>
+            <button className={view === "wellness" ? "active" : ""} onClick={() => { setView("wellness"); setMobileMenuOpen(false); }}><span>＋</span><strong>健身健康</strong><small>训练、进步与动作库</small></button>
           </div>
           <div className="mobile-system-actions">
             <button onClick={() => void synchronizeData()} disabled={!online || syncStatus === "syncing"}><span className={`sync-dot ${syncStatus}`} />{syncMessage}</button>

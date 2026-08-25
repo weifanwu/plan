@@ -62,7 +62,7 @@ test("mobile shell prioritizes five touch targets and keeps every module reachab
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.match(source, /className="mobile-nav"/);
   for (const label of ["今天", "日程", "草稿", "任务", "更多"]) assert.match(source, new RegExp(`<strong>${label}<\\/strong>`));
-  for (const label of ["长期目标", "求职记录", "私人速记", "健康运动"]) assert.match(source, new RegExp(`<strong>${label}<\\/strong>`));
+  for (const label of ["长期目标", "求职记录", "私人速记", "健身健康"]) assert.match(source, new RegExp(`<strong>${label}<\\/strong>`));
   assert.match(styles, /env\(safe-area-inset-bottom\)/);
   assert.match(styles, /100dvh/);
 });
@@ -359,6 +359,29 @@ test("voice input is exposed in the MAP AI composer", async () => {
   assert.match(source, /开始语音输入/);
   assert.match(source, /\/api\/transcribe/);
   assert.match(source, /MAP 不保存录音/);
+});
+
+test("fitness module separates plans, exercise knowledge, strength history, and activity history", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const component = await readFile(new URL("../app/components/FitnessModule.tsx", import.meta.url), "utf8");
+  const defaults = await readFile(new URL("../lib/fitness-data.ts", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const sync = await readFile(new URL("../lib/sync-state.mjs", import.meta.url), "utf8");
+  assert.match(page, /trainingPlans: TrainingPlan\[\]/);
+  assert.match(page, /exerciseLogs: ExerciseLog\[\]/);
+  assert.match(page, /activityLogs: ActivityLog\[\]/);
+  for (const label of ["今日", "本周", "进步", "动作库"]) assert.match(component, new RegExp(`["']${label}["']`));
+  assert.match(component, /不用追连续打卡/);
+  assert.match(component, /Math\.min\(40/);
+  assert.match(component, /辅助重量/);
+  assert.match(component, /纠正训练记录/);
+  assert.match(component, /所有活动都算运动/);
+  for (const plan of ["全身力量 A", "稳态有氧", "全身力量 B", "全身力量 C"]) assert.match(defaults, new RegExp(plan));
+  for (const collection of ["trainingPlans", "exercises", "exerciseLogs", "activityLogs"]) {
+    assert.match(sync, new RegExp(collection));
+    assert.match(worker, new RegExp(collection));
+  }
+  assert.match(worker, /Never use the legacy workouts collection for new fitness changes/);
 });
 
 test("voice transcription API forwards audio without persisting it", { concurrency: false }, async () => {
