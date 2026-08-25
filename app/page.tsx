@@ -87,6 +87,7 @@ type SemesterWeekModule = "schedule" | "tasks";
 type RecordCollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "trainingPlans" | "exercises" | "exerciseLogs" | "activityLogs" | "mealThemes" | "mealPlans" | "mealRecipes" | "applications" | "notes" | "references";
 type UndoNotice = { message: string; restore: (current: AppData) => AppData };
 type PWAInstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
+type LockableScreenOrientation = ScreenOrientation & { lock?: (orientation: "portrait-primary") => Promise<void> };
 type TaskPrefill = { title: string; details: string; category: TaskCategory };
 
 type AppData = {
@@ -708,7 +709,12 @@ export default function Home() {
     // Browser connectivity and standalone display mode are external environment state.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setOnline(window.navigator.onLine);
-    setStandalone(window.matchMedia("(display-mode: standalone)").matches || Boolean((window.navigator as Navigator & { standalone?: boolean }).standalone));
+    const isStandalone = window.matchMedia("(display-mode: standalone)").matches || Boolean((window.navigator as Navigator & { standalone?: boolean }).standalone);
+    setStandalone(isStandalone);
+    if (isStandalone) {
+      const lockResult = (window.screen.orientation as LockableScreenOrientation | undefined)?.lock?.("portrait-primary");
+      lockResult?.catch(() => undefined);
+    }
     const handleOnline = () => setOnline(true);
     const handleOffline = () => setOnline(false);
     const handleInstallPrompt = (event: Event) => { event.preventDefault(); setInstallPrompt(event as PWAInstallPrompt); };

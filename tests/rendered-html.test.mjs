@@ -60,11 +60,14 @@ test("server-renders MAP", async () => {
 test("mobile shell prioritizes five touch targets and keeps every module reachable", async () => {
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  const manifest = JSON.parse(await readFile(new URL("../public/manifest.webmanifest", import.meta.url), "utf8"));
   assert.match(source, /className="mobile-nav"/);
   for (const label of ["今天", "日程", "草稿", "任务", "更多"]) assert.match(source, new RegExp(`<strong>${label}<\\/strong>`));
   for (const label of ["长期目标", "求职记录", "私人速记", "饮食计划", "健身健康"]) assert.match(source, new RegExp(`<strong>${label}<\\/strong>`));
   assert.match(styles, /env\(safe-area-inset-bottom\)/);
   assert.match(styles, /100dvh/);
+  assert.equal(manifest.orientation, "portrait-primary");
+  assert.match(source, /lock\?\.\("portrait-primary"\)/);
 });
 
 test("mobile calendars render as agendas instead of compressed desktop grids", async () => {
@@ -407,7 +410,8 @@ test("meal planner connects flexible weekly choices to recipes, groceries, prep,
   assert.match(page, /mealPlans: MealPlanEntry\[\]/);
   assert.match(page, /mealRecipes: MealRecipe\[\]/);
   for (const label of ["本周餐盘", "主题库", "采购与备菜", "饮食规则"]) assert.match(component, new RegExp(label));
-  assert.match(component, /安排明天的 Nations 早餐/);
+  assert.match(component, /安排明天早餐/);
+  assert.doesNotMatch(component, /安排明天的 Nations 早餐/);
   assert.match(component, /桌面端也可以直接拖动已安排的餐来交换日期/);
   assert.match(component, /清单只来自你这周真正选中的主题/);
   assert.match(component, /一个蛋白质＋一个主食＋两种蔬菜/);

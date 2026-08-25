@@ -185,7 +185,7 @@ export default function MealPlannerModule({ today, mealThemes, mealPlans, mealRe
 
   return <div className="meal-module">
     <section className="meal-hero">
-      <div><p className="section-kicker">FOOD SYSTEM · FLEXIBLE BY DESIGN</p><h2>周日决定，<br />工作日不用想。</h2><p>从主题库按心情选，不把每周菜单定死。排好后，采购、备菜和菜谱会自动连起来。</p><div className="meal-hero-actions"><button className="primary-button" onClick={() => { setTab("week"); setPicker({ date: dateAt(today, 1), mealSlot: "早餐", source: "Nations" }); }}>安排明天的 Nations 早餐</button><button className="ghost-button" onClick={() => setTab("shopping")}>查看本周采购</button></div></div>
+      <div><p className="section-kicker">FOOD SYSTEM · FLEXIBLE BY DESIGN</p><h2>周日决定，<br />工作日不用想。</h2><p>从主题库按心情选，不把每周菜单定死。排好后，采购、备菜和菜谱会自动连起来。</p><div className="meal-hero-actions"><button className="primary-button" onClick={() => { setTab("week"); setPicker({ date: dateAt(today, 1), mealSlot: "早餐" }); }}>安排明天早餐</button><button className="ghost-button" onClick={() => setTab("shopping")}>查看本周采购</button></div></div>
       <div className="meal-hero-stats"><div><span>本周已安排</span><strong>{scheduledCount}<small> / 21 餐</small></strong></div><div><span>可选主题</span><strong>{activeThemeCount}<small> 个</small></strong></div><div><span>已完成</span><strong>{completedCount}<small> 餐</small></strong></div></div>
     </section>
 
