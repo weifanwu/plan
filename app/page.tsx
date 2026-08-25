@@ -9,10 +9,13 @@ import { isCompletedTaskArchived } from "../lib/task-retention.mjs";
 import { isTaskVisibleToday } from "../lib/task-visibility.mjs";
 import { mergeSyncPayload, syncPayloadEquals, toSyncPayload } from "../lib/sync-state.mjs";
 import FitnessModule from "./components/FitnessModule";
+import MealPlannerModule from "./components/MealPlannerModule";
 import { defaultExercises, defaultTrainingPlans } from "../lib/fitness-data";
 import type { ActivityLog, ExerciseDefinition, ExerciseLog, TrainingPlan } from "../lib/fitness-types";
+import { defaultMealRecipes, defaultMealThemes } from "../lib/meal-data";
+import type { MealPlanEntry, MealRecipe, MealTheme } from "../lib/meal-types";
 
-type View = "today" | "goals" | "semester" | "career" | "planner" | "notes" | "vault" | "wellness";
+type View = "today" | "goals" | "semester" | "career" | "planner" | "notes" | "vault" | "meals" | "wellness";
 type TaskCategory = "学业" | "求职" | "生活" | "健康";
 type TaskStatus = "todo" | "done";
 type NoteCategory = "待办" | "想法" | "课程" | "项目" | "求职" | "生活";
@@ -75,13 +78,13 @@ type ReferenceNote = { id: string; title: string; content: string; pinned: boole
 type AIPlanPreview = { summary: string; changes: string[]; nextData: AppData };
 type AIModel = "gpt-5.6-luna" | "gpt-5.6-terra" | "gpt-5.6-sol" | "gpt-5.4-mini" | "gpt-5.4";
 type AIChatMessage = { id: string; role: "user" | "assistant"; content: string };
-type AICollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "trainingPlans" | "exercises" | "exerciseLogs" | "activityLogs" | "applications" | "notes" | "references";
+type AICollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "trainingPlans" | "exercises" | "exerciseLogs" | "activityLogs" | "mealThemes" | "mealPlans" | "mealRecipes" | "applications" | "notes" | "references";
 type AIOperation = { collection: AICollection; operation: "add" | "update" | "delete" | "reorder"; recordId: string; recordJson: string };
 type AIChatResponse = { reply: string; action: "answer" | "proposal"; summary: string; operations: AIOperation[]; error?: string };
 type VoiceState = "idle" | "recording" | "transcribing";
 type PlannerStatusFilter = "open" | "done" | "all";
 type SemesterWeekModule = "schedule" | "tasks";
-type RecordCollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "trainingPlans" | "exercises" | "exerciseLogs" | "activityLogs" | "applications" | "notes" | "references";
+type RecordCollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "trainingPlans" | "exercises" | "exerciseLogs" | "activityLogs" | "mealThemes" | "mealPlans" | "mealRecipes" | "applications" | "notes" | "references";
 type UndoNotice = { message: string; restore: (current: AppData) => AppData };
 type PWAInstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
 type TaskPrefill = { title: string; details: string; category: TaskCategory };
@@ -98,6 +101,9 @@ type AppData = {
   exercises: ExerciseDefinition[];
   exerciseLogs: ExerciseLog[];
   activityLogs: ActivityLog[];
+  mealThemes: MealTheme[];
+  mealPlans: MealPlanEntry[];
+  mealRecipes: MealRecipe[];
   applications: Application[];
   notes: Note[];
   references: ReferenceNote[];
@@ -124,9 +130,9 @@ const NAV_ORDER_STORAGE_KEY = "map-navigation-order-v1";
 const SYNC_META_KEY = "map-sync-meta-v1";
 const SYNC_DIRTY_KEY = "map-sync-dirty-v1";
 const DEFAULT_SEMESTER_WEEK_ORDER: SemesterWeekModule[] = ["schedule", "tasks"];
-const DEFAULT_NAV_ORDER: View[] = ["today", "goals", "semester", "career", "planner", "notes", "vault", "wellness"];
-const NAV_LABELS: Record<View, string> = { today: "今日指挥台", goals: "长期目标", semester: "阶段地图", career: "求职记录", planner: "任务计划", notes: "草稿箱", vault: "私人速记", wellness: "健身与健康" };
-const AI_WELCOME_MESSAGE: AIChatMessage = { id: "welcome", role: "assistant", content: "你好，我是 MAP AI。我能看到你当前阶段、长期目标、任务、固定任务、课表、求职记录、健康计划和草稿，也知道哪些行动正在服务哪个目标。你可以让我分析现状、回答问题，或者一起把一个想法变成计划；任何数据修改都会先给你预览。私人速记只有在你明确开启“AI 可读 · 云端同步”并要求管理它时才会加入上下文。" };
+const DEFAULT_NAV_ORDER: View[] = ["today", "goals", "semester", "career", "planner", "notes", "vault", "meals", "wellness"];
+const NAV_LABELS: Record<View, string> = { today: "今日指挥台", goals: "长期目标", semester: "阶段地图", career: "求职记录", planner: "任务计划", notes: "草稿箱", vault: "私人速记", meals: "饮食计划", wellness: "健身与健康" };
+const AI_WELCOME_MESSAGE: AIChatMessage = { id: "welcome", role: "assistant", content: "你好，我是 MAP AI。我能看到你当前阶段、长期目标、任务、固定任务、课表、求职记录、饮食与训练计划和草稿，也知道哪些行动正在服务哪个目标。你可以让我分析现状、回答问题，或者一起把一个想法变成计划；任何数据修改都会先给你预览。私人速记只有在你明确开启“AI 可读 · 云端同步”并要求管理它时才会加入上下文。" };
 const LEGACY_TASK_GOALS: Record<string, string> = { stephnie: "graduate", leetcode: "career", fees: "graduate", applications: "career", pte: "graduate", irene: "graduate" };
 
 function getTorontoToday() {
@@ -292,6 +298,9 @@ const initialData: AppData = {
   exercises: defaultExercises,
   exerciseLogs: [],
   activityLogs: [],
+  mealThemes: defaultMealThemes,
+  mealPlans: [],
+  mealRecipes: defaultMealRecipes,
   applications: [],
   notes: [],
   references: [],
@@ -320,6 +329,9 @@ function hydrateAppData(parsed: Partial<AppData>, currentDay: string, deviceRefe
     exercises: Array.isArray(parsed.exercises) ? parsed.exercises : defaultExercises,
     exerciseLogs: Array.isArray(parsed.exerciseLogs) ? parsed.exerciseLogs : [],
     activityLogs: Array.isArray(parsed.activityLogs) ? parsed.activityLogs : [],
+    mealThemes: Array.isArray(parsed.mealThemes) ? parsed.mealThemes : defaultMealThemes,
+    mealPlans: Array.isArray(parsed.mealPlans) ? parsed.mealPlans : [],
+    mealRecipes: Array.isArray(parsed.mealRecipes) ? parsed.mealRecipes : defaultMealRecipes,
     applications: normalizeApplications(parsed.applications),
     notes: parsed.notes || initialData.notes,
     references: normalizeReferences(parsed.references || deviceReferences),
@@ -335,7 +347,7 @@ function uid() {
 }
 
 function deriveAIChanges(current: AppData, next: AppData) {
-  const collections: Array<[AICollection, string]> = [["tasks", "任务"], ["routines", "固定任务"], ["schedule", "固定安排"], ["goals", "目标"], ["habits", "饮食习惯"], ["workouts", "旧版运动"], ["trainingPlans", "训练计划"], ["exercises", "动作"], ["exerciseLogs", "力量记录"], ["activityLogs", "运动记录"], ["applications", "求职记录"], ["notes", "草稿"], ["references", "私人速记"]];
+  const collections: Array<[AICollection, string]> = [["tasks", "任务"], ["routines", "固定任务"], ["schedule", "固定安排"], ["goals", "目标"], ["habits", "饮食习惯"], ["workouts", "旧版运动"], ["trainingPlans", "训练计划"], ["exercises", "动作"], ["exerciseLogs", "力量记录"], ["activityLogs", "运动记录"], ["mealThemes", "饮食主题"], ["mealPlans", "用餐安排"], ["mealRecipes", "菜谱"], ["applications", "求职记录"], ["notes", "草稿"], ["references", "私人速记"]];
   const changes: string[] = [];
   const displayName = (item: Record<string, unknown>) => String(item.title || item.company || item.label || item.code || item.content || item.id || "未命名记录").split("\n")[0].slice(0, 60);
   for (const [key, label] of collections) {
@@ -790,7 +802,7 @@ export default function Home() {
     const query = referenceQuery.trim().toLocaleLowerCase();
     return data.references.filter((reference) => !query || reference.title.toLocaleLowerCase().includes(query) || reference.content.toLocaleLowerCase().includes(query)).slice().sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updatedAt.localeCompare(left.updatedAt));
   }, [data.references, referenceQuery]);
-  const mobileViewTitle: Record<View, string> = { today: "今天", goals: "长期目标", semester: "阶段地图", career: "求职记录", planner: "任务计划", notes: "草稿箱", vault: "私人速记", wellness: "健身与健康" };
+  const mobileViewTitle: Record<View, string> = { today: "今天", goals: "长期目标", semester: "阶段地图", career: "求职记录", planner: "任务计划", notes: "草稿箱", vault: "私人速记", meals: "饮食计划", wellness: "健身与健康" };
 
   function openNewTask(date?: string, goalId?: string) {
     setNewTaskDate(date || null);
@@ -1461,7 +1473,7 @@ export default function Home() {
         <header className="topbar">
           <div>
             <p className="eyebrow">{todayLabel}</p>
-            <h1 className="desktop-page-title">{view === "today" ? "今天，先把最重要的事情往前推。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "看清当前阶段的时间与节奏。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : view === "notes" ? "没准备好排期的，先放进草稿箱。" : view === "vault" ? "零散资料，随手记下，一秒找到。" : "健康不是剩余时间。"}</h1>
+            <h1 className="desktop-page-title">{view === "today" ? "今天，先把最重要的事情往前推。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "看清当前阶段的时间与节奏。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : view === "notes" ? "没准备好排期的，先放进草稿箱。" : view === "vault" ? "零散资料，随手记下，一秒找到。" : view === "meals" ? "提前决定吃什么，把精力留给生活。" : "健康不是剩余时间。"}</h1>
             <div className="mobile-page-title"><small>MAP</small><strong>{mobileViewTitle[view]}</strong></div>
           </div>
           <div className="topbar-actions"><button className="quick-vault-top" onClick={openVault}><span>⌁</span> 私人速记</button><button className="quick-note-top" onClick={openNotes}><span>✎</span> 记草稿</button><button className="primary-button" onClick={() => openNewTask()}><span>＋</span> 新建任务</button></div>
@@ -1512,7 +1524,7 @@ export default function Home() {
                       </button>
                     ))}
                   </div>
-                  <button className="text-link" onClick={() => setView("wellness")}>打开健康与运动 <span>→</span></button>
+                  <div className="wellness-mini-links"><button className="text-link" onClick={() => setView("meals")}>安排这周吃什么 <span>→</span></button><button className="text-link" onClick={() => setView("wellness")}>打开健康与运动 <span>→</span></button></div>
                 </section>
                 <section className="panel next-class">
                   <p className="section-kicker">UP NEXT</p>
@@ -1828,6 +1840,18 @@ export default function Home() {
           </div>
         )}
 
+        {view === "meals" && (
+          <div className="page-content meals-page">
+            <MealPlannerModule
+              today={today}
+              mealThemes={data.mealThemes}
+              mealPlans={data.mealPlans}
+              mealRecipes={data.mealRecipes}
+              onChange={(change) => setData((current) => ({ ...current, ...change }))}
+            />
+          </div>
+        )}
+
         {view === "wellness" && (
           <div className="page-content wellness-page">
             <FitnessModule
@@ -1849,7 +1873,7 @@ export default function Home() {
         <button className={view === "semester" ? "active" : ""} onClick={() => setView("semester")}><span>▦</span><strong>日程</strong></button>
         <button className={view === "notes" ? "active" : ""} onClick={openNotes}><span>✎</span><strong>草稿</strong></button>
         <button className={view === "planner" ? "active" : ""} onClick={() => setView("planner")}><span>✓</span><strong>任务</strong></button>
-        <button className={mobileMenuOpen || ["goals", "career", "vault", "wellness"].includes(view) ? "active" : ""} onClick={() => setMobileMenuOpen((open) => !open)} aria-expanded={mobileMenuOpen}><span>•••</span><strong>更多</strong></button>
+        <button className={mobileMenuOpen || ["goals", "career", "vault", "meals", "wellness"].includes(view) ? "active" : ""} onClick={() => setMobileMenuOpen((open) => !open)} aria-expanded={mobileMenuOpen}><span>•••</span><strong>更多</strong></button>
       </nav>
 
       {mobileMenuOpen && <div className="mobile-more-layer">
@@ -1860,6 +1884,7 @@ export default function Home() {
             <button className={view === "goals" ? "active" : ""} onClick={() => { setView("goals"); setMobileMenuOpen(false); }}><span>◎</span><strong>长期目标</strong><small>管理人生主线</small></button>
             <button className={view === "career" ? "active" : ""} onClick={() => { setView("career"); setMobileMenuOpen(false); }}><span>↗</span><strong>求职记录</strong><small>跟踪投递进度</small></button>
             <button className={view === "vault" ? "active" : ""} onClick={() => { openVault(); setMobileMenuOpen(false); }}><span>⌁</span><strong>私人速记</strong><small>资料与常用信息</small></button>
+            <button className={view === "meals" ? "active" : ""} onClick={() => { setView("meals"); setMobileMenuOpen(false); }}><span>食</span><strong>饮食计划</strong><small>选主题、采购与备菜</small></button>
             <button className={view === "wellness" ? "active" : ""} onClick={() => { setView("wellness"); setMobileMenuOpen(false); }}><span>＋</span><strong>健身健康</strong><small>训练、进步与动作库</small></button>
           </div>
           <div className="mobile-system-actions">
@@ -1874,7 +1899,7 @@ export default function Home() {
       <button className={`ai-launcher ${aiOpen ? "active" : ""} ${!online ? "offline" : ""}`} onClick={toggleAIChat} aria-label={aiOpen ? "关闭 MAP AI" : "打开 MAP AI"}><span>✦</span><strong>{online ? "MAP AI" : "AI 离线"}</strong></button>
       {aiOpen && <aside className="ai-panel ai-chat-panel" aria-label="MAP AI 对话助手">
         <header><div><p className="section-kicker">YOUR LIFE · IN CONTEXT</p><h2>MAP AI</h2></div><div className="ai-header-actions"><label><span>模型</span><select value={aiModel} onChange={(event) => setAiModel(event.target.value as AIModel)} disabled={aiLoading}><option value="gpt-5.6-luna">最快 · GPT-5.6 Luna</option><option value="gpt-5.6-terra">均衡 · GPT-5.6 Terra</option><option value="gpt-5.6-sol">最强 · GPT-5.6 Sol</option><option value="gpt-5.4-mini">旧版快速 · GPT-5.4 mini</option><option value="gpt-5.4">旧版深度 · GPT-5.4</option></select></label><button onClick={closeAIChat} aria-label="关闭并清空本次对话">×</button></div></header>
-        <div className="ai-quick-prompts" aria-label="快捷提问">{["分析我这周最需要注意什么", "帮我梳理当前所有课程项目", "把这段职业信息加入求职看板"].map((prompt) => <button key={prompt} onClick={() => void sendAIMessage(prompt)} disabled={aiLoading || !online}>{prompt}</button>)}</div>
+        <div className="ai-quick-prompts" aria-label="快捷提问">{["分析我这周最需要注意什么", "帮我安排下周饮食和采购", "把这段职业信息加入求职看板"].map((prompt) => <button key={prompt} onClick={() => void sendAIMessage(prompt)} disabled={aiLoading || !online}>{prompt}</button>)}</div>
         <div className="ai-conversation" ref={aiConversationRef}>
           {aiMessages.map((message) => <div className={`ai-message ${message.role}`} key={message.id}><span>{message.role === "assistant" ? "✦" : "你"}</span><div><p>{message.content}</p></div></div>)}
           {aiLoading && <div className="ai-message assistant loading"><span>✦</span><div><i /><i /><i /></div></div>}

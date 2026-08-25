@@ -62,7 +62,7 @@ test("mobile shell prioritizes five touch targets and keeps every module reachab
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.match(source, /className="mobile-nav"/);
   for (const label of ["今天", "日程", "草稿", "任务", "更多"]) assert.match(source, new RegExp(`<strong>${label}<\\/strong>`));
-  for (const label of ["长期目标", "求职记录", "私人速记", "健身健康"]) assert.match(source, new RegExp(`<strong>${label}<\\/strong>`));
+  for (const label of ["长期目标", "求职记录", "私人速记", "饮食计划", "健身健康"]) assert.match(source, new RegExp(`<strong>${label}<\\/strong>`));
   assert.match(styles, /env\(safe-area-inset-bottom\)/);
   assert.match(styles, /100dvh/);
 });
@@ -393,6 +393,41 @@ test("fitness module separates plans, exercise knowledge, strength history, and 
   assert.match(worker, /trainingPlans as recurring intentions/);
   assert.match(worker, /create two separate activityLogs/);
   assert.match(worker, /Use the actual duration even when a free activity such as hiking exceeds 40 minutes/);
+});
+
+test("meal planner connects flexible weekly choices to recipes, groceries, prep, sync, and AI", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const component = await readFile(new URL("../app/components/MealPlannerModule.tsx", import.meta.url), "utf8");
+  const defaults = await readFile(new URL("../lib/meal-data.ts", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const sync = await readFile(new URL("../lib/sync-state.mjs", import.meta.url), "utf8");
+  assert.match(page, /mealThemes: MealTheme\[\]/);
+  assert.match(page, /mealPlans: MealPlanEntry\[\]/);
+  assert.match(page, /mealRecipes: MealRecipe\[\]/);
+  for (const label of ["本周餐盘", "主题库", "采购与备菜", "饮食规则"]) assert.match(component, new RegExp(label));
+  assert.match(component, /安排明天的 Nations 早餐/);
+  assert.match(component, /桌面端也可以直接拖动已安排的餐来交换日期/);
+  assert.match(component, /清单只来自你这周真正选中的主题/);
+  assert.match(component, /一个蛋白质＋一个主食＋两种蔬菜/);
+  assert.match(component, /每顿先看结构/);
+  for (const theme of ["Tims 训练启动日", "Nations 酸奶燕麦日", "中式温热早餐日", "鸡肉双蔬饭", "三文鱼完整餐", "豆腐炒蔬菜饭"]) assert.match(defaults, new RegExp(theme));
+  for (const collection of ["mealThemes", "mealPlans", "mealRecipes"]) {
+    assert.match(sync, new RegExp(collection));
+    assert.match(worker, new RegExp(collection));
+  }
+  assert.match(worker, /weekly grocery and prep lists are derived automatically/);
+  assert.match(worker, /do not assume that Monday must always use the same theme/);
+});
+
+test("AI meal operation changes only the requested dated meal plan", () => {
+  const currentData = {
+    tasks: [{ id: "task-1", title: "保留原任务" }], mealThemes: [{ id: "theme-1", title: "早餐主题" }], mealPlans: [], mealRecipes: [],
+  };
+  const meal = { id: "ai-meal", date: "2026-08-25", mealSlot: "早餐", themeId: "theme-1", customTitle: "", notes: "", completed: false };
+  const result = applyAIOperations(currentData, [{ collection: "mealPlans", operation: "add", recordId: "ai-meal", recordJson: JSON.stringify(meal) }]);
+  assert.deepEqual(result.mealPlans, [meal]);
+  assert.deepEqual(result.tasks, currentData.tasks);
+  assert.deepEqual(result.mealThemes, currentData.mealThemes);
 });
 
 test("voice transcription API forwards audio without persisting it", { concurrency: false }, async () => {
