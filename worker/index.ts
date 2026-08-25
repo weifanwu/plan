@@ -85,6 +85,12 @@ function isValidSyncPayload(value: unknown): value is Record<string, unknown> {
   if (typeof payload.habitDate !== "string" || typeof payload.workoutWeek !== "string") return false;
   if (!SYNC_ARRAY_KEYS.every((key) => Array.isArray(payload[key]))) return false;
   if (!OPTIONAL_SYNC_ARRAY_KEYS.every((key) => !(key in payload) || Array.isArray(payload[key]))) return false;
+  if ("uiPreferences" in payload) {
+    const preferences = payload.uiPreferences;
+    if (!preferences || typeof preferences !== "object" || Array.isArray(preferences)) return false;
+    const record = preferences as Record<string, unknown>;
+    if (!Array.isArray(record.navigationOrder) || !Array.isArray(record.semesterWeekOrder)) return false;
+  }
   // Missing references is accepted for payloads written by older MAP builds.
   // When present, every record must carry an explicit opt-in marker. This
   // prevents a buggy client from uploading device-only notes by accident.
@@ -260,7 +266,7 @@ async function handleAIChat(request: Request, env: Env): Promise<Response> {
     const focus = detectedFocus || (REFERENCE_CONTEXT_PATTERN.test(priorUserContext) && REFERENCE_CONTINUE_PATTERN.test(latestUserMessage) ? "references" : null);
     const referenceContext = REFERENCE_CONTEXT_PATTERN.test(latestUserMessage) || REFERENCE_CONTEXT_PATTERN.test(priorUserContext) || REFERENCE_LOOKUP_PATTERN.test(latestUserMessage);
     const rawCurrentData = body.currentData && typeof body.currentData === "object" ? body.currentData as Record<string, unknown> : {};
-    const modelData = focus ? focusedData(rawCurrentData, focus) : referenceContext ? focusedData(rawCurrentData, "references") : Object.fromEntries(Object.entries(rawCurrentData).filter(([key]) => key !== "references"));
+    const modelData = focus ? focusedData(rawCurrentData, focus) : referenceContext ? focusedData(rawCurrentData, "references") : Object.fromEntries(Object.entries(rawCurrentData).filter(([key]) => key !== "references" && key !== "uiPreferences"));
     const currentData = JSON.stringify(modelData);
     if (currentData.length > 180000) return Response.json({ error: "当前计划数据过大，暂时无法一次处理。" }, { status: 413 });
     const today = typeof body.today === "string" ? body.today : new Date().toISOString().slice(0, 10);

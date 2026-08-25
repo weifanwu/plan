@@ -89,6 +89,7 @@ type UndoNotice = { message: string; restore: (current: AppData) => AppData };
 type PWAInstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
 type LockableScreenOrientation = ScreenOrientation & { lock?: (orientation: "portrait-primary") => Promise<void> };
 type TaskPrefill = { title: string; details: string; category: TaskCategory };
+type UIPreferences = { navigationOrder: View[]; semesterWeekOrder: SemesterWeekModule[] };
 
 type AppData = {
   phase: ActivePhase;
@@ -108,6 +109,7 @@ type AppData = {
   applications: Application[];
   notes: Note[];
   references: ReferenceNote[];
+  uiPreferences: UIPreferences;
   habitDate: string;
   workoutWeek: string;
 };
@@ -318,6 +320,10 @@ const initialData: AppData = {
   applications: [],
   notes: [],
   references: [],
+  uiPreferences: {
+    navigationOrder: DEFAULT_NAV_ORDER,
+    semesterWeekOrder: DEFAULT_SEMESTER_WEEK_ORDER,
+  },
   habitDate: getTorontoToday(),
   workoutWeek: getWeekKey(),
 };
@@ -349,6 +355,10 @@ function hydrateAppData(parsed: Partial<AppData>, currentDay: string, deviceRefe
     applications: normalizeApplications(parsed.applications),
     notes: parsed.notes || initialData.notes,
     references: normalizeReferences(parsed.references || deviceReferences),
+    uiPreferences: {
+      navigationOrder: normalizeNavOrder(parsed.uiPreferences?.navigationOrder),
+      semesterWeekOrder: normalizeSemesterWeekOrder(parsed.uiPreferences?.semesterWeekOrder),
+    },
     habitDate: currentDay,
     workoutWeek: currentWeek,
   };
@@ -541,10 +551,8 @@ export default function Home() {
   const [plannerStatusFilter, setPlannerStatusFilter] = useState<PlannerStatusFilter>("open");
   const [undoNotice, setUndoNotice] = useState<UndoNotice | null>(null);
   const [semesterMode, setSemesterMode] = useState<"calendar" | "week">("week");
-  const [semesterWeekOrder, setSemesterWeekOrder] = useState<SemesterWeekModule[]>(DEFAULT_SEMESTER_WEEK_ORDER);
   const [draggedSemesterModule, setDraggedSemesterModule] = useState<SemesterWeekModule | null>(null);
   const [dragOverSemesterModule, setDragOverSemesterModule] = useState<SemesterWeekModule | null>(null);
-  const [navOrder, setNavOrder] = useState<View[]>(DEFAULT_NAV_ORDER);
   const [draggedNavView, setDraggedNavView] = useState<View | null>(null);
   const [dragOverNavView, setDragOverNavView] = useState<View | null>(null);
   const [calendarCursor, setCalendarCursor] = useState(() => getTorontoToday().slice(0, 7));
@@ -559,6 +567,8 @@ export default function Home() {
   const [installPrompt, setInstallPrompt] = useState<PWAInstallPrompt | null>(null);
   const [installHelp, setInstallHelp] = useState(false);
   const [standalone, setStandalone] = useState(false);
+  const semesterWeekOrder = data.uiPreferences.semesterWeekOrder;
+  const navOrder = data.uiPreferences.navigationOrder;
   const mobileQuickViews = useMemo(() => [...new Set([navOrder[0] ?? DEFAULT_NAV_ORDER[0], "today", "semester", "notes", "planner"] as View[])].slice(0, 4), [navOrder]);
   const [today, setToday] = useState(() => getTorontoToday());
   const importRef = useRef<HTMLInputElement>(null);
@@ -619,12 +629,16 @@ export default function Home() {
       }
     } catch { /* start a fresh sync handshake */ }
     const currentDay = getTorontoToday();
-    const hydratedData = hydrateAppData(parsed, currentDay);
+    const hydratedData = hydrateAppData({
+      ...parsed,
+      uiPreferences: {
+        navigationOrder: parsedNavOrder ?? parsed.uiPreferences?.navigationOrder,
+        semesterWeekOrder: parsedSemesterLayout ?? parsed.uiPreferences?.semesterWeekOrder,
+      } as UIPreferences,
+    }, currentDay);
     // Hydrate device-local state after the server-rendered shell mounts.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setToday(currentDay);
-    setSemesterWeekOrder(normalizeSemesterWeekOrder(parsedSemesterLayout));
-    setNavOrder(normalizeNavOrder(parsedNavOrder));
     dataRef.current = hydratedData;
     setData(hydratedData);
     syncReadyRef.current = true;
@@ -1096,23 +1110,25 @@ export default function Home() {
 
   function moveSemesterModule(source: SemesterWeekModule, target: SemesterWeekModule) {
     if (source === target) return;
-    setSemesterWeekOrder((current) => {
-      const targetIndex = current.indexOf(target);
-      if (targetIndex < 0 || !current.includes(source)) return current;
-      const next = current.filter((module) => module !== source);
+    setData((current) => {
+      const order = current.uiPreferences.semesterWeekOrder;
+      const targetIndex = order.indexOf(target);
+      if (targetIndex < 0 || !order.includes(source)) return current;
+      const next = order.filter((module) => module !== source);
       next.splice(targetIndex, 0, source);
-      return next;
+      return { ...current, uiPreferences: { ...current.uiPreferences, semesterWeekOrder: next } };
     });
   }
 
   function moveNavigationItem(source: View, target: View) {
     if (source === target) return;
-    setNavOrder((current) => {
-      const targetIndex = current.indexOf(target);
-      if (targetIndex < 0 || !current.includes(source)) return current;
-      const next = current.filter((item) => item !== source);
+    setData((current) => {
+      const order = current.uiPreferences.navigationOrder;
+      const targetIndex = order.indexOf(target);
+      if (targetIndex < 0 || !order.includes(source)) return current;
+      const next = order.filter((item) => item !== source);
       next.splice(targetIndex, 0, source);
-      return next;
+      return { ...current, uiPreferences: { ...current.uiPreferences, navigationOrder: next } };
     });
   }
 
@@ -1178,14 +1194,24 @@ export default function Home() {
 
   async function readSyncState(): Promise<SyncEnvelope> {
     const response = await fetch("/api/sync", { method: "GET", cache: "no-store" });
-    const result = await response.json() as SyncEnvelope;
+    const result = await parseSyncResponse(response);
     if (!response.ok) throw new Error(result.error || "暂时无法读取云端计划。");
     return result;
   }
 
+  async function parseSyncResponse(response: Response): Promise<SyncEnvelope> {
+    try {
+      const result = await response.json() as SyncEnvelope;
+      if (!result || typeof result !== "object") throw new Error("invalid response");
+      return result;
+    } catch {
+      return { initialized: false, data: null, revision: 0, updatedAt: null, error: "云同步服务暂时异常，请稍后重试。" };
+    }
+  }
+
   async function writeSyncState(dataToSave: SyncedAppData, baseRevision: number) {
     const response = await fetch("/api/sync", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ baseRevision, data: dataToSave }) });
-    const result = await response.json() as SyncEnvelope;
+    const result = await parseSyncResponse(response);
     return { response, result };
   }
 
@@ -1492,7 +1518,7 @@ export default function Home() {
           <input ref={importRef} type="file" accept="application/json" hidden onChange={(event) => { importData(event.target.files?.[0]); event.currentTarget.value = ""; }} />
         </div>
         {!standalone && <button className="install-app-button" onClick={installMapApp}><span>↓</span><div><strong>安装 MAP App</strong><small>独立窗口 · 支持离线</small></div></button>}
-        <button className={`sync-note ${syncStatus}`} onClick={() => void synchronizeData()} disabled={!online || syncStatus === "syncing"} title={syncMessage}><span /><div><strong>{syncMessage}</strong><small>只同步已授权的私人速记</small></div></button>
+        <button className={`sync-note ${syncStatus}`} onClick={() => void synchronizeData()} disabled={!online || syncStatus === "syncing"} title={syncMessage}><span /><div><strong>{syncMessage}</strong><small>计划会同步 · 私人速记按授权</small></div></button>
       </aside>
 
       <section className="workspace">
@@ -1542,7 +1568,7 @@ export default function Home() {
 
               <aside className="right-column">
                 <section className="panel wellness-mini">
-                  <div className="panel-heading"><div><p className="section-kicker">BODY CHECK</p><h3>身体也要签到</h3></div><strong>{habitDone}/{data.habits.length}</strong></div>
+                  <div className="panel-heading"><div><p className="section-kicker">DAILY FUEL</p><h3>今日饮食打卡</h3></div><strong>{habitDone}/{data.habits.length}</strong></div>
                   <div className="habit-grid">
                     {data.habits.map((habit) => (
                       <button key={habit.id} className={`habit-tile ${habit.done ? "done" : ""}`} onClick={() => setData((current) => ({ ...current, habits: current.habits.map((item) => item.id === habit.id ? { ...item, done: !item.done } : item) }))}>

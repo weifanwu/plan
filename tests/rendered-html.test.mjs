@@ -204,15 +204,17 @@ test("draft inbox reuses online voice transcription without auto-saving", async 
 });
 
 test("sync includes only explicitly authorized references and merges independent offline edits", () => {
-  const base = { phase: { title: "A" }, habitDate: "2026-08-24", workoutWeek: "2026-08-24", tasks: [{ id: "t1", title: "base" }], routines: [], schedule: [], goals: [], habits: [], workouts: [], applications: [], notes: [], references: [] };
+  const base = { phase: { title: "A" }, uiPreferences: { navigationOrder: ["semester", "today"], semesterWeekOrder: ["schedule", "tasks"] }, habitDate: "2026-08-24", workoutWeek: "2026-08-24", tasks: [{ id: "t1", title: "base" }], routines: [], schedule: [], goals: [], habits: [], workouts: [], applications: [], notes: [], references: [] };
   const local = structuredClone(base);
   local.tasks[0].title = "local edit";
+  local.uiPreferences.navigationOrder = ["today", "semester"];
   const remote = structuredClone(base);
   remote.notes.push({ id: "n1", content: "remote note" });
   const merged = mergeSyncPayload(base, local, remote);
   assert.equal(merged.conflicts, 0);
   assert.equal(merged.data.tasks[0].title, "local edit");
   assert.equal(merged.data.notes[0].content, "remote note");
+  assert.deepEqual(merged.data.uiPreferences.navigationOrder, ["today", "semester"]);
   const localOnly = { id: "secret", title: "SIN", content: "local only", pinned: false, aiExcluded: true, createdAt: "2026-08-24T00:00:00Z", updatedAt: "2026-08-24T00:00:00Z" };
   const authorized = { id: "portal", title: "学校网址", content: "https://example.com", pinned: false, aiExcluded: false, createdAt: "2026-08-24T00:00:00Z", updatedAt: "2026-08-24T00:00:00Z" };
   const payload = toSyncPayload({ ...base, references: [localOnly, authorized] });
@@ -238,13 +240,14 @@ test("D1 sync API creates user state and rejects a stale revision", async () => 
   const env = { DB, ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } };
   const ctx = { waitUntil() {}, passThroughOnException() {} };
   const headers = { "oai-authenticated-user-id": "user-1", "content-type": "application/json" };
-  const data = { phase: { title: "毕业" }, habitDate: "2026-08-24", workoutWeek: "2026-08-24", tasks: [], routines: [], schedule: [], goals: [], habits: [], workouts: [], applications: [], notes: [] };
+  const data = { phase: { title: "毕业" }, uiPreferences: { navigationOrder: ["semester", "today"], semesterWeekOrder: ["schedule", "tasks"] }, habitDate: "2026-08-24", workoutWeek: "2026-08-24", tasks: [], routines: [], schedule: [], goals: [], habits: [], workouts: [], applications: [], notes: [] };
   const created = await worker.fetch(new Request("http://localhost/api/sync", { method: "PUT", headers, body: JSON.stringify({ baseRevision: 0, data }) }), env, ctx);
   assert.equal(created.status, 200);
   assert.equal((await created.json()).revision, 1);
   const loaded = await worker.fetch(new Request("http://localhost/api/sync", { headers }), env, ctx);
   const loadedData = (await loaded.json()).data;
   assert.equal(loadedData.phase.title, "毕业");
+  assert.deepEqual(loadedData.uiPreferences, data.uiPreferences);
   assert.deepEqual(loadedData.references, []);
   const stale = await worker.fetch(new Request("http://localhost/api/sync", { method: "PUT", headers, body: JSON.stringify({ baseRevision: 0, data }) }), env, ctx);
   assert.equal(stale.status, 409);
@@ -302,6 +305,24 @@ test("drafts split compact backlog from long-form idea notes and navigation orde
   assert.doesNotMatch(source, /className="brand" onClick=\{\(\) => setView\("today"\)\}/);
   assert.match(styles, /\.idea-workbench/);
   assert.match(styles, /nav button\.drag-over/);
+});
+
+test("ordered navigation and semester layout sync across devices", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const syncSource = await readFile(new URL("../lib/sync-state.mjs", import.meta.url), "utf8");
+  const workerSource = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  assert.match(source, /type UIPreferences = \{ navigationOrder: View\[\]; semesterWeekOrder: SemesterWeekModule\[\] \}/);
+  assert.match(source, /uiPreferences: \{ \.\.\.current\.uiPreferences, navigationOrder: next \}/);
+  assert.match(source, /uiPreferences: \{ \.\.\.current\.uiPreferences, semesterWeekOrder: next \}/);
+  assert.match(syncSource, /"uiPreferences"/);
+  assert.match(workerSource, /"uiPreferences" in payload/);
+});
+
+test("today keeps nutrition check-in without duplicating the fitness module", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /DAILY FUEL/);
+  assert.match(source, /今日饮食打卡/);
+  assert.doesNotMatch(source, /身体也要签到/);
 });
 
 test("fixed tasks support daily and every-N-day occurrences with independent completion", () => {
