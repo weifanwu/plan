@@ -681,21 +681,14 @@ test("job capture API strips unrelated model operations before preview", { concu
   }
 });
 
-test("review center turns existing modules into one decision workflow without duplicating data", async () => {
+test("focus and batch workflows stay available without an extra review overlay", async () => {
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  assert.match(source, /function ReviewCenter/);
-  assert.match(source, /WEEKLY RESET/);
-  assert.match(source, /不制造连续打卡压力/);
-  assert.match(source, /carriedOpenTasks/);
-  assert.match(source, /unlinkedOpenTasks/);
-  assert.match(source, /staleApplications/);
-  assert.match(source, /weekMovementDays/);
-  assert.match(source, /weekMealDays/);
-  assert.match(source, /nextTripPurchaseCount/);
-  assert.match(source, /onExport=\{exportData\}/);
-  assert.match(styles, /\.review-grid/);
-  assert.match(styles, /\.review-data-health/);
+  assert.doesNotMatch(source, /ReviewCenter|reviewOpen|复盘中心|WEEKLY RESET/);
+  assert.doesNotMatch(styles, /review-backdrop|review-center|review-button/);
+  assert.match(source, /TODAY FOCUS/);
+  assert.match(source, /管理全部任务/);
+  assert.match(source, /批量整理/);
 });
 
 test("today focus reuses task priority instead of creating a competing task model", async () => {

@@ -584,7 +584,6 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchActiveIndex, setSearchActiveIndex] = useState(0);
   const [showCompletedToday, setShowCompletedToday] = useState(true);
-  const [reviewOpen, setReviewOpen] = useState(false);
   const [batchMode, setBatchMode] = useState(false);
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
   const [batchDate, setBatchDate] = useState(() => getTorontoToday());
@@ -848,15 +847,6 @@ export default function Home() {
     return [...counts.entries()].sort(([left], [right]) => right.localeCompare(left));
   }, [data.applications]);
   const visibleApplications = applicationDateFilter === "all" ? data.applications : data.applications.filter((application) => application.date === applicationDateFilter);
-  const carriedOpenTasks = useMemo(() => visibleTasks.filter((task) => task.status === "todo" && Boolean(task.carriedFrom)), [visibleTasks]);
-  const unlinkedOpenTasks = useMemo(() => visibleTasks.filter((task) => task.status === "todo" && !task.goalId), [visibleTasks]);
-  const staleApplications = useMemo(() => data.applications.filter((application) => application.date && (application.stage === "已投" || application.stage === "面试") && daysBetween(application.date, today) >= (application.stage === "面试" ? 7 : 14)), [data.applications, today]);
-  const weekActivityLogs = useMemo(() => data.activityLogs.filter((log) => log.date >= weekStart && log.date <= weekEnd), [data.activityLogs, weekEnd, weekStart]);
-  const weekExerciseLogs = useMemo(() => data.exerciseLogs.filter((log) => log.date >= weekStart && log.date <= weekEnd), [data.exerciseLogs, weekEnd, weekStart]);
-  const weekMovementDays = useMemo(() => new Set([...weekActivityLogs.map((log) => log.date), ...weekExerciseLogs.map((log) => log.date)]).size, [weekActivityLogs, weekExerciseLogs]);
-  const weekActivityMinutes = weekActivityLogs.reduce((total, log) => total + log.durationMinutes, 0);
-  const weekMealDays = useMemo(() => new Set(data.mealPlans.filter((plan) => plan.date >= weekStart && plan.date <= weekEnd).map((plan) => plan.date)).size, [data.mealPlans, weekEnd, weekStart]);
-  const nextTripPurchaseCount = data.purchaseItems.filter((item) => item.status === "next" && !item.completedAt).length;
   const upcomingTask = useMemo(() => visibleTasks.filter((task) => task.status === "todo" && task.date > today).slice().sort((a, b) => a.date.localeCompare(b.date) || (a.time || "99:99").localeCompare(b.time || "99:99"))[0] || null, [visibleTasks, today]);
   const upcomingDate = upcomingTask ? dateCardParts(upcomingTask.date) : null;
   const courseCount = useMemo(() => new Set(data.schedule.filter((item) => item.kind === "课程").map((item) => item.code)).size, [data.schedule]);
@@ -882,7 +872,6 @@ export default function Home() {
     return data.notes.filter((note) => note.category === "想法" && (!query || note.content.toLocaleLowerCase().includes(query))).slice().sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt));
   }, [data.notes, ideaQuery]);
   const backlogCount = backlogNotes.length;
-  const reviewAttentionCount = [carriedOpenTasks.length, unlinkedOpenTasks.length, backlogCount, staleApplications.length, nextTripPurchaseCount].filter((count) => count > 0).length;
   const visibleReferences = useMemo(() => {
     const query = referenceQuery.trim().toLocaleLowerCase();
     return data.references.filter((reference) => !query || reference.title.toLocaleLowerCase().includes(query) || reference.content.toLocaleLowerCase().includes(query)).slice().sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updatedAt.localeCompare(left.updatedAt));
@@ -1692,7 +1681,7 @@ export default function Home() {
             <h1 className="desktop-page-title">{view === "today" ? "今天，先把最重要的事情往前推。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "看清当前阶段的时间与节奏。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : view === "notes" ? "没准备好排期的，先放进草稿箱。" : view === "vault" ? "零散资料，随手记下，一秒找到。" : view === "shopping" ? "想买的、要买的、还没决定的，各归其位。" : view === "meals" ? "提前决定吃什么，把精力留给生活。" : "健康不是剩余时间。"}</h1>
             <div className="mobile-page-title"><small>MAP</small><strong>{mobileViewTitle[view]}</strong></div>
           </div>
-          <div className="topbar-actions"><button className="review-button" onClick={() => setReviewOpen(true)} aria-label={`打开复盘中心，${reviewAttentionCount} 类事项待整理`}><span>↻</span><strong>复盘</strong>{reviewAttentionCount > 0 && <i>{reviewAttentionCount}</i>}</button><button className="global-search-button" onClick={openGlobalSearch} aria-label="搜索 MAP 中的模块和记录"><span>⌕</span><strong>搜索</strong><kbd>⌘K</kbd></button><button className="quick-vault-top" onClick={openVault}><span>⌁</span> 私人速记</button><button className="quick-note-top" onClick={openNotes}><span>✎</span> 记草稿</button><button className="primary-button" onClick={() => openNewTask()}><span>＋</span> 新建任务</button></div>
+          <div className="topbar-actions"><button className="global-search-button" onClick={openGlobalSearch} aria-label="搜索 MAP 中的模块和记录"><span>⌕</span><strong>搜索</strong><kbd>⌘K</kbd></button><button className="quick-vault-top" onClick={openVault}><span>⌁</span> 私人速记</button><button className="quick-note-top" onClick={openNotes}><span>✎</span> 记草稿</button><button className="primary-button" onClick={() => openNewTask()}><span>＋</span> 新建任务</button></div>
         </header>
 
         {view === "today" && (
@@ -1715,7 +1704,7 @@ export default function Home() {
             </section>
 
             <section className="today-focus-lane" aria-label="今日三件事">
-              <header><div><p className="section-kicker">TODAY FOCUS</p><h3>今天最值得推进的三件事</h3><span>优先任务排在前面；点星可随时改变重点。</span></div><button onClick={() => setReviewOpen(true)}>打开复盘中心 <b>→</b></button></header>
+              <header><div><p className="section-kicker">TODAY FOCUS</p><h3>今天最值得推进的三件事</h3><span>优先任务排在前面；点星可随时改变重点。</span></div><button onClick={() => setView("planner")}>管理全部任务 <b>→</b></button></header>
               <div>
                 {todayFocusTasks.map((task, index) => <article className={task.priority === "high" ? "priority" : ""} key={task.id}>
                   <button className="focus-complete" onClick={() => toggleTask(task.id)} aria-label={`完成${task.title}`}>✓</button>
@@ -2115,30 +2104,6 @@ export default function Home() {
       </section>
 
       {searchOpen && <GlobalSearchPalette query={searchQuery} results={globalSearchResults} activeIndex={searchActiveIndex} onQueryChange={(query) => { setSearchQuery(query); setSearchActiveIndex(0); }} onActiveIndexChange={setSearchActiveIndex} onSelect={openSearchResult} onClose={() => setSearchOpen(false)} />}
-      {reviewOpen && <ReviewCenter
-        attentionCount={reviewAttentionCount}
-        carriedCount={carriedOpenTasks.length}
-        unlinkedCount={unlinkedOpenTasks.length}
-        backlogCount={backlogCount}
-        staleApplicationCount={staleApplications.length}
-        movementDays={weekMovementDays}
-        activityMinutes={weekActivityMinutes}
-        mealDays={weekMealDays}
-        purchaseCount={nextTripPurchaseCount}
-        syncMessage={syncMessage}
-        syncStatus={syncStatus}
-        online={online}
-        onClose={() => setReviewOpen(false)}
-        onOpenToday={() => { setReviewOpen(false); setView("today"); }}
-        onOpenUnlinked={() => { setReviewOpen(false); setView("planner"); setPlannerStatusFilter("open"); setGoalFilter("none"); }}
-        onOpenBacklog={() => { setReviewOpen(false); setView("notes"); setNotesMode("backlog"); }}
-        onOpenCareer={() => { setReviewOpen(false); setView("career"); setApplicationDateFilter("all"); }}
-        onOpenWellness={() => { setReviewOpen(false); setView("wellness"); }}
-        onOpenMeals={() => { setReviewOpen(false); setView("meals"); }}
-        onOpenShopping={() => { setReviewOpen(false); setView("shopping"); }}
-        onSync={() => void synchronizeData()}
-        onExport={exportData}
-      />}
 
       <nav className="mobile-nav" aria-label="手机主导航">
         {mobileQuickViews.map((item, index) => <button className={view === item ? "active" : ""} onClick={() => openNavigationView(item)} key={item} aria-label={`${index === 0 ? "置顶 · " : ""}${NAV_LABELS[item]}`}><span>{MOBILE_NAV_META[item].icon}</span><strong>{MOBILE_NAV_META[item].label}</strong></button>)}
@@ -2217,32 +2182,6 @@ function GlobalSearchPalette({ query, results, activeIndex, onQueryChange, onAct
         {!results.length && <div className="global-search-empty"><span>⌕</span><strong>没有找到</strong><small>换一个更短的关键词试试。</small></div>}
       </div>
       <footer><span>↑↓ 选择 · Enter 打开</span><strong>本机搜索，不会发送给 AI</strong></footer>
-    </section>
-  </div>;
-}
-
-function ReviewCenter({ attentionCount, carriedCount, unlinkedCount, backlogCount, staleApplicationCount, movementDays, activityMinutes, mealDays, purchaseCount, syncMessage, syncStatus, online, onClose, onOpenToday, onOpenUnlinked, onOpenBacklog, onOpenCareer, onOpenWellness, onOpenMeals, onOpenShopping, onSync, onExport }: { attentionCount: number; carriedCount: number; unlinkedCount: number; backlogCount: number; staleApplicationCount: number; movementDays: number; activityMinutes: number; mealDays: number; purchaseCount: number; syncMessage: string; syncStatus: SyncStatus; online: boolean; onClose: () => void; onOpenToday: () => void; onOpenUnlinked: () => void; onOpenBacklog: () => void; onOpenCareer: () => void; onOpenWellness: () => void; onOpenMeals: () => void; onOpenShopping: () => void; onSync: () => void; onExport: () => void }) {
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    window.addEventListener("keydown", onKeyDown);
-    return () => { document.body.style.overflow = previousOverflow; window.removeEventListener("keydown", onKeyDown); };
-  }, [onClose]);
-  const reviewCards = [
-    { id: "carried", eyebrow: "TODAY", title: "未完成顺延", value: carriedCount, detail: carriedCount ? "先决定继续做、改期，还是删除。" : "没有被昨天拖过来的任务。", tone: "coral", action: "看今天", onOpen: onOpenToday },
-    { id: "unlinked", eyebrow: "DIRECTION", title: "未关联目标", value: unlinkedCount, detail: unlinkedCount ? "检查它们是否真的值得做。" : "待办都已归入目标或已经清空。", tone: "lavender", action: "整理任务", onOpen: onOpenUnlinked },
-    { id: "backlog", eyebrow: "INBOX", title: "待安排草稿", value: backlogCount, detail: backlogCount ? "把成熟的草稿排期，其余继续保留。" : "草稿箱没有待处理内容。", tone: "blue", action: "打开草稿箱", onOpen: onOpenBacklog },
-    { id: "career", eyebrow: "CAREER", title: "可能要跟进", value: staleApplicationCount, detail: staleApplicationCount ? "已投 14 天或面试 7 天未更新。" : "求职看板暂时没有陈旧状态。", tone: "coral", action: "看求职记录", onOpen: onOpenCareer },
-    { id: "movement", eyebrow: "HEALTH", title: "本周有效运动", value: movementDays, suffix: "天", detail: activityMinutes ? `另有 ${activityMinutes} 分钟自由运动记录。` : "力量、散步、徒步和篮球都算。", tone: "lime", action: "打开健康", onOpen: onOpenWellness },
-    { id: "meals", eyebrow: "FOOD", title: "本周已安排饮食", value: mealDays, suffix: "天", detail: "无需排满七天，只处理会消耗决策力的餐。", tone: "lavender", action: "安排饮食", onOpen: onOpenMeals },
-    { id: "shopping", eyebrow: "SHOPPING", title: "下次出门购买", value: purchaseCount, detail: purchaseCount ? "出门前只看这一列即可。" : "下次出门清单是空的。", tone: "blue", action: "打开清单", onOpen: onOpenShopping },
-  ];
-  return <div className="review-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className="review-center" role="dialog" aria-modal="true" aria-label="MAP 复盘中心">
-      <header className="review-hero"><div><p className="section-kicker">WEEKLY RESET</p><h2>把生活重新放回<br />可控制的范围。</h2><p>不制造连续打卡压力。这里只把需要你做决定的事情捞出来，不会替你改动任何数据。</p></div><div className="review-score"><span>待整理类别</span><strong>{attentionCount}</strong><small>{attentionCount ? "逐项处理，不必一次清零" : "当前系统很干净"}</small></div><button className="review-close" onClick={onClose} aria-label="关闭复盘中心">×</button></header>
-      <div className="review-grid">{reviewCards.map((card) => <article className={`review-card ${card.tone}`} key={card.id}><div><span>{card.eyebrow}</span><strong>{card.value}<small>{card.suffix || "项"}</small></strong></div><h3>{card.title}</h3><p>{card.detail}</p><button onClick={card.onOpen}>{card.action} <b>→</b></button></article>)}</div>
-      <footer className="review-data-health"><div><span className={`sync-dot ${syncStatus}`} /><p><strong>{syncMessage}</strong><small>离线仍可编辑；联网后同步。私人速记继续遵循逐条授权。</small></p></div><div><button onClick={onExport}>导出恢复点</button><button onClick={onSync} disabled={!online || syncStatus === "syncing"}>{syncStatus === "syncing" ? "同步中…" : "立即同步"}</button></div></footer>
     </section>
   </div>;
 }
