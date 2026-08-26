@@ -479,6 +479,22 @@ test("shopping memory separates urgency and previews meal-derived groceries", as
   assert.match(component, /<button className="shopping-empty-add"/);
 });
 
+test("system UX audit keeps every module reachable and risky actions recoverable", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  const shopping = await readFile(new URL("../app/components/ShoppingModule.tsx", import.meta.url), "utf8");
+  assert.match(page, /GlobalSearchPalette/);
+  assert.match(page, /event\.metaKey \|\| event\.ctrlKey/);
+  assert.match(page, /本机搜索，不会发送给 AI/);
+  assert.match(page, /className="task-main" onClick=\{onEdit\}/);
+  assert.match(page, /task\.time \|\| "全天"/);
+  assert.match(page, /showUndo\(`已将「\$\{application\.company\}」移到\$\{stage\}`/);
+  assert.match(styles, /\.sidebar > nav \{[^}]*overflow-y: auto/);
+  assert.match(styles, /\.task-row:focus-within \.task-actions/);
+  assert.match(shopping, /onDelete: \(item: PurchaseItem\) => void/);
+  assert.match(shopping, /onClick=\{\(\) => onDelete\(item\)\}/);
+});
+
 test("AI meal operation changes only the requested dated meal plan", () => {
   const currentData = {
     tasks: [{ id: "task-1", title: "保留原任务" }], mealThemes: [{ id: "theme-1", title: "早餐主题" }], mealPlans: [], mealRecipes: [],

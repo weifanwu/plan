@@ -14,6 +14,7 @@ type Props = {
   mealPlans: MealPlanEntry[];
   mealRecipes: MealRecipe[];
   onChange: (items: PurchaseItem[]) => void;
+  onDelete: (item: PurchaseItem) => void;
 };
 
 type ImportDraft = { id: string; selected: boolean; title: string; quantity: string; category: PurchaseCategory };
@@ -46,7 +47,7 @@ function shortDate(dateString: string) {
   return `${date.getUTCMonth() + 1}/${date.getUTCDate()}`;
 }
 
-export default function ShoppingModule({ today, items, mealThemes, mealPlans, mealRecipes, onChange }: Props) {
+export default function ShoppingModule({ today, items, mealThemes, mealPlans, mealRecipes, onChange, onDelete }: Props) {
   const [quickTitle, setQuickTitle] = useState("");
   const [quickStatus, setQuickStatus] = useState<PurchaseStatus>("next");
   const [editor, setEditor] = useState<PurchaseItem | "new" | null>(null);
@@ -118,13 +119,13 @@ export default function ShoppingModule({ today, items, mealThemes, mealPlans, me
     <section className="shopping-board">
       {SECTIONS.map((section) => {
         const sectionItems = items.filter((item) => item.status === section.status);
-        return <article className={`shopping-column ${section.status}`} key={section.status}><header><div><p className="section-kicker">{section.eyebrow}</p><h3>{section.title}</h3><span>{section.description}</span></div><strong>{sectionItems.length}</strong></header><div className="shopping-list">{sectionItems.map((item) => <div className="shopping-row" key={item.id}><button className="shopping-check" onClick={() => toggleBought(item)} aria-label={`标记已买：${item.title}`}>✓</button><button className="shopping-row-main" onClick={() => setEditor(item)}><strong>{item.title}</strong>{item.quantity && <span>{item.quantity}</span>}<small>{item.category}{item.details ? ` · ${item.details}` : ""}</small></button><button className="shopping-row-delete" onClick={() => onChange(items.filter((current) => current.id !== item.id))} aria-label={`删除：${item.title}`}>×</button></div>)}<button className="shopping-empty-add" onClick={() => { setQuickStatus(section.status); setEditor("new"); }}>＋ 添加到这里</button></div></article>;
+        return <article className={`shopping-column ${section.status}`} key={section.status}><header><div><p className="section-kicker">{section.eyebrow}</p><h3>{section.title}</h3><span>{section.description}</span></div><strong>{sectionItems.length}</strong></header><div className="shopping-list">{sectionItems.map((item) => <div className="shopping-row" key={item.id}><button className="shopping-check" onClick={() => toggleBought(item)} aria-label={`标记已买：${item.title}`}>✓</button><button className="shopping-row-main" onClick={() => setEditor(item)}><strong>{item.title}</strong>{item.quantity && <span>{item.quantity}</span>}<small>{item.category}{item.details ? ` · ${item.details}` : ""}</small></button><button className="shopping-row-delete" onClick={() => onDelete(item)} aria-label={`删除：${item.title}`}>×</button></div>)}<button className="shopping-empty-add" onClick={() => { setQuickStatus(section.status); setEditor("new"); }}>＋ 添加到这里</button></div></article>;
       })}
     </section>
 
     <section className="shopping-bought panel"><header><div><p className="section-kicker">RECENTLY BOUGHT</p><h3>最近买过</h3></div><span>{bought.length}</span></header>{bought.length ? <div>{bought.slice(0, 12).map((item) => <button key={item.id} onClick={() => toggleBought(item)}><span>✓</span><strong>{item.title}</strong><small>点一下放回计划购买</small></button>)}</div> : <p>买完的东西会暂时留在这里，方便确认。</p>}</section>
 
-    {editor && <PurchaseEditor value={editor} defaultStatus={quickStatus} onClose={() => setEditor(null)} onSave={saveItem} onDelete={editor === "new" ? undefined : () => { onChange(items.filter((item) => item.id !== editor.id)); setEditor(null); }} />}
+    {editor && <PurchaseEditor value={editor} defaultStatus={quickStatus} onClose={() => setEditor(null)} onSave={saveItem} onDelete={editor === "new" ? undefined : () => { onDelete(editor); setEditor(null); }} />}
     {importDraft && <ImportPreview items={importDraft} week={`${shortDate(weekStart)}—${shortDate(weekEnd)}`} onChange={setImportDraft} onClose={() => setImportDraft(null)} onConfirm={confirmImport} />}
   </div>;
 }

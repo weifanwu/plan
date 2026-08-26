@@ -93,6 +93,8 @@ type PWAInstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promi
 type LockableScreenOrientation = ScreenOrientation & { lock?: (orientation: "portrait-primary") => Promise<void> };
 type TaskPrefill = { title: string; details: string; category: TaskCategory };
 type UIPreferences = { navigationOrder: View[]; semesterWeekOrder: SemesterWeekModule[] };
+type SearchKind = "view" | "task" | "routine" | "goal" | "application" | "schedule" | "note" | "reference" | "purchase" | "meal" | "exercise";
+type GlobalSearchResult = { id: string; kind: SearchKind; view: View; title: string; meta: string; recordId?: string };
 
 type AppData = {
   phase: ActivePhase;
@@ -578,6 +580,10 @@ export default function Home() {
   const [installPrompt, setInstallPrompt] = useState<PWAInstallPrompt | null>(null);
   const [installHelp, setInstallHelp] = useState(false);
   const [standalone, setStandalone] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchActiveIndex, setSearchActiveIndex] = useState(0);
+  const [showCompletedToday, setShowCompletedToday] = useState(true);
   const semesterWeekOrder = data.uiPreferences.semesterWeekOrder;
   const navOrder = data.uiPreferences.navigationOrder;
   const mobileQuickViews = useMemo(() => [...new Set([navOrder[0] ?? DEFAULT_NAV_ORDER[0], "today", "semester", "notes", "planner"] as View[])].slice(0, 4), [navOrder]);
@@ -775,6 +781,20 @@ export default function Home() {
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
   }, []);
 
+  useEffect(() => {
+    const handleGlobalSearch = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "k") {
+        event.preventDefault();
+        setMobileMenuOpen(false);
+        setSearchQuery("");
+        setSearchActiveIndex(0);
+        setSearchOpen(true);
+      }
+    };
+    window.addEventListener("keydown", handleGlobalSearch);
+    return () => window.removeEventListener("keydown", handleGlobalSearch);
+  }, []);
+
   const visibleTasks = useMemo(() => data.tasks.filter((task) => !isCompletedTaskArchived(task, today)), [data.tasks, today]);
   const calendarTasks = useMemo(() => visibleTasks.filter((task) => task.status === "todo"), [visibleTasks]);
   const todayDisplayTasks = useMemo(() => visibleTasks.filter((task) => isTaskVisibleToday(task, today)), [visibleTasks, today]);
@@ -848,6 +868,25 @@ export default function Home() {
     const query = referenceQuery.trim().toLocaleLowerCase();
     return data.references.filter((reference) => !query || reference.title.toLocaleLowerCase().includes(query) || reference.content.toLocaleLowerCase().includes(query)).slice().sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updatedAt.localeCompare(left.updatedAt));
   }, [data.references, referenceQuery]);
+  const globalSearchResults = useMemo(() => {
+    const query = searchQuery.trim().toLocaleLowerCase();
+    const matches = (...values: Array<string | null | undefined>) => !query || values.some((value) => value?.toLocaleLowerCase().includes(query));
+    const modules: GlobalSearchResult[] = navOrder.filter((item) => matches(NAV_LABELS[item], MOBILE_NAV_META[item].label, MOBILE_NAV_META[item].description)).map((item) => ({ id: `view-${item}`, kind: "view", view: item, title: NAV_LABELS[item], meta: MOBILE_NAV_META[item].description }));
+    if (!query) return modules;
+    const records: GlobalSearchResult[] = [
+      ...visibleTasks.filter((task) => matches(task.title, task.details, task.category)).map((task) => ({ id: `task-${task.id}`, kind: "task" as const, view: "planner" as const, title: task.title, meta: `任务 · ${formatDate(task.date)} · ${task.time || "全天"}`, recordId: task.id })),
+      ...data.routines.filter((routine) => matches(routine.title, routine.details, routine.category)).map((routine) => ({ id: `routine-${routine.id}`, kind: "routine" as const, view: "planner" as const, title: routine.title, meta: `固定任务 · ${routineFrequencyLabel(routine)}`, recordId: routine.id })),
+      ...data.goals.filter((goal) => matches(goal.title, goal.description, goal.metric)).map((goal) => ({ id: `goal-${goal.id}`, kind: "goal" as const, view: "goals" as const, title: goal.title, meta: `长期目标 · ${goal.progress}%`, recordId: goal.id })),
+      ...data.applications.filter((application) => matches(application.company, application.role, application.notes, application.contact)).map((application) => ({ id: `application-${application.id}`, kind: "application" as const, view: "career" as const, title: `${application.company} · ${application.role}`, meta: `求职 · ${application.stage} · ${formatDate(application.date)}`, recordId: application.id })),
+      ...data.schedule.filter((item) => matches(item.code, item.title, item.room, item.detail)).map((item) => ({ id: `schedule-${item.id}`, kind: "schedule" as const, view: "semester" as const, title: `${item.code} · ${item.title}`, meta: `${item.kind} · ${item.start}—${item.end} · ${item.room}`, recordId: item.id })),
+      ...data.notes.filter((note) => matches(note.content, note.category)).map((note) => ({ id: `note-${note.id}`, kind: "note" as const, view: "notes" as const, title: noteTitle(note), meta: `${note.category === "想法" ? "想法" : "草稿"} · ${formatNoteTime(note.updatedAt)}`, recordId: note.id })),
+      ...data.references.filter((reference) => matches(reference.title, reference.content)).map((reference) => ({ id: `reference-${reference.id}`, kind: "reference" as const, view: "vault" as const, title: reference.title, meta: `私人速记 · 本机检索${reference.aiExcluded ? "" : " · AI 可读"}`, recordId: reference.id })),
+      ...data.purchaseItems.filter((item) => matches(item.title, item.details, item.category)).map((item) => ({ id: `purchase-${item.id}`, kind: "purchase" as const, view: "shopping" as const, title: item.title, meta: `购物清单 · ${item.category}`, recordId: item.id })),
+      ...data.mealThemes.filter((theme) => matches(theme.title, theme.subtitle, theme.notes, theme.tags.join(" "))).map((theme) => ({ id: `meal-${theme.id}`, kind: "meal" as const, view: "meals" as const, title: theme.title, meta: `饮食主题 · ${theme.source}`, recordId: theme.id })),
+      ...data.exercises.filter((exercise) => matches(exercise.name, exercise.bodyPart, exercise.notes)).map((exercise) => ({ id: `exercise-${exercise.id}`, kind: "exercise" as const, view: "wellness" as const, title: exercise.name, meta: `动作库 · ${exercise.bodyPart}${exercise.currentWeight === null ? "" : ` · ${exercise.currentWeight} ${exercise.unit}`}`, recordId: exercise.id })),
+    ];
+    return [...modules, ...records].slice(0, 48);
+  }, [data, navOrder, searchQuery, visibleTasks]);
   const mobileViewTitle: Record<View, string> = { today: "今天", goals: "长期目标", semester: "阶段地图", career: "求职记录", planner: "任务计划", notes: "草稿箱", vault: "私人速记", shopping: "购物清单", meals: "饮食计划", wellness: "健身与健康" };
 
   function openNewTask(date?: string, goalId?: string) {
@@ -1103,7 +1142,11 @@ export default function Home() {
   }
 
   function moveApplication(id: string, stage: ApplicationStage) {
+    const application = data.applications.find((item) => item.id === id);
+    if (!application || application.stage === stage) return;
+    const previousStage = application.stage;
     setData((current) => ({ ...current, applications: current.applications.map((application) => application.id === id ? { ...application, stage } : application) }));
+    showUndo(`已将「${application.company}」移到${stage}`, (current) => ({ ...current, applications: current.applications.map((item) => item.id === id && item.stage === stage ? { ...item, stage: previousStage } : item) }));
   }
 
   function moveGoal(sourceId: string, targetId: string) {
@@ -1159,6 +1202,33 @@ export default function Home() {
     if (target === "notes") openNotes();
     else if (target === "vault") openVault();
     else setView(target);
+  }
+
+  function openGlobalSearch() {
+    setMobileMenuOpen(false);
+    setSearchQuery("");
+    setSearchActiveIndex(0);
+    setSearchOpen(true);
+  }
+
+  function openSearchResult(result: GlobalSearchResult) {
+    setSearchOpen(false);
+    if (result.kind === "view") return openNavigationView(result.view);
+    if (result.kind === "task") setTaskEditor(data.tasks.find((item) => item.id === result.recordId) || null);
+    else if (result.kind === "routine") setRoutineEditor(data.routines.find((item) => item.id === result.recordId) || null);
+    else if (result.kind === "goal") setGoalEditor(data.goals.find((item) => item.id === result.recordId) || null);
+    else if (result.kind === "application") setApplicationEditor(data.applications.find((item) => item.id === result.recordId) || null);
+    else if (result.kind === "schedule") setScheduleEditor(data.schedule.find((item) => item.id === result.recordId) || null);
+    else if (result.kind === "note") {
+      const note = data.notes.find((item) => item.id === result.recordId);
+      if (!note) return;
+      setView("notes");
+      if (note.category === "想法") { setNotesMode("ideas"); setIdeaEditor(note); }
+      else { setNotesMode("backlog"); setNoteEditor(note); }
+    } else if (result.kind === "reference") {
+      const reference = data.references.find((item) => item.id === result.recordId);
+      if (reference) { setView("vault"); setReferenceEditor(reference); }
+    } else openNavigationView(result.view);
   }
 
   function deleteGoal(id: string) {
@@ -1551,7 +1621,7 @@ export default function Home() {
             <h1 className="desktop-page-title">{view === "today" ? "今天，先把最重要的事情往前推。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "看清当前阶段的时间与节奏。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : view === "notes" ? "没准备好排期的，先放进草稿箱。" : view === "vault" ? "零散资料，随手记下，一秒找到。" : view === "shopping" ? "想买的、要买的、还没决定的，各归其位。" : view === "meals" ? "提前决定吃什么，把精力留给生活。" : "健康不是剩余时间。"}</h1>
             <div className="mobile-page-title"><small>MAP</small><strong>{mobileViewTitle[view]}</strong></div>
           </div>
-          <div className="topbar-actions"><button className="quick-vault-top" onClick={openVault}><span>⌁</span> 私人速记</button><button className="quick-note-top" onClick={openNotes}><span>✎</span> 记草稿</button><button className="primary-button" onClick={() => openNewTask()}><span>＋</span> 新建任务</button></div>
+          <div className="topbar-actions"><button className="global-search-button" onClick={openGlobalSearch} aria-label="搜索 MAP 中的模块和记录"><span>⌕</span><strong>搜索</strong><kbd>⌘K</kbd></button><button className="quick-vault-top" onClick={openVault}><span>⌁</span> 私人速记</button><button className="quick-note-top" onClick={openNotes}><span>✎</span> 记草稿</button><button className="primary-button" onClick={() => openNewTask()}><span>＋</span> 新建任务</button></div>
         </header>
 
         {view === "today" && (
@@ -1577,12 +1647,12 @@ export default function Home() {
               <section className="panel today-panel">
                 <div className="panel-heading">
                   <div><p className="section-kicker">TODAY</p><h3>今天要清掉的事</h3></div>
-                  <span className="counter">{todayOpenCount} 未完成</span>
+                  <div className="today-heading-actions">{todayCompletedCount > 0 && <button onClick={() => setShowCompletedToday((shown) => !shown)}>{showCompletedToday ? `收起已完成 ${todayCompletedCount}` : `显示已完成 ${todayCompletedCount}`}</button>}<span className="counter">{todayOpenCount} 未完成</span></div>
                 </div>
                 <div className="today-progress"><span style={{ width: `${taskProgress}%` }} /></div>
                 <div className="task-stack">
-                  {todayRoutineEntries.map(({ routine, occurrenceDate, completed, overdue }) => <RoutineTodayRow key={`${routine.id}-${occurrenceDate}`} routine={routine} occurrenceDate={occurrenceDate} completed={completed} overdue={overdue} goal={routine.goalId ? goalById.get(routine.goalId) : undefined} onToggle={() => toggleRoutineCompletion(routine.id, occurrenceDate)} onEdit={() => setRoutineEditor(routine)} />)}
-                  {todayDisplayTasks.slice().sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99")).map((task) => (
+                  {todayRoutineEntries.filter((entry) => showCompletedToday || !entry.completed).map(({ routine, occurrenceDate, completed, overdue }) => <RoutineTodayRow key={`${routine.id}-${occurrenceDate}`} routine={routine} occurrenceDate={occurrenceDate} completed={completed} overdue={overdue} goal={routine.goalId ? goalById.get(routine.goalId) : undefined} onToggle={() => toggleRoutineCompletion(routine.id, occurrenceDate)} onEdit={() => setRoutineEditor(routine)} />)}
+                  {todayDisplayTasks.filter((task) => showCompletedToday || task.status !== "done").slice().sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99")).map((task) => (
                     <TaskRow key={task.id} task={task} goal={task.goalId ? goalById.get(task.goalId) : undefined} onToggle={() => toggleTask(task.id)} onEdit={() => setTaskEditor(task)} onDelete={() => deleteTask(task.id)} compact />
                   ))}
                 </div>
@@ -1924,6 +1994,7 @@ export default function Home() {
               mealPlans={data.mealPlans}
               mealRecipes={data.mealRecipes}
               onChange={(purchaseItems) => setData((current) => ({ ...current, purchaseItems }))}
+              onDelete={(item) => removeRecord("purchaseItems", item.id, `已删除购物项「${item.title}」`)}
             />
           </div>
         )}
@@ -1958,6 +2029,8 @@ export default function Home() {
           </div>
         )}
       </section>
+
+      {searchOpen && <GlobalSearchPalette query={searchQuery} results={globalSearchResults} activeIndex={searchActiveIndex} onQueryChange={(query) => { setSearchQuery(query); setSearchActiveIndex(0); }} onActiveIndexChange={setSearchActiveIndex} onSelect={openSearchResult} onClose={() => setSearchOpen(false)} />}
 
       <nav className="mobile-nav" aria-label="手机主导航">
         {mobileQuickViews.map((item, index) => <button className={view === item ? "active" : ""} onClick={() => openNavigationView(item)} key={item} aria-label={`${index === 0 ? "置顶 · " : ""}${NAV_LABELS[item]}`}><span>{MOBILE_NAV_META[item].icon}</span><strong>{MOBILE_NAV_META[item].label}</strong></button>)}
@@ -2024,6 +2097,22 @@ function NavButton({ active, label, icon, dragging, dragOver, onClick, onDragSta
   return <button draggable className={`${active ? "active" : ""} ${dragging ? "dragging" : ""} ${dragOver ? "drag-over" : ""}`} onClick={onClick} onDragStart={onDragStart} onDragOver={onDragOver} onDrop={onDrop} onDragEnd={onDragEnd} title="拖动改变导航顺序"><span>{icon}</span>{label}<i>{active ? "→" : "⋮⋮"}</i></button>;
 }
 
+function GlobalSearchPalette({ query, results, activeIndex, onQueryChange, onActiveIndexChange, onSelect, onClose }: { query: string; results: GlobalSearchResult[]; activeIndex: number; onQueryChange: (query: string) => void; onActiveIndexChange: (index: number) => void; onSelect: (result: GlobalSearchResult) => void; onClose: () => void }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { inputRef.current?.focus(); }, []);
+  const safeActiveIndex = results.length ? Math.min(activeIndex, results.length - 1) : 0;
+  return <div className="global-search-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="global-search-palette" role="dialog" aria-modal="true" aria-label="搜索 MAP">
+      <header><span>⌕</span><input ref={inputRef} value={query} onChange={(event) => onQueryChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") onClose(); else if (event.key === "ArrowDown" && results.length) { event.preventDefault(); onActiveIndexChange((safeActiveIndex + 1) % results.length); } else if (event.key === "ArrowUp" && results.length) { event.preventDefault(); onActiveIndexChange((safeActiveIndex - 1 + results.length) % results.length); } else if (event.key === "Enter" && results[safeActiveIndex]) { event.preventDefault(); onSelect(results[safeActiveIndex]); } }} placeholder="搜索任务、目标、课程、公司、草稿、速记……" aria-label="搜索内容" /><kbd>ESC</kbd></header>
+      <div className="global-search-list" role="listbox">
+        {results.map((result, index) => <button key={result.id} className={index === safeActiveIndex ? "active" : ""} onMouseEnter={() => onActiveIndexChange(index)} onClick={() => onSelect(result)} role="option" aria-selected={index === safeActiveIndex}><span>{MOBILE_NAV_META[result.view].icon}</span><div><strong>{result.title}</strong><small>{result.meta}</small></div><i>→</i></button>)}
+        {!results.length && <div className="global-search-empty"><span>⌕</span><strong>没有找到</strong><small>换一个更短的关键词试试。</small></div>}
+      </div>
+      <footer><span>↑↓ 选择 · Enter 打开</span><strong>本机搜索，不会发送给 AI</strong></footer>
+    </section>
+  </div>;
+}
+
 function TaskCalendarCheck({ task, onToggle }: { task: Task; onToggle: () => void }) {
   return <button type="button" draggable={false} className={`calendar-task-check ${task.status === "done" ? "checked" : ""}`} onMouseDown={(event) => event.stopPropagation()} onDragStart={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={(event) => { event.stopPropagation(); onToggle(); }} aria-label={task.status === "done" ? `将「${task.title}」标记为未完成` : `完成「${task.title}」`}>{task.status === "done" ? "✓" : ""}</button>;
 }
@@ -2035,8 +2124,8 @@ function RoutineCalendarCheck({ completed, label, onToggle }: { completed: boole
 function RoutineTodayRow({ routine, occurrenceDate, completed, overdue, goal, onToggle, onEdit }: { routine: Routine; occurrenceDate: string; completed: boolean; overdue: boolean; goal?: Goal; onToggle: () => void; onEdit: () => void }) {
   return <div className={`task-row compact today-routine-row ${completed ? "done" : ""} ${overdue && !completed ? "overdue" : ""}`}>
     <button className="task-check" onClick={onToggle} aria-label={completed ? "标记未完成" : "标记完成"}>{completed ? "✓" : ""}</button>
-    <div className="task-main"><strong>{routine.title}</strong>{routine.details && <p className="task-details">{routine.details}</p>}<span><i className={`dot ${categoryTone[routine.category]}`} />固定任务 · {routineFrequencyLabel(routine)}{goal ? <b className="task-goal-label">→ {goal.title}</b> : null}{overdue && !completed && <b className="routine-overdue">上次应做：{formatDate(occurrenceDate)}</b>}</span></div>
-    <time>{routine.time || "今天"}</time><div className="task-actions"><button onClick={onEdit}>编辑规则</button></div>
+    <button className="task-main" onClick={onEdit} aria-label={`编辑固定任务：${routine.title}`}><strong>{routine.title}</strong>{routine.details && <p className="task-details">{routine.details}</p>}<span><i className={`dot ${categoryTone[routine.category]}`} />固定任务 · {routineFrequencyLabel(routine)}{goal ? <b className="task-goal-label">→ {goal.title}</b> : null}{overdue && !completed && <b className="routine-overdue">上次应做：{formatDate(occurrenceDate)}</b>}</span></button>
+    <time>{routine.time || "全天"}</time><div className="task-actions"><button onClick={onEdit}>编辑规则</button></div>
   </div>;
 }
 
@@ -2044,9 +2133,9 @@ function TaskRow({ task, goal, onToggle, onEdit, onDelete, compact = false }: { 
   const carried = Boolean(task.carriedFrom) && task.status === "todo";
   return <div className={`task-row ${task.status === "done" ? "done" : ""} ${carried ? "carried" : ""} ${compact ? "compact" : ""}`}>
     <button className="task-check" onClick={onToggle} aria-label={task.status === "done" ? "标记未完成" : "标记完成"}>{task.status === "done" ? "✓" : ""}</button>
-    <div className="task-main"><strong>{task.title}</strong>{task.details && <p className="task-details">{task.details}</p>}{compact && <span><i className={`dot ${categoryTone[task.category]}`} />{task.category}{goal ? <b className="task-goal-label">→ {goal.title}</b> : null}{task.endDate ? ` · 截止 ${formatDate(task.endDate)}` : ""}{carried && <b className="rollover-label">未完成顺延 · 原定 {formatDate(task.carriedFrom!)}</b>}</span>}{!compact && <span className="task-meta-line">{goal && <b className="task-goal-label">服务目标：{goal.title}</b>}{carried && <b className="rollover-meta">未完成顺延 · 原定 {formatDate(task.carriedFrom!)}</b>}</span>}</div>
+    <button className="task-main" onClick={onEdit} aria-label={`编辑任务：${task.title}`}><strong>{task.title}</strong>{task.details && <p className="task-details">{task.details}</p>}{compact && <span><i className={`dot ${categoryTone[task.category]}`} />{task.category}{goal ? <b className="task-goal-label">→ {goal.title}</b> : null}{task.endDate ? ` · 截止 ${formatDate(task.endDate)}` : ""}{carried && <b className="rollover-label">未完成顺延 · 原定 {formatDate(task.carriedFrom!)}</b>}</span>}{!compact && <span className="task-meta-line">{goal && <b className="task-goal-label">服务目标：{goal.title}</b>}{carried && <b className="rollover-meta">未完成顺延 · 原定 {formatDate(task.carriedFrom!)}</b>}</span>}</button>
     {!compact && <><span className="task-date">{formatDate(task.date)}{task.endDate ? ` → ${formatDate(task.endDate)}` : ""}{task.time ? ` · ${task.time}` : ""}</span><span className={`category-pill ${categoryTone[task.category]}`}>{task.category}</span><span className={`status-label ${carried ? "carried" : ""}`}>{task.status === "done" ? "已完成" : carried ? "未完成顺延" : task.priority === "high" ? "优先" : task.endDate ? "进行中" : "待处理"}</span></>}
-    {compact && <time>{task.time || "今天"}</time>}
+    {compact && <time>{task.time || "全天"}</time>}
     <div className="task-actions"><button onClick={onEdit}>编辑</button><button onClick={onDelete}>删除</button></div>
   </div>;
 }
