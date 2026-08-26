@@ -475,6 +475,8 @@ test("shopping memory separates urgency and previews meal-derived groceries", as
   assert.match(procurement, /readyMade/);
   assert.match(procurement, /useCounts/);
   assert.match(component, /先预览再加入/);
+  assert.doesNotMatch(component, /sectionItems\.length === 0 && <button className="shopping-empty-add"/);
+  assert.match(component, /<button className="shopping-empty-add"/);
 });
 
 test("AI meal operation changes only the requested dated meal plan", () => {
