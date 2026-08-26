@@ -149,7 +149,9 @@ test("week and month task cards expose drag, drop, and completion controls", asy
   assert.match(source, /dropTaskOnDate/);
   assert.match(source, /task-drop-target/);
   assert.match(source, /TaskCalendarCheck/);
-  assert.match(source, /拖动普通任务到日期格即可改期/);
+  assert.match(source, /拖动普通任务可改期/);
+  assert.match(source, /onDoubleClick=\{\(event\) => openQuickTask/);
+  assert.match(source, /QuickTaskModal/);
 });
 
 test("completed tasks disappear from calendars but remain available in overview views", async () => {
@@ -162,7 +164,7 @@ test("completed tasks disappear from calendars but remain available in overview 
   assert.match(source, /!routine\.completedDates\.includes\(cell\.key\)/);
   assert.match(source, /const todayDisplayTasks = useMemo\(\(\) => visibleTasks\.filter/);
   assert.match(source, /const statusFilteredTasks = useMemo\(\(\) => visibleTasks\.filter/);
-  assert.match(source, /完成后自动从日历隐藏/);
+  assert.match(source, /完成后从日历隐藏/);
 });
 
 test("completed tasks archive from the interface after 60 days", () => {
@@ -443,17 +445,33 @@ test("meal planner connects flexible weekly choices to recipes, groceries, prep,
   for (const label of ["本周餐盘", "主题库", "采购与备菜", "饮食规则"]) assert.match(component, new RegExp(label));
   assert.match(component, /安排明天早餐/);
   assert.doesNotMatch(component, /安排明天的 Nations 早餐/);
-  assert.match(component, /桌面端也可以直接拖动已安排的餐来交换日期/);
-  assert.match(component, /清单只来自你这周真正选中的主题/);
+  assert.match(component, /桌面端也可以直接拖动交换日期/);
+  assert.match(component, /切换周只切换视图，不会清空以前或未来的安排/);
+  assert.doesNotMatch(component, /一键排满早餐/);
+  assert.match(component, /采购、现买和备菜分开看/);
+  assert.match(component, /预览导入购物清单/);
   assert.match(component, /一个蛋白质＋一个主食＋两种蔬菜/);
-  assert.match(component, /每顿先看结构/);
+  assert.match(component, /MY HEALTH PHILOSOPHY/);
+  assert.match(component, /用 MAP AI 编辑/);
   for (const theme of ["Tims 训练启动日", "Nations 酸奶燕麦日", "中式温热早餐日", "鸡肉双蔬饭", "三文鱼完整餐", "豆腐炒蔬菜饭"]) assert.match(defaults, new RegExp(theme));
-  for (const collection of ["mealThemes", "mealPlans", "mealRecipes"]) {
+  for (const collection of ["mealThemes", "mealPlans", "mealRecipes", "nutritionGuides", "purchaseItems"]) {
     assert.match(sync, new RegExp(collection));
     assert.match(worker, new RegExp(collection));
   }
-  assert.match(worker, /weekly grocery and prep lists are derived automatically/);
+  assert.match(worker, /Ready-made meals and drinks from Tim Hortons/);
   assert.match(worker, /do not assume that Monday must always use the same theme/);
+});
+
+test("shopping memory separates urgency and previews meal-derived groceries", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const component = await readFile(new URL("../app/components/ShoppingModule.tsx", import.meta.url), "utf8");
+  const procurement = await readFile(new URL("../lib/meal-procurement.ts", import.meta.url), "utf8");
+  for (const label of ["下次出门就买", "计划购买", "考虑中", "从本周饮食计划导入", "确认要加入的食材"]) assert.match(component, new RegExp(label));
+  assert.match(page, /view === "shopping"/);
+  assert.match(component, /buildMealProcurement/);
+  assert.match(procurement, /readyMade/);
+  assert.match(procurement, /useCounts/);
+  assert.match(component, /先预览再加入/);
 });
 
 test("AI meal operation changes only the requested dated meal plan", () => {

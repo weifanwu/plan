@@ -1,14 +1,18 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { IngredientCategory, MealAccent, MealPlanEntry, MealRecipe, MealSlot, MealSource, MealTheme } from "../../lib/meal-types";
+import { buildMealProcurement } from "../../lib/meal-procurement";
+import type { IngredientCategory, MealAccent, MealPlanEntry, MealRecipe, MealSlot, MealSource, MealTheme, NutritionGuide } from "../../lib/meal-types";
 
 type Props = {
   today: string;
   mealThemes: MealTheme[];
   mealPlans: MealPlanEntry[];
   mealRecipes: MealRecipe[];
+  nutritionGuides: NutritionGuide[];
   onChange: (change: Partial<Pick<Props, "mealThemes" | "mealPlans" | "mealRecipes">>) => void;
+  onOpenShopping: () => void;
+  onAskAI: (prompt: string) => void;
 };
 
 type MealTab = "week" | "themes" | "shopping" | "guides";
@@ -56,12 +60,13 @@ function planTitle(plan: MealPlanEntry, theme?: MealTheme) {
   return theme?.title || plan.customTitle || "未命名餐食";
 }
 
-export default function MealPlannerModule({ today, mealThemes, mealPlans, mealRecipes, onChange }: Props) {
+export default function MealPlannerModule({ today, mealThemes, mealPlans, mealRecipes, nutritionGuides, onChange, onOpenShopping, onAskAI }: Props) {
   const [tab, setTab] = useState<MealTab>("week");
   const [weekStart, setWeekStart] = useState(() => mondayOf(today));
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const [themeDetailId, setThemeDetailId] = useState<string | null>(null);
   const [themeEditor, setThemeEditor] = useState<MealTheme | "new" | null>(null);
+  const [themeDeleteCandidate, setThemeDeleteCandidate] = useState<MealTheme | null>(null);
   const [recipeEditor, setRecipeEditor] = useState<MealRecipe | "new" | null>(null);
   const [pendingRecipeThemeId, setPendingRecipeThemeId] = useState<string | null>(null);
   const [themeQuery, setThemeQuery] = useState("");
@@ -84,28 +89,10 @@ export default function MealPlannerModule({ today, mealThemes, mealPlans, mealRe
     return !query || `${theme.title} ${theme.subtitle} ${theme.source} ${theme.tags.join(" ")}`.toLowerCase().includes(query);
   }), [mealThemes, themeQuery, themeSlot]);
 
-  const shoppingGroups = useMemo(() => {
-    const ingredients = new Map<string, { name: string; category: IngredientCategory; uses: string[] }>();
-    for (const plan of weekPlans) {
-      const theme = plan.themeId ? themeById.get(plan.themeId) : undefined;
-      const recipe = theme?.recipeId ? recipeById.get(theme.recipeId) : undefined;
-      if (!theme || !recipe) continue;
-      for (const ingredient of recipe.ingredients) {
-        if (ingredient.optional) continue;
-        const key = ingredient.name.trim().toLowerCase();
-        const existing = ingredients.get(key) || { name: ingredient.name, category: ingredient.category, uses: [] };
-        existing.uses.push(`${ingredient.amount} · ${theme.title}`);
-        ingredients.set(key, existing);
-      }
-    }
-    return CATEGORIES.map((category) => ({ category, items: [...ingredients.values()].filter((item) => item.category === category) })).filter((group) => group.items.length);
-  }, [recipeById, themeById, weekPlans]);
-
-  const prepItems = useMemo(() => weekPlans.flatMap((plan) => {
-    const theme = plan.themeId ? themeById.get(plan.themeId) : undefined;
-    const recipe = theme?.recipeId ? recipeById.get(theme.recipeId) : undefined;
-    return theme && recipe ? recipe.prepAhead.map((item) => ({ id: `${plan.id}-${item}`, date: plan.date, title: theme.title, item })) : [];
-  }).filter((item, index, list) => list.findIndex((candidate) => candidate.item === item.item) === index), [recipeById, themeById, weekPlans]);
+  const procurement = useMemo(() => buildMealProcurement(mealPlans, mealThemes, mealRecipes, weekStart, weekEnd), [mealPlans, mealRecipes, mealThemes, weekEnd, weekStart]);
+  const shoppingGroups = useMemo(() => CATEGORIES.map((category) => ({ category, items: procurement.groceries.filter((item) => item.category === category) })).filter((group) => group.items.length), [procurement.groceries]);
+  const prepItems = procurement.prep;
+  const readyMadeItems = procurement.readyMade;
 
   const themeDetail = themeDetailId ? themeById.get(themeDetailId) : undefined;
   const detailRecipe = themeDetail?.recipeId ? recipeById.get(themeDetail.recipeId) : undefined;
@@ -138,14 +125,6 @@ export default function MealPlannerModule({ today, mealThemes, mealPlans, mealRe
     }) });
   }
 
-  function fillBreakfasts() {
-    const choices = mealThemes.filter((theme) => theme.active && theme.mealSlots.includes("早餐"));
-    if (!choices.length) return;
-    const withoutWeekBreakfasts = mealPlans.filter((plan) => !(plan.date >= weekStart && plan.date <= weekEnd && plan.mealSlot === "早餐"));
-    const added = weekDays.map((day, index) => ({ id: id(`meal-breakfast-${index}`), date: day.date, mealSlot: "早餐" as const, themeId: choices[index % choices.length].id, customTitle: "", notes: "", completed: false }));
-    onChange({ mealPlans: [...withoutWeekBreakfasts, ...added] });
-  }
-
   function saveTheme(theme: MealTheme) {
     onChange({ mealThemes: themeEditor === "new" ? [...mealThemes, theme] : mealThemes.map((item) => item.id === theme.id ? theme : item) });
     setThemeEditor(null);
@@ -155,11 +134,12 @@ export default function MealPlannerModule({ today, mealThemes, mealPlans, mealRe
     const recipeUsedElsewhere = mealThemes.some((item) => item.id !== theme.id && item.recipeId === theme.recipeId);
     onChange({
       mealThemes: mealThemes.filter((item) => item.id !== theme.id),
-      mealPlans: mealPlans.filter((plan) => plan.themeId !== theme.id),
+      mealPlans: mealPlans.map((plan) => plan.themeId === theme.id ? { ...plan, themeId: null, customTitle: plan.customTitle || theme.title } : plan),
       ...(!recipeUsedElsewhere && theme.recipeId ? { mealRecipes: mealRecipes.filter((recipe) => recipe.id !== theme.recipeId) } : {}),
     });
     setThemeEditor(null);
     setThemeDetailId(null);
+    setThemeDeleteCandidate(null);
   }
 
   function saveRecipe(recipe: MealRecipe) {
@@ -177,7 +157,7 @@ export default function MealPlannerModule({ today, mealThemes, mealPlans, mealRe
   }
 
   async function copyShoppingList() {
-    const text = [`MAP · ${weekLabel(weekStart)} 采购清单`, ...shoppingGroups.flatMap((group) => [`\n${group.category}`, ...group.items.map((item) => `- ${item.name}：${item.uses.join("；")}`)]), ...(prepItems.length ? ["\n周日备菜", ...prepItems.map((item) => `- ${item.item}`)] : [])].join("\n");
+    const text = [`MAP · ${weekLabel(weekStart)}`, ...shoppingGroups.flatMap((group) => [`\n食材 · ${group.category}`, ...group.items.map((item) => `- ${item.name}：${item.uses.join("；")}`)]), ...(readyMadeItems.length ? ["\n到店现买", ...readyMadeItems.map((item) => `- ${item.title} × ${item.count} · ${item.source}`)] : []), ...(prepItems.length ? ["\n提前备菜", ...prepItems.map((item) => `- ${item.item}`)] : [])].join("\n");
     await navigator.clipboard?.writeText(text);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
@@ -194,7 +174,7 @@ export default function MealPlannerModule({ today, mealThemes, mealPlans, mealRe
     </nav>
 
     {tab === "week" && <section className="meal-week-section">
-      <header className="meal-section-header"><div><p className="section-kicker">WEEKLY MENU</p><h3>{weekLabel(weekStart)} · 这周想吃什么</h3><p>点空位挑主题；桌面端也可以直接拖动已安排的餐来交换日期。</p></div><div className="meal-week-actions"><button onClick={() => setWeekStart(dateAt(weekStart, -7))}>← 上周</button><button onClick={() => setWeekStart(mondayOf(today))}>本周</button><button onClick={() => setWeekStart(dateAt(weekStart, 7))}>下周 →</button><button className="meal-fill-button" onClick={fillBreakfasts}>一键排满早餐</button></div></header>
+      <header className="meal-section-header"><div><p className="section-kicker">WEEKLY MENU</p><h3>{weekLabel(weekStart)} · 这周想吃什么</h3><p>点空位挑主题；桌面端也可以直接拖动交换日期。切换周只切换视图，不会清空以前或未来的安排。</p></div><div className="meal-week-actions"><button onClick={() => setWeekStart(dateAt(weekStart, -7))}>← 上周</button><button onClick={() => setWeekStart(mondayOf(today))}>本周</button><button onClick={() => setWeekStart(dateAt(weekStart, 7))}>下周 →</button></div></header>
       <div className="meal-week-grid">
         {weekDays.map((day, dayIndex) => <article className={`meal-day ${day.date === today ? "today" : ""}`} key={day.date}><header><div><strong>{day.label}</strong><span>{shortDate(day.date)}</span></div>{day.date === today && <i>今天</i>}</header><div className="meal-day-slots">
           {WEEK_SLOTS.map((mealSlot) => {
@@ -214,21 +194,27 @@ export default function MealPlannerModule({ today, mealThemes, mealPlans, mealRe
       <div className="meal-library-tools"><input value={themeQuery} onChange={(event) => setThemeQuery(event.target.value)} placeholder="搜索主题、来源或标签…" /><div>{(["全部", ...ALL_SLOTS] as const).map((slot) => <button className={themeSlot === slot ? "active" : ""} onClick={() => setThemeSlot(slot)} key={slot}>{slot}</button>)}</div></div>
       <div className="meal-theme-list">{filteredThemes.map((theme, index) => {
         const recipe = theme.recipeId ? recipeById.get(theme.recipeId) : undefined;
-        return <article className={`meal-theme-row ${theme.accent} ${theme.active ? "" : "inactive"}`} key={theme.id}><div className="meal-theme-index">{String(index + 1).padStart(2, "0")}</div><button className="meal-theme-content" onClick={() => setThemeDetailId(theme.id)}><header><div><span>{theme.source}</span><h3>{theme.title}</h3></div><strong>{recipeDuration(recipe)}</strong></header><p>{theme.subtitle}</p><div className="meal-theme-tags">{theme.mealSlots.map((slot) => <i key={slot}>{slot}</i>)}{theme.tags.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}</div></button><div className="meal-theme-side"><small>蛋白质</small><strong>{theme.proteinHint}</strong><button onClick={() => setThemeEditor(theme)}>编辑</button></div></article>;
+        return <article className={`meal-theme-row ${theme.accent} ${theme.active ? "" : "inactive"}`} key={theme.id}><div className="meal-theme-index">{String(index + 1).padStart(2, "0")}</div><button className="meal-theme-content" onClick={() => setThemeDetailId(theme.id)}><header><div><span>{theme.source}</span><h3>{theme.title}</h3></div><strong>{recipeDuration(recipe)}</strong></header><p>{theme.subtitle}</p><div className="meal-theme-tags">{theme.mealSlots.map((slot) => <i key={slot}>{slot}</i>)}{theme.tags.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}</div></button><div className="meal-theme-side"><small>蛋白质</small><strong>{theme.proteinHint}</strong><div><button onClick={() => setThemeEditor(theme)}>编辑</button><button className="meal-theme-delete" onClick={() => setThemeDeleteCandidate(theme)}>删除</button></div></div></article>;
       })}</div>
     </section>}
 
     {tab === "shopping" && <section className="meal-shopping-section">
-      <header className="meal-section-header"><div><p className="section-kicker">SUNDAY RESET</p><h3>{weekLabel(weekStart)} · 一次买齐，先处理最麻烦的</h3><p>清单只来自你这周真正选中的主题；替换菜单后会自动重算。</p></div><div className="meal-week-actions"><button onClick={() => setWeekStart(dateAt(weekStart, -7))}>←</button><button onClick={() => setWeekStart(mondayOf(today))}>本周</button><button onClick={() => setWeekStart(dateAt(weekStart, 7))}>→</button><button className="meal-fill-button" onClick={() => void copyShoppingList()}>{copied ? "已复制 ✓" : "复制清单"}</button></div></header>
-      {shoppingGroups.length ? <div className="meal-shopping-layout"><div className="meal-grocery-groups">{shoppingGroups.map((group) => <section key={group.category}><header><strong>{group.category}</strong><span>{group.items.length}</span></header>{group.items.map((item) => { const checked = shoppingChecked.has(item.name); return <button className={checked ? "checked" : ""} key={item.name} onClick={() => setShoppingChecked((current) => { const next = new Set(current); if (checked) next.delete(item.name); else next.add(item.name); return next; })}><i>{checked ? "✓" : ""}</i><div><strong>{item.name}</strong><small>{item.uses.join("；")}</small></div></button>; })}</section>)}</div><aside className="meal-prep-board"><p className="section-kicker">PREP AHEAD</p><h3>周日先做这些</h3>{prepItems.length ? <ol>{prepItems.map((item, index) => <li key={item.id}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{item.item}</strong><small>用于 {item.title}</small></div></li>)}</ol> : <p>本周主题没有必须提前准备的步骤。</p>}<div className="meal-nations-note"><strong>NATIONS RULE</strong><p>去 Food Court 时只记：一个蛋白质＋一个主食＋两种蔬菜。</p></div></aside></div> : <div className="meal-empty-shopping"><span>篮</span><h3>这周还没有采购清单</h3><p>先在“本周餐盘”安排几顿，MAP 会把对应菜谱里的材料自动合并。</p><button className="primary-button" onClick={() => setTab("week")}>开始安排本周</button></div>}
+      <header className="meal-section-header"><div><p className="section-kicker">SUNDAY RESET</p><h3>{weekLabel(weekStart)} · 采购、现买和备菜分开看</h3><p>相同食材会自动合并；Tim Hortons、Nations Food Court 等到店购买不会混进居家采购。</p></div><div className="meal-week-actions"><button onClick={() => setWeekStart(dateAt(weekStart, -7))}>←</button><button onClick={() => setWeekStart(mondayOf(today))}>本周</button><button onClick={() => setWeekStart(dateAt(weekStart, 7))}>→</button><button onClick={() => void copyShoppingList()}>{copied ? "已复制 ✓" : "复制汇总"}</button><button className="meal-fill-button" onClick={onOpenShopping}>预览导入购物清单</button></div></header>
+      {shoppingGroups.length || readyMadeItems.length || prepItems.length ? <div className="meal-procurement-stack">
+        <div className="meal-procurement-summary"><section><span>居家采购</span><strong>{procurement.groceries.length}</strong><small>需要买回家的食材</small></section><section><span>到店现买</span><strong>{readyMadeItems.length}</strong><small>咖啡、外食和现成正餐</small></section><section><span>提前处理</span><strong>{prepItems.length}</strong><small>真正需要提前做的步骤</small></section></div>
+        <div className="meal-shopping-layout"><div className="meal-grocery-groups">{shoppingGroups.length ? shoppingGroups.map((group) => <section key={group.category}><header><strong>{group.category}</strong><span>{group.items.length}</span></header>{group.items.map((item) => { const checked = shoppingChecked.has(item.name); return <button className={checked ? "checked" : ""} key={item.key} onClick={() => setShoppingChecked((current) => { const next = new Set(current); if (checked) next.delete(item.name); else next.add(item.name); return next; })}><i>{checked ? "✓" : ""}</i><div><strong>{item.name}</strong><small>{item.uses.join("；")}</small></div></button>; })}</section>) : <section className="meal-procurement-empty"><strong>本周没有居家食材</strong><p>如果这一周全是外食或还没排餐，这里保持为空。</p></section>}
+          {readyMadeItems.length > 0 && <section className="meal-ready-made"><header><strong>到店现买</strong><span>{readyMadeItems.length}</span></header>{readyMadeItems.map((item) => <div key={item.key}><i>店</i><div><strong>{item.title}</strong><small>{item.source} · {item.count} 次 · {item.dates.map(shortDate).join("、")}</small></div></div>)}</section>}</div>
+          <aside className="meal-prep-board"><p className="section-kicker">PREP AHEAD</p><h3>只做真正需要提前做的</h3>{prepItems.length ? <ol>{prepItems.map((item, index) => <li key={item.key}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{item.item}</strong><small>用于 {item.themes.join("、")}</small></div></li>)}</ol> : <p>本周没有必须提前准备的步骤；到店购买不会出现在这里。</p>}<div className="meal-nations-note"><strong>NATIONS RULE</strong><p>Food Court 现买：一个蛋白质＋一个主食＋两种蔬菜，不生成备菜任务。</p></div></aside></div>
+      </div> : <div className="meal-empty-shopping"><span>篮</span><h3>这周还没有采购安排</h3><p>先在“本周餐盘”安排几顿，MAP 会把居家食材、到店现买和提前处理自动分开。</p><button className="primary-button" onClick={() => setTab("week")}>开始安排本周</button></div>}
     </section>}
 
-    {tab === "guides" && <NutritionGuides />}
+    {tab === "guides" && <NutritionGuides guides={nutritionGuides} onAskAI={onAskAI} />}
 
     {picker && <MealPickerModal target={picker} themes={mealThemes.filter((theme) => theme.active && theme.mealSlots.includes(picker.mealSlot) && (!picker.source || theme.source === picker.source))} onClose={() => setPicker(null)} onPick={(themeId) => savePlan(picker, themeId)} onCustom={(title) => savePlan(picker, null, title)} />}
     {themeDetail && <MealDetailModal theme={themeDetail} recipe={detailRecipe} onClose={() => setThemeDetailId(null)} onEditTheme={() => { setThemeDetailId(null); setThemeEditor(themeDetail); }} onEditRecipe={() => { setThemeDetailId(null); setPendingRecipeThemeId(detailRecipe ? null : themeDetail.id); setRecipeEditor(detailRecipe || "new"); }} onSchedule={() => { savePlan({ date: today, mealSlot: themeDetail.mealSlots[0] }, themeDetail.id); setThemeDetailId(null); }} />}
     {themeEditor && <ThemeEditorModal value={themeEditor} recipes={mealRecipes} onClose={() => setThemeEditor(null)} onSave={saveTheme} onDelete={themeEditor === "new" ? undefined : () => deleteTheme(themeEditor)} />}
     {recipeEditor && <RecipeEditorModal value={recipeEditor} onClose={() => { setRecipeEditor(null); setPendingRecipeThemeId(null); }} onSave={saveRecipe} onDelete={recipeEditor === "new" ? undefined : () => deleteRecipe(recipeEditor.id)} />}
+    {themeDeleteCandidate && <MealModal title={`删除「${themeDeleteCandidate.title}」？`} subtitle="DELETE MEAL THEME" onClose={() => setThemeDeleteCandidate(null)}><div className="meal-delete-confirm"><p>主题会从主题库删除，但以前和未来已经排好的餐不会消失，会保留为普通文字安排。</p></div><div className="modal-actions"><button className="ghost-button" onClick={() => setThemeDeleteCandidate(null)}>取消</button><button className="danger-button" onClick={() => deleteTheme(themeDeleteCandidate)}>确认删除</button></div></MealModal>}
   </div>;
 }
 
@@ -271,7 +257,19 @@ function RecipeEditorModal({ value, onClose, onSave, onDelete }: { value: MealRe
   return <MealModal title={value === "new" ? "新建菜谱" : draft.title} subtitle="RECIPE" onClose={onClose}><div className="form-grid meal-form"><label className="wide"><span>菜谱名称</span><input value={draft.title} onChange={(event) => update("title", event.target.value)} /></label><label><span>份数</span><input type="number" min="1" value={draft.servings} onChange={(event) => update("servings", Math.max(1, Number(event.target.value)))} /></label><label><span>准备分钟</span><input type="number" min="0" value={draft.prepMinutes} onChange={(event) => update("prepMinutes", Math.max(0, Number(event.target.value)))} /></label><label><span>烹饪分钟</span><input type="number" min="0" value={draft.cookMinutes} onChange={(event) => update("cookMinutes", Math.max(0, Number(event.target.value)))} /></label><label className="wide"><span>材料 · 每行：名称 | 数量 | 分类</span><textarea className="meal-recipe-editor" value={ingredients} onChange={(event) => setIngredients(event.target.value)} placeholder="鸡蛋 | 2 个 | 蛋白质" /></label><label className="wide"><span>步骤 · 每行一步</span><textarea className="meal-recipe-editor" value={steps} onChange={(event) => setSteps(event.target.value)} /></label><label className="wide"><span>提前准备 · 每行一项</span><textarea value={prepAhead} onChange={(event) => setPrepAhead(event.target.value)} /></label><label className="wide"><span>补充说明</span><textarea value={draft.notes} onChange={(event) => update("notes", event.target.value)} /></label></div><div className="modal-actions">{onDelete && <button className="danger-button" onClick={onDelete}>删除菜谱</button>}<button className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!draft.title.trim()} onClick={() => onSave({ ...draft, ingredients: parseIngredients(ingredients), steps: steps.split("\n").map((item) => item.trim()).filter(Boolean), prepAhead: prepAhead.split("\n").map((item) => item.trim()).filter(Boolean) })}>保存菜谱</button></div></MealModal>;
 }
 
-function NutritionGuides() {
-  const rules = ["每天至少 2–3 次明确蛋白质", "午餐和晚餐各有 1–2 拳蔬菜", "每天 2 份完整水果", "每顿约 1 拳主食，训练日可以稍多", "每周鱼 1–2 次、豆腐或豆类 2–3 次", "咖啡放上午，中杯、少糖", "甜点是配角，不替代正餐", "不用追踪所有卡路里和微量营养素"];
-  return <section className="nutrition-guide-section"><div className="nutrition-manifesto"><p className="section-kicker">THE ONE-SENTENCE RULE</p><h3>每顿先看结构，<br />不用把吃饭变成数学考试。</h3><blockquote>每天三顿尽量都有蛋白质；午餐和晚餐吃足蔬菜；每天两份完整水果；正常吃米饭、面条和土豆；咖啡减糖。</blockquote><p>当前目标是长期健康、精力和适量肌肉，不是健美式增肌，也不是减脂餐。</p></div><div className="nutrition-targets"><div><span>蛋白质</span><strong>85–110g</strong><small>每天</small></div><div><span>蔬菜</span><strong>1–2 拳</strong><small>午餐和晚餐</small></div><div><span>水果</span><strong>2 份</strong><small>完整水果</small></div><div><span>碳水</span><strong>约 1 拳</strong><small>每顿</small></div><div><span>纤维</span><strong>逐步增加</strong><small>不要突然硬拉满</small></div><div><span>水分</span><strong>看口渴和尿色</strong><small>训练前后补</small></div></div><div className="nutrition-rules-layout"><section><header><p className="section-kicker">DAILY CHECK</p><h3>只检查这八条</h3></header><ol>{rules.map((rule, index) => <li key={rule}><span>{String(index + 1).padStart(2, "0")}</span><p>{rule}</p></li>)}</ol></section><aside><div className="coffee-rule"><p className="section-kicker">COFFEE</p><h3>统一规则</h3><ul><li>Medium，不必升级 Large</li><li>half sweet / less cane sugar</li><li>用 milk 替代较多 cream</li><li>能接受时选 unsweetened iced coffee＋一点牛奶</li><li>尽量只放上午，不在下午续杯</li></ul></div><div className="training-food-rule"><p className="section-kicker">AROUND TRAINING</p><h3>训练前后</h3><p><strong>前：</strong>两小时内吃过正餐就不用加；隔了 3–4 小时可吃香蕉＋酸奶。</p><p><strong>后：</strong>几小时内正常吃蛋白质＋碳水即可，不必追逐“30 分钟窗口”。</p></div></aside></div><footer className="nutrition-sources"><span>用于复习，不替代医生或注册营养师的个体建议。</span><a href="https://www.canada.ca/en/health-canada/services/food-guide/eating-support/cooking/make-healthy-meals-plate.html" target="_blank" rel="noreferrer">Canada’s Food Guide Plate ↗</a><a href="https://www.canada.ca/en/health-canada/services/food-guide/explore/healthy-eating-recommendations/eat-variety/eat-whole-grains.html" target="_blank" rel="noreferrer">Whole grains ↗</a></footer></section>;
+function NutritionGuides({ guides, onAskAI }: { guides: NutritionGuide[]; onAskAI: (prompt: string) => void }) {
+  const philosophy = guides.find((guide) => guide.kind === "philosophy");
+  const formulas = guides.filter((guide) => guide.kind === "formula");
+  const rules = guides.filter((guide) => guide.kind === "rule");
+  const edit = (guide?: NutritionGuide) => onAskAI(guide
+    ? `请只修改饮食规则 nutritionGuides 里 id 为 ${guide.id} 的记录。先问清我想怎么改，再给出预览，未经我确认不要应用。当前标题：${guide.title}；当前内容：${guide.content}`
+    : "请帮我新增一条饮食或健康规则到 nutritionGuides。先和我确认标题、类型和内容，再给出预览，未经我确认不要应用。"
+  );
+  return <section className="nutrition-guide-section">
+    <div className="nutrition-manifesto nutrition-philosophy"><div><p className="section-kicker">MY HEALTH PHILOSOPHY</p><h3>{philosophy?.title || "我的健康观"}</h3><p>{philosophy?.content || "饮食和训练服务于长期健康、精力与生活质量。"}</p></div><button onClick={() => edit(philosophy)}>✦ 用 MAP AI 编辑</button></div>
+    <div className="nutrition-guide-heading"><div><p className="section-kicker">MEAL FORMULAS</p><h3>需要复习时，只看这几条公式</h3><p>公式负责降低每天的决策成本，不是必须精确执行的纪律。</p></div><button onClick={() => edit()}>＋ 让 AI 新增</button></div>
+    <div className="nutrition-formula-grid">{formulas.map((guide, index) => <article className={guide.accent} key={guide.id}><span>{String(index + 1).padStart(2, "0")}</span><div><h3>{guide.title}</h3><p>{guide.content}</p></div><button onClick={() => edit(guide)}>✦ 编辑</button></article>)}</div>
+    <div className="nutrition-rule-grid">{rules.map((guide) => <article className={guide.accent} key={guide.id}><header><p className="section-kicker">QUICK RULE</p><button onClick={() => edit(guide)}>✦ AI 编辑</button></header><h3>{guide.title}</h3><p>{guide.content}</p></article>)}</div>
+    <footer className="nutrition-sources"><span>这些是可由 MAP AI 调整的个人复习规则，不替代医生或注册营养师的个体建议。</span><a href="https://www.canada.ca/en/health-canada/services/food-guide/eating-support/cooking/make-healthy-meals-plate.html" target="_blank" rel="noreferrer">Canada’s Food Guide Plate ↗</a></footer>
+  </section>;
 }

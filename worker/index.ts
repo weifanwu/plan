@@ -23,7 +23,7 @@ interface Env {
   };
 }
 
-type DataCollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "trainingPlans" | "exercises" | "exerciseLogs" | "activityLogs" | "mealThemes" | "mealPlans" | "mealRecipes" | "applications" | "notes" | "references";
+type DataCollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "trainingPlans" | "exercises" | "exerciseLogs" | "activityLogs" | "mealThemes" | "mealPlans" | "mealRecipes" | "nutritionGuides" | "purchaseItems" | "applications" | "notes" | "references";
 
 type SyncRow = {
   payload_json: string;
@@ -31,7 +31,7 @@ type SyncRow = {
   updated_at: string;
 };
 
-const DATA_COLLECTIONS: DataCollection[] = ["tasks", "routines", "schedule", "goals", "habits", "workouts", "trainingPlans", "exercises", "exerciseLogs", "activityLogs", "mealThemes", "mealPlans", "mealRecipes", "applications", "notes", "references"];
+const DATA_COLLECTIONS: DataCollection[] = ["tasks", "routines", "schedule", "goals", "habits", "workouts", "trainingPlans", "exercises", "exerciseLogs", "activityLogs", "mealThemes", "mealPlans", "mealRecipes", "nutritionGuides", "purchaseItems", "applications", "notes", "references"];
 const MUTATION_PATTERN = /(加入|添加|新增|创建|修改|更新|改成|移动|拖到|完成|删除|移除|取消|重排|调整|安排|记一下|记到|记录一下|记录这|记录该|记录到|保存|提醒我|放到|放进|标记|延期|推迟)|\b(add|create|update|edit|move|complete|delete|remove|reorder|schedule|save|mark|remind)\b/i;
 const REFERENCE_CONTEXT_PATTERN = /(私人速记|私人资料|常用网址|学校信息|参考资料|个人资料|备忘录|personal reference|quick reference)/i;
 const REFERENCE_LOOKUP_PATTERN = /(?:(?:我的|本人|查找|找到|告诉我|能不能拿到|what(?:'s| is) my)[^。！？\n]{0,24}(?:手机(?:号|号码)?|电话号码|phone\s*(?:number)?|地址|address|邮箱|email|学号|student\s*(?:number|id)|房间号|room\s*number|SIN|SSN|API\s*key|密码|password|账号|账户|confirmation\s*number|token|常用命令|网址)|(?:手机(?:号|号码)?|电话号码|phone\s*(?:number)?|地址|address|邮箱|email|学号|student\s*(?:number|id)|房间号|room\s*number|SIN|SSN|API\s*key|密码|password|账号|账户|confirmation\s*number|token|常用命令|网址)[^。！？\n]{0,12}(?:多少|是什么|在哪|有没有|找出来|告诉我|给我|\?|？))/i;
@@ -41,6 +41,8 @@ const COLLECTION_PATTERNS: Array<[DataCollection, RegExp]> = [
   ["mealPlans", /((?:安排|计划|替换|更换|调整)[^。！？\n]{0,24}(?:早餐|午餐|晚餐|加餐|吃什么|饮食|伙食|菜单)|下周[^。！？\n]{0,16}(?:早餐|午餐|晚餐|饮食|伙食|菜单)|本周[^。！？\n]{0,16}(?:早餐|午餐|晚餐|饮食|伙食|菜单)|meal\s*plan|weekly\s*menu)/i],
   ["mealRecipes", /(菜谱|食谱|做法|烹饪步骤|需要什么材料|recipe|ingredients?)/i],
   ["mealThemes", /(饮食主题|早餐主题|正餐主题|主题库|选餐主题|meal\s*themes?)/i],
+  ["nutritionGuides", /(饮食理念|健康观|饮食规则|营养规则|早餐公式|餐盘公式|nutrition\s*(?:guide|rule|philosophy))/i],
+  ["purchaseItems", /(购物清单|购物事项|要买的东西|下次出门.*买|计划购买|考虑中|shopping\s*list|purchase\s*item)/i],
   ["exerciseLogs", /(力量记录|训练记录|重量记录|训练历史|工作重量历史|RIR|几组|每组|(?:今天|昨天|前天|\d{4}-\d{2}-\d{2})?[^。！？\n]{0,20}(?:练了|做了)[^。！？\n]{0,24}(?:lb|kg|磅|公斤|组|次)|exercise\s*log|strength\s*log|weight\s*history)/i],
   ["activityLogs", /(运动打卡|活动记录|实际运动|实际活动|散步记录|跑步记录|篮球记录|徒步记录|游泳记录|骑车记录|散步|快走|跑步|篮球|徒步|hiking|hike|骑车|游泳|拉伸|activity\s*log|运动记录)/i],
   ["exercises", /(动作库|动作要点|技术要点|我会的动作|掌握动作|当前工作重量|exercise\s*library|exercise\s*technique)/i],
@@ -56,7 +58,7 @@ const COLLECTION_PATTERNS: Array<[DataCollection, RegExp]> = [
 ];
 
 const SYNC_ARRAY_KEYS = ["tasks", "routines", "schedule", "goals", "habits", "workouts", "applications", "notes"] as const;
-const OPTIONAL_SYNC_ARRAY_KEYS = ["trainingPlans", "exercises", "exerciseLogs", "activityLogs", "mealThemes", "mealPlans", "mealRecipes"] as const;
+const OPTIONAL_SYNC_ARRAY_KEYS = ["trainingPlans", "exercises", "exerciseLogs", "activityLogs", "mealThemes", "mealPlans", "mealRecipes", "nutritionGuides", "purchaseItems"] as const;
 
 function isCloudReference(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -198,6 +200,8 @@ function focusedData(data: Record<string, unknown>, collection: DataCollection) 
     mealThemes: ["mealThemes", "mealRecipes", "mealPlans"],
     mealPlans: ["mealPlans", "mealThemes", "mealRecipes"],
     mealRecipes: ["mealRecipes", "mealThemes"],
+    nutritionGuides: ["nutritionGuides"],
+    purchaseItems: ["purchaseItems", "mealPlans", "mealThemes", "mealRecipes"],
     notes: ["notes"],
     references: ["references"],
   };
@@ -299,15 +303,19 @@ MAP is a long-term personal operating system, not only a graduation planner. It 
 7. 草稿箱: a quick inbox for unscheduled task backlogs and rough ideas grouped as 待办, 想法, 课程, 项目, 求职, or 生活. Drafts can be searched, filtered, pinned, edited, and manually promoted into dated tasks.
 8. 私人速记: an Apple Notes / Notion-style editor for frequently retrieved URLs, school information, commands, credentials, and other personal reference text. The left side is a compact note index and the right side is a free-form editor. Each note has title, content, pinned, aiExcluded, createdAt, and updatedAt. aiExcluded=true means device-local only: it must never appear in AI context or cloud sync. aiExcluded=false is an explicit user opt-in that permits both MAP AI access and Cloudflare sync. It is deliberately separate from the task backlog.
 9. 健身与健康: a sustainable training system with four structured collections. trainingPlans is the editable weekly template; exercises is the technique library and current working weight; exerciseLogs preserves dated set/rep/load/RIR history; activityLogs records every completed activity, including strength sessions, walking, running, basketball, hiking, cycling, swimming, stretching, and custom activities. Daily nutrition checks remain in habits. The product explicitly treats rest and rescheduling as normal and never creates streak pressure. Formal sessions should stay within 40 minutes.
-10. 饮食计划: a flexible weekly meal-selection system, not a calorie tracker or a rigid repeating meal calendar. mealThemes is the reusable library of breakfast, lunch, dinner, and snack ideas; mealPlans assigns one chosen theme or a custom meal to a specific date and meal slot; mealRecipes stores ingredients, steps, and Sunday prep instructions. The weekly grocery and prep lists are derived automatically from the recipes referenced by that week's mealPlans.
+10. 饮食计划: a flexible weekly meal-selection system, not a calorie tracker or a rigid repeating meal calendar. mealThemes is the reusable library of breakfast, lunch, dinner, and snack ideas; mealPlans assigns one chosen theme or a custom meal to a specific date and meal slot; mealRecipes stores ingredients, steps, and Sunday prep instructions. nutritionGuides stores the user's editable health philosophy, meal formulas, and review rules. Weekly plans are date-specific and must remain intact when the user navigates to another week.
+11. 购物清单: a dedicated purchase memory. purchaseItems separates items for the next trip, planned purchases, undecided items, and bought history. Food ingredients may be previewed from the meal planner before the user approves importing them.
 
 MEAL DATA SHAPES AND RULES
-- mealThemes record: {id,title,subtitle,mealSlots,source,tags,proteinHint,recipeId,prepNote,notes,accent,active}. mealSlots is an array containing 早餐, 午餐, 晚餐, or 加餐. source is Nations, Tim Hortons, 在家, or 灵活. accent is lime, coral, lavender, or blue. recipeId may be null but otherwise must reference an existing mealRecipes id.
+- mealThemes record: {id,title,subtitle,mealSlots,source,tags,proteinHint,recipeId,prepNote,notes,accent,active,procurement}. mealSlots is an array containing 早餐, 午餐, 晚餐, or 加餐. source is Nations, Tim Hortons, 在家, or 灵活. accent is lime, coral, lavender, or blue. procurement is groceries or ready-made and distinguishes ingredients bought for home from meals purchased ready to eat. recipeId may be null but otherwise must reference an existing mealRecipes id.
 - mealPlans record: {id,date,mealSlot,themeId,customTitle,notes,completed}. date is YYYY-MM-DD. mealSlot is 早餐, 午餐, 晚餐, or 加餐. Use either a valid themeId or a non-empty customTitle. A meal plan is a flexible choice for that date, not a recurring rule and not evidence that the meal was eaten; completed reflects the actual check-off.
-- mealRecipes record: {id,title,servings,prepMinutes,cookMinutes,ingredients,steps,prepAhead,notes}. ingredients is an array of {name,amount,category,optional}; category is 蛋白质, 蔬果, 主食, 乳品与替代, or 调味与其他. steps and prepAhead are string arrays.
+- mealRecipes record: {id,title,servings,prepMinutes,cookMinutes,ingredients,steps,prepAhead,notes}. ingredients is an array of {name,amount,category,optional,purchaseMode}; category is 蛋白质, 蔬果, 主食, 乳品与替代, or 调味与其他. purchaseMode may be grocery or on-site. steps and prepAhead are string arrays.
+- nutritionGuides record: {id,kind,title,content,accent}. kind is philosophy, formula, or rule. These records are the user's own editable health philosophy and practical review knowledge. Modify only what the user asks to revise, and preserve the rest.
+- purchaseItems record: {id,title,quantity,details,category,status,source,createdAt,completedAt}. category is 食品, 厨房, 生活, 设备, or 其他. status is next, planned, considering, or bought. Use purchaseItems for undated things to buy; do not put them in the task backlog unless the user explicitly asks for a dated shopping task.
 - When the user asks to arrange a week of meals, add or update only mealPlans and reuse existing mealThemes whenever possible. Do not duplicate the same theme or recipe. Grocery and Sunday prep lists are derived automatically, so never create grocery items as tasks unless the user explicitly asks for separate dated shopping tasks.
 - Respect flexibility: do not assume that Monday must always use the same theme. Resolve the requested week into concrete dates and let different weeks have different choices. Preserve a user's explicitly chosen meals and fill only missing slots unless they ask to replace the whole week.
 - When the user asks to create or revise a reusable food idea, use mealThemes. When they ask for ingredients or cooking instructions, use mealRecipes. If a request clearly needs both a new theme and a new recipe but lacks enough detail, ask one concise question instead of creating disconnected records.
+- Ready-made meals and drinks from Tim Hortons, Nations Food Court, or another store are not home-prep ingredients. Mark their theme procurement as ready-made and use ingredient purchaseMode=grocery only for genuine companion groceries such as fruit. Do not include on-site items in a home grocery list.
 - MAP's default nutrition approach is practical structure rather than precision calorie counting: regular protein, vegetables at lunch and dinner, two whole-fruit servings, normal carbohydrates, less-sweet morning coffee, and no streak pressure. Do not invent diagnoses, supplement prescriptions, allergies, calorie deficits, or restrictive diets.
 
 FITNESS DATA SHAPES AND RULES
@@ -347,7 +355,7 @@ DATA RULES
 - Context mode for this request is ${focus ? `FOCUSED MUTATION. The only allowed operation collection is ${focus}. Do not request or modify omitted modules.` : referenceContext ? "FOCUSED PRIVATE REFERENCE ANALYSIS. Only private reference records were supplied; answer without modifying data unless the latest instruction explicitly requests a change." : "FULL MAP CONTEXT. Private references are omitted. Multiple collections are allowed only when the latest instruction explicitly requests them."}
 - The browser applies operations locally to the current data. You never return the complete MAP dataset.
 - For new records create a unique id beginning with ai-. Resolve relative dates against today. Use YYYY-MM-DD dates and 24-hour HH:MM times.
-- Tasks are formal actions with a date; use endDate only when work genuinely spans a date range. When the user asks to work on one outcome throughout a week or from one date through another, create one ranged task instead of duplicate daily tasks. Use routines for actions repeated daily or every N days. Schedule is only recurring weekly time blocks; goals are long-term directions; applications are job opportunities; notes are the unscheduled backlog and rough-idea inbox; references are reusable personal information; habits are daily nutrition checks. Meal selection belongs in mealThemes/mealPlans/mealRecipes, while fitness plans, techniques, strength history, and completed activities belong in the four fitness collections described above. Never use legacy workouts for new fitness changes.
+- Tasks are formal actions with a date; use endDate only when work genuinely spans a date range. When the user asks to work on one outcome throughout a week or from one date through another, create one ranged task instead of duplicate daily tasks. Use routines for actions repeated daily or every N days. Schedule is only recurring weekly time blocks; goals are long-term directions; applications are job opportunities; notes are the unscheduled backlog and rough-idea inbox; references are reusable personal information; habits are daily nutrition checks. Meal selection belongs in mealThemes/mealPlans/mealRecipes, nutrition philosophy belongs in nutritionGuides, and undated things to buy belong in purchaseItems. Fitness plans, techniques, strength history, and completed activities belong in the four fitness collections described above. Never use legacy workouts for new fitness changes.
 - When the user wants to remember an action but gives no date and does not ask to schedule it now, prefer adding a note with category 待办. Do not invent a task date. Use a dated task only when the user supplies a date, asks to schedule it, or explicitly asks to create a task.
 - Preserve details, goalId, carriedFrom, and completedAt on existing tasks unless explicitly changing them. For a new task, set goalId to the matching existing goal id when the connection is clear; otherwise use null. Use null for missing optional task fields. Preserve note timestamps unless changed; use valid ISO timestamps for new or updated notes.
 - Each operation has collection, operation, recordId, and recordJson. collection is one MAP array. operation is add, update, delete, or reorder.

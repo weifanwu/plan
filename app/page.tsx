@@ -10,12 +10,15 @@ import { isTaskVisibleToday } from "../lib/task-visibility.mjs";
 import { mergeSyncPayload, syncPayloadEquals, toSyncPayload } from "../lib/sync-state.mjs";
 import FitnessModule from "./components/FitnessModule";
 import MealPlannerModule from "./components/MealPlannerModule";
+import ShoppingModule from "./components/ShoppingModule";
 import { defaultExercises, defaultTrainingPlans } from "../lib/fitness-data";
 import type { ActivityLog, ExerciseDefinition, ExerciseLog, TrainingPlan } from "../lib/fitness-types";
-import { defaultMealRecipes, defaultMealThemes } from "../lib/meal-data";
-import type { MealPlanEntry, MealRecipe, MealTheme } from "../lib/meal-types";
+import { defaultMealRecipes, defaultMealThemes, defaultNutritionGuides } from "../lib/meal-data";
+import type { MealPlanEntry, MealRecipe, MealTheme, NutritionGuide } from "../lib/meal-types";
+import { defaultPurchaseItems } from "../lib/shopping-data";
+import type { PurchaseItem } from "../lib/shopping-types";
 
-type View = "today" | "goals" | "semester" | "career" | "planner" | "notes" | "vault" | "meals" | "wellness";
+type View = "today" | "goals" | "semester" | "career" | "planner" | "notes" | "vault" | "shopping" | "meals" | "wellness";
 type TaskCategory = "学业" | "求职" | "生活" | "健康";
 type TaskStatus = "todo" | "done";
 type NoteCategory = "待办" | "想法" | "课程" | "项目" | "求职" | "生活";
@@ -78,13 +81,13 @@ type ReferenceNote = { id: string; title: string; content: string; pinned: boole
 type AIPlanPreview = { summary: string; changes: string[]; nextData: AppData };
 type AIModel = "gpt-5.6-luna" | "gpt-5.6-terra" | "gpt-5.6-sol" | "gpt-5.4-mini" | "gpt-5.4";
 type AIChatMessage = { id: string; role: "user" | "assistant"; content: string };
-type AICollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "trainingPlans" | "exercises" | "exerciseLogs" | "activityLogs" | "mealThemes" | "mealPlans" | "mealRecipes" | "applications" | "notes" | "references";
+type AICollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "trainingPlans" | "exercises" | "exerciseLogs" | "activityLogs" | "mealThemes" | "mealPlans" | "mealRecipes" | "nutritionGuides" | "purchaseItems" | "applications" | "notes" | "references";
 type AIOperation = { collection: AICollection; operation: "add" | "update" | "delete" | "reorder"; recordId: string; recordJson: string };
 type AIChatResponse = { reply: string; action: "answer" | "proposal"; summary: string; operations: AIOperation[]; error?: string };
 type VoiceState = "idle" | "recording" | "transcribing";
 type PlannerStatusFilter = "open" | "done" | "all";
 type SemesterWeekModule = "schedule" | "tasks";
-type RecordCollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "trainingPlans" | "exercises" | "exerciseLogs" | "activityLogs" | "mealThemes" | "mealPlans" | "mealRecipes" | "applications" | "notes" | "references";
+type RecordCollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "trainingPlans" | "exercises" | "exerciseLogs" | "activityLogs" | "mealThemes" | "mealPlans" | "mealRecipes" | "nutritionGuides" | "purchaseItems" | "applications" | "notes" | "references";
 type UndoNotice = { message: string; restore: (current: AppData) => AppData };
 type PWAInstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
 type LockableScreenOrientation = ScreenOrientation & { lock?: (orientation: "portrait-primary") => Promise<void> };
@@ -106,6 +109,8 @@ type AppData = {
   mealThemes: MealTheme[];
   mealPlans: MealPlanEntry[];
   mealRecipes: MealRecipe[];
+  nutritionGuides: NutritionGuide[];
+  purchaseItems: PurchaseItem[];
   applications: Application[];
   notes: Note[];
   references: ReferenceNote[];
@@ -133,9 +138,9 @@ const NAV_ORDER_STORAGE_KEY = "map-navigation-order-v1";
 const SYNC_META_KEY = "map-sync-meta-v1";
 const SYNC_DIRTY_KEY = "map-sync-dirty-v1";
 const DEFAULT_SEMESTER_WEEK_ORDER: SemesterWeekModule[] = ["schedule", "tasks"];
-const LEGACY_DEFAULT_NAV_ORDER: View[] = ["today", "goals", "semester", "career", "planner", "notes", "vault", "meals", "wellness"];
-const DEFAULT_NAV_ORDER: View[] = ["semester", "today", "goals", "career", "planner", "notes", "vault", "meals", "wellness"];
-const NAV_LABELS: Record<View, string> = { today: "今日指挥台", goals: "长期目标", semester: "阶段地图", career: "求职记录", planner: "任务计划", notes: "草稿箱", vault: "私人速记", meals: "饮食计划", wellness: "健身与健康" };
+const LEGACY_DEFAULT_NAV_ORDER = ["today", "goals", "semester", "career", "planner", "notes", "vault", "meals", "wellness"];
+const DEFAULT_NAV_ORDER: View[] = ["semester", "today", "goals", "career", "planner", "notes", "vault", "shopping", "meals", "wellness"];
+const NAV_LABELS: Record<View, string> = { today: "今日指挥台", goals: "长期目标", semester: "阶段地图", career: "求职记录", planner: "任务计划", notes: "草稿箱", vault: "私人速记", shopping: "购物清单", meals: "饮食计划", wellness: "健身与健康" };
 const MOBILE_NAV_META: Record<View, { icon: string; label: string; description: string }> = {
   today: { icon: "⌂", label: "今天", description: "查看今天要推进的事情" },
   goals: { icon: "◎", label: "目标", description: "管理人生主线" },
@@ -144,10 +149,11 @@ const MOBILE_NAV_META: Record<View, { icon: string; label: string; description: 
   planner: { icon: "✓", label: "任务", description: "管理任务与固定节奏" },
   notes: { icon: "✎", label: "草稿", description: "记录 backlog 与灵感" },
   vault: { icon: "⌁", label: "速记", description: "资料与常用信息" },
+  shopping: { icon: "袋", label: "购物", description: "管理下次买、计划买和考虑中的东西" },
   meals: { icon: "食", label: "饮食", description: "选主题、采购与备菜" },
   wellness: { icon: "＋", label: "健康", description: "训练、进步与动作库" },
 };
-const AI_WELCOME_MESSAGE: AIChatMessage = { id: "welcome", role: "assistant", content: "你好，我是 MAP AI。我能看到你当前阶段、长期目标、任务、固定任务、课表、求职记录、饮食与训练计划和草稿，也知道哪些行动正在服务哪个目标。你可以让我分析现状、回答问题，或者一起把一个想法变成计划；任何数据修改都会先给你预览。私人速记只有在你明确开启“AI 可读 · 云端同步”并要求管理它时才会加入上下文。" };
+const AI_WELCOME_MESSAGE: AIChatMessage = { id: "welcome", role: "assistant", content: "你好，我是 MAP AI。我能看到你当前阶段、长期目标、任务、固定任务、课表、求职记录、购物清单、饮食理念、餐盘与训练计划和草稿，也知道哪些行动正在服务哪个目标。你可以让我分析现状、回答问题，或者一起把一个想法变成计划；任何数据修改都会先给你预览。私人速记只有在你明确开启“AI 可读 · 云端同步”并要求管理它时才会加入上下文。" };
 const LEGACY_TASK_GOALS: Record<string, string> = { stephnie: "graduate", leetcode: "career", fees: "graduate", applications: "career", pte: "graduate", irene: "graduate" };
 
 function getTorontoToday() {
@@ -317,6 +323,8 @@ const initialData: AppData = {
   mealThemes: defaultMealThemes,
   mealPlans: [],
   mealRecipes: defaultMealRecipes,
+  nutritionGuides: defaultNutritionGuides,
+  purchaseItems: defaultPurchaseItems,
   applications: [],
   notes: [],
   references: [],
@@ -352,6 +360,8 @@ function hydrateAppData(parsed: Partial<AppData>, currentDay: string, deviceRefe
     mealThemes: Array.isArray(parsed.mealThemes) ? parsed.mealThemes : defaultMealThemes,
     mealPlans: Array.isArray(parsed.mealPlans) ? parsed.mealPlans : [],
     mealRecipes: Array.isArray(parsed.mealRecipes) ? parsed.mealRecipes : defaultMealRecipes,
+    nutritionGuides: Array.isArray(parsed.nutritionGuides) ? parsed.nutritionGuides : defaultNutritionGuides,
+    purchaseItems: Array.isArray(parsed.purchaseItems) ? parsed.purchaseItems : defaultPurchaseItems,
     applications: normalizeApplications(parsed.applications),
     notes: parsed.notes || initialData.notes,
     references: normalizeReferences(parsed.references || deviceReferences),
@@ -371,7 +381,7 @@ function uid() {
 }
 
 function deriveAIChanges(current: AppData, next: AppData) {
-  const collections: Array<[AICollection, string]> = [["tasks", "任务"], ["routines", "固定任务"], ["schedule", "固定安排"], ["goals", "目标"], ["habits", "饮食习惯"], ["workouts", "旧版运动"], ["trainingPlans", "训练计划"], ["exercises", "动作"], ["exerciseLogs", "力量记录"], ["activityLogs", "运动记录"], ["mealThemes", "饮食主题"], ["mealPlans", "用餐安排"], ["mealRecipes", "菜谱"], ["applications", "求职记录"], ["notes", "草稿"], ["references", "私人速记"]];
+  const collections: Array<[AICollection, string]> = [["tasks", "任务"], ["routines", "固定任务"], ["schedule", "固定安排"], ["goals", "目标"], ["habits", "饮食习惯"], ["workouts", "旧版运动"], ["trainingPlans", "训练计划"], ["exercises", "动作"], ["exerciseLogs", "力量记录"], ["activityLogs", "运动记录"], ["mealThemes", "饮食主题"], ["mealPlans", "用餐安排"], ["mealRecipes", "菜谱"], ["nutritionGuides", "饮食理念"], ["purchaseItems", "购物事项"], ["applications", "求职记录"], ["notes", "草稿"], ["references", "私人速记"]];
   const changes: string[] = [];
   const displayName = (item: Record<string, unknown>) => String(item.title || item.company || item.label || item.code || item.content || item.id || "未命名记录").split("\n")[0].slice(0, 60);
   for (const [key, label] of collections) {
@@ -509,6 +519,7 @@ export default function Home() {
   const [data, setData] = useState<AppData>(initialData);
   const [ready, setReady] = useState(false);
   const [taskEditor, setTaskEditor] = useState<Task | "new" | null>(null);
+  const [quickTaskDate, setQuickTaskDate] = useState<string | null>(null);
   const [routineEditor, setRoutineEditor] = useState<Routine | "new" | null>(null);
   const [newTaskDate, setNewTaskDate] = useState<string | null>(null);
   const [newTaskGoalId, setNewTaskGoalId] = useState<string | null>(null);
@@ -837,7 +848,7 @@ export default function Home() {
     const query = referenceQuery.trim().toLocaleLowerCase();
     return data.references.filter((reference) => !query || reference.title.toLocaleLowerCase().includes(query) || reference.content.toLocaleLowerCase().includes(query)).slice().sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updatedAt.localeCompare(left.updatedAt));
   }, [data.references, referenceQuery]);
-  const mobileViewTitle: Record<View, string> = { today: "今天", goals: "长期目标", semester: "阶段地图", career: "求职记录", planner: "任务计划", notes: "草稿箱", vault: "私人速记", meals: "饮食计划", wellness: "健身与健康" };
+  const mobileViewTitle: Record<View, string> = { today: "今天", goals: "长期目标", semester: "阶段地图", career: "求职记录", planner: "任务计划", notes: "草稿箱", vault: "私人速记", shopping: "购物清单", meals: "饮食计划", wellness: "健身与健康" };
 
   function openNewTask(date?: string, goalId?: string) {
     setNewTaskDate(date || null);
@@ -845,6 +856,18 @@ export default function Home() {
     setTaskPrefill(null);
     setPromotingNoteId(null);
     setTaskEditor("new");
+  }
+
+  function openQuickTask(event: React.MouseEvent<HTMLElement>, date: string) {
+    if ((event.target as HTMLElement).closest("button, .calendar-event, .week-task-item")) return;
+    setQuickTaskDate(date);
+  }
+
+  function saveQuickTask(title: string, time: string) {
+    if (!quickTaskDate || !title.trim()) return;
+    const task: Task = { id: uid(), title: title.trim(), details: null, category: "生活", date: quickTaskDate, time: time || null, endDate: null, carriedFrom: null, completedAt: null, goalId: null, priority: "normal", status: "todo" };
+    setData((current) => ({ ...current, tasks: rollOverTasks([...current.tasks, task], today) }));
+    setQuickTaskDate(null);
   }
 
   function moveCalendar(distance: number) {
@@ -1525,7 +1548,7 @@ export default function Home() {
         <header className="topbar">
           <div>
             <p className="eyebrow">{todayLabel}</p>
-            <h1 className="desktop-page-title">{view === "today" ? "今天，先把最重要的事情往前推。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "看清当前阶段的时间与节奏。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : view === "notes" ? "没准备好排期的，先放进草稿箱。" : view === "vault" ? "零散资料，随手记下，一秒找到。" : view === "meals" ? "提前决定吃什么，把精力留给生活。" : "健康不是剩余时间。"}</h1>
+            <h1 className="desktop-page-title">{view === "today" ? "今天，先把最重要的事情往前推。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "看清当前阶段的时间与节奏。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : view === "notes" ? "没准备好排期的，先放进草稿箱。" : view === "vault" ? "零散资料，随手记下，一秒找到。" : view === "shopping" ? "想买的、要买的、还没决定的，各归其位。" : view === "meals" ? "提前决定吃什么，把精力留给生活。" : "健康不是剩余时间。"}</h1>
             <div className="mobile-page-title"><small>MAP</small><strong>{mobileViewTitle[view]}</strong></div>
           </div>
           <div className="topbar-actions"><button className="quick-vault-top" onClick={openVault}><span>⌁</span> 私人速记</button><button className="quick-note-top" onClick={openNotes}><span>✎</span> 记草稿</button><button className="primary-button" onClick={() => openNewTask()}><span>＋</span> 新建任务</button></div>
@@ -1657,7 +1680,7 @@ export default function Home() {
                     const routines = data.routines.filter((routine) => isRoutineDueOn(routine, cell.key) && !routine.completedDates.includes(cell.key)).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
                     const schedules = cell.key >= data.phase.startDate && cell.key <= data.phase.endDate ? data.schedule.filter((item) => item.days.includes(cell.dayCode)).sort((a, b) => a.start.localeCompare(b.start)) : [];
                     const events = [...tasks.map((task) => ({ type: "task" as const, time: task.time, item: task })), ...routines.map((routine) => ({ type: "routine" as const, time: routine.time, item: routine })), ...schedules.map((item) => ({ type: "schedule" as const, time: item.start, item }))].sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
-                    return <article className={`calendar-day ${cell.inMonth ? "" : "outside"} ${cell.key === today ? "today" : ""} ${taskDropDate === cell.key ? "task-drop-target" : ""}`} key={cell.key} onDragOver={(event) => allowTaskDrop(event, cell.key)} onDrop={(event) => dropTaskOnDate(event, cell.key)}>
+                    return <article className={`calendar-day ${cell.inMonth ? "" : "outside"} ${cell.key === today ? "today" : ""} ${taskDropDate === cell.key ? "task-drop-target" : ""}`} key={cell.key} onDoubleClick={(event) => openQuickTask(event, cell.key)} onDragOver={(event) => allowTaskDrop(event, cell.key)} onDrop={(event) => dropTaskOnDate(event, cell.key)}>
                       <header><span>{cell.day}</span>{cell.key === today && <strong>今天</strong>}<button onClick={() => openNewTask(cell.key)} aria-label={`在 ${cell.key} 新建任务`}>＋</button></header>
                       <div className="calendar-events">
                         {events.map((event) => event.type === "task" ? <div key={`task-${event.item.id}`} draggable className={`calendar-event task ${categoryTone[event.item.category]} ${event.item.status === "done" ? "done" : ""} ${event.item.carriedFrom && event.item.status === "todo" ? "carried" : ""} ${draggedTaskId === event.item.id ? "dragging" : ""}`} onDragStart={(dragEvent) => beginTaskDrag(dragEvent, event.item)} onDragEnd={endTaskDrag} title={`${event.item.title} · 拖到其他日期可改期${event.item.details ? ` · ${event.item.details}` : ""}${event.item.carriedFrom && event.item.status === "todo" ? ` · 未完成顺延，原定 ${formatDate(event.item.carriedFrom)}` : ""}`}><TaskCalendarCheck task={event.item} onToggle={() => toggleTask(event.item.id)} /><button className="calendar-task-open" onClick={() => setTaskEditor(event.item)}><time>{event.time || "全天"}</time><span>{event.item.title}</span></button></div> : event.type === "routine" ? <div key={`routine-${event.item.id}`} className={`calendar-event routine ${categoryTone[event.item.category]} ${event.item.completedDates.includes(cell.key) ? "done" : ""}`} title={`${event.item.title} · ${routineFrequencyLabel(event.item)}`}><RoutineCalendarCheck completed={event.item.completedDates.includes(cell.key)} label={event.item.title} onToggle={() => toggleRoutineCompletion(event.item.id, cell.key)} /><button className="calendar-task-open" onClick={() => setRoutineEditor(event.item)}><time>{event.time || "全天"}</time><span>{event.item.title}</span></button></div> : <button key={`schedule-${event.item.id}`} className={`calendar-event schedule ${event.item.color}`} onClick={() => setScheduleEditor(event.item)} title={`${event.item.title} · ${event.item.room}`}><time>{event.item.start}</time><span>{event.item.code}</span></button>)}
@@ -1688,7 +1711,7 @@ export default function Home() {
                   </div>
                 </section>
               </div>
-              <div className="calendar-legend"><span><i className="task" />当天任务</span><span><i className="routine" />固定任务</span><span><i className="schedule" />课程 / TA</span><small>完成后自动从日历隐藏 · 拖动普通任务到日期格即可改期 · 可在任务总览查看</small></div>
+              <div className="calendar-legend"><span><i className="task" />当天任务</span><span><i className="routine" />固定任务</span><span><i className="schedule" />课程 / TA</span><small>双击空白日期快速建任务 · 拖动普通任务可改期 · 完成后从日历隐藏，在任务总览保留</small></div>
             </section> : <section className="panel schedule-panel">
               <div className="panel-heading"><div><p className="section-kicker">THIS WEEK</p><h3>本周总览</h3></div><span className="counter">{formatDate(weekStart)}—{formatDate(weekEnd)} · {weeklyTasks.length} 项任务 · {weeklyRoutineCount} 次固定任务</span></div>
               <div className="semester-week-modules">
@@ -1745,7 +1768,7 @@ export default function Home() {
                     {weekDays.map((day) => {
                       const tasks = calendarTasks.filter((task) => !isMultiDayTask(task) && task.date === day.key).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
                       const routines = data.routines.filter((routine) => isRoutineDueOn(routine, day.key) && !routine.completedDates.includes(day.key)).sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
-                      return <article className={`week-task-day ${day.key === today ? "today" : ""} ${taskDropDate === day.key ? "task-drop-target" : ""}`} key={day.key} onDragOver={(event) => allowTaskDrop(event, day.key)} onDrop={(event) => dropTaskOnDate(event, day.key)}>
+                      return <article className={`week-task-day ${day.key === today ? "today" : ""} ${taskDropDate === day.key ? "task-drop-target" : ""}`} key={day.key} onDoubleClick={(event) => openQuickTask(event, day.key)} onDragOver={(event) => allowTaskDrop(event, day.key)} onDrop={(event) => dropTaskOnDate(event, day.key)}>
                         <header><div><strong>{day.label}</strong><span>{day.date}</span></div>{day.key === today && <i>今天</i>}</header>
                         <div className="week-task-list">
                           {routines.map((routine) => <article key={routine.id} className={`week-task-item routine ${categoryTone[routine.category]} ${routine.completedDates.includes(day.key) ? "done" : ""}`}><RoutineCalendarCheck completed={routine.completedDates.includes(day.key)} label={routine.title} onToggle={() => toggleRoutineCompletion(routine.id, day.key)} /><button className="week-task-open" onClick={() => setRoutineEditor(routine)}><time>{routine.time || "全天"}</time><span>{routine.title}<small>{routineFrequencyLabel(routine)}</small></span></button></article>)}
@@ -1892,6 +1915,19 @@ export default function Home() {
           </div>
         )}
 
+        {view === "shopping" && (
+          <div className="page-content shopping-page">
+            <ShoppingModule
+              today={today}
+              items={data.purchaseItems}
+              mealThemes={data.mealThemes}
+              mealPlans={data.mealPlans}
+              mealRecipes={data.mealRecipes}
+              onChange={(purchaseItems) => setData((current) => ({ ...current, purchaseItems }))}
+            />
+          </div>
+        )}
+
         {view === "meals" && (
           <div className="page-content meals-page">
             <MealPlannerModule
@@ -1899,7 +1935,10 @@ export default function Home() {
               mealThemes={data.mealThemes}
               mealPlans={data.mealPlans}
               mealRecipes={data.mealRecipes}
+              nutritionGuides={data.nutritionGuides}
               onChange={(change) => setData((current) => ({ ...current, ...change }))}
+              onOpenShopping={() => setView("shopping")}
+              onAskAI={(prompt) => { setAiOpen(true); setAiText(prompt); window.requestAnimationFrame(() => aiInputRef.current?.focus()); }}
             />
           </div>
         )}
@@ -1967,6 +2006,7 @@ export default function Home() {
       </aside>}
 
       {taskEditor && <TaskModal value={taskEditor} goals={data.goals} prefill={taskPrefill || undefined} sourceDraft={Boolean(promotingNoteId)} defaultDate={newTaskDate || undefined} defaultGoalId={newTaskGoalId || undefined} onClose={closeTaskEditor} onSave={saveTaskFromEditor} onDelete={taskEditor === "new" ? undefined : () => { deleteTask(taskEditor.id); closeTaskEditor(); }} />}
+      {quickTaskDate && <QuickTaskModal date={quickTaskDate} onClose={() => setQuickTaskDate(null)} onSave={saveQuickTask} />}
       {routineEditor && <RoutineModal value={routineEditor} goals={data.goals} onClose={() => setRoutineEditor(null)} onSave={saveRoutine} onDelete={routineEditor === "new" ? undefined : () => { deleteRoutine(routineEditor.id); setRoutineEditor(null); }} />}
       {phaseEditor && <PhaseModal value={data.phase} goals={data.goals} onClose={() => setPhaseEditor(false)} onSave={(phase) => { setData((current) => ({ ...current, phase })); setCalendarCursor(phase.startDate.slice(0, 7)); setPhaseEditor(false); }} />}
       {scheduleEditor && <ScheduleModal value={scheduleEditor} onClose={() => setScheduleEditor(null)} onSave={(schedule) => { setData((current) => ({ ...current, schedule: scheduleEditor === "new" ? [...current.schedule, schedule] : current.schedule.map((item) => item.id === schedule.id ? schedule : item) })); setScheduleEditor(null); }} onDelete={scheduleEditor === "new" ? undefined : () => { removeRecord("schedule", scheduleEditor.id, `已删除安排「${scheduleEditor.code}」`); setScheduleEditor(null); }} />}
@@ -2017,6 +2057,14 @@ function ModalFrame({ title, subtitle, onClose, onDelete, children }: { title: s
 }
 
 function Field({ label, children, wide = false }: { label: string; children: React.ReactNode; wide?: boolean }) { return <label className={wide ? "wide" : ""}><span>{label}</span>{children}</label>; }
+
+function QuickTaskModal({ date, onClose, onSave }: { date: string; onClose: () => void; onSave: (title: string, time: string) => void }) {
+  const [title, setTitle] = useState("");
+  const [time, setTime] = useState("09:00");
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { inputRef.current?.focus(); }, []);
+  return <div className="modal-backdrop quick-task-backdrop"><section className="quick-task-modal" aria-label={`快速添加 ${formatDate(date)} 的任务`}><header><div><p className="section-kicker">QUICK TASK</p><h2>{formatDate(date)}</h2></div><button onClick={onClose} aria-label="关闭">×</button></header><form onSubmit={(event) => { event.preventDefault(); onSave(title, time); }}><input ref={inputRef} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="任务名称" aria-label="任务名称" /><div><label><span>时间</span><input type="time" value={time} onChange={(event) => setTime(event.target.value)} /></label><button className="primary-button" type="submit" disabled={!title.trim()}>创建</button></div></form><p>先创建标题和时间；需要补充细节、类别、跨度或目标时，再点击任务打开完整编辑。</p></section></div>;
+}
 
 function TaskModal({ value, goals, prefill, sourceDraft = false, defaultDate, defaultGoalId, onClose, onSave, onDelete }: { value: Task | "new"; goals: Goal[]; prefill?: TaskPrefill; sourceDraft?: boolean; defaultDate?: string; defaultGoalId?: string; onClose: () => void; onSave: (task: Task) => void; onDelete?: () => void }) {
   const existing = value === "new" ? null : value;

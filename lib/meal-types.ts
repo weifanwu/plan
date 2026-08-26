@@ -2,12 +2,15 @@ export type MealSlot = "早餐" | "午餐" | "晚餐" | "加餐";
 export type MealSource = "Nations" | "Tim Hortons" | "在家" | "灵活";
 export type MealAccent = "lime" | "coral" | "lavender" | "blue";
 export type IngredientCategory = "蛋白质" | "蔬果" | "主食" | "乳品与替代" | "调味与其他";
+export type MealProcurementMode = "groceries" | "ready-made";
+export type NutritionGuideKind = "philosophy" | "formula" | "rule";
 
 export type MealIngredient = {
   name: string;
   amount: string;
   category: IngredientCategory;
   optional?: boolean;
+  purchaseMode?: "grocery" | "on-site";
 };
 
 export type MealRecipe = {
@@ -35,6 +38,7 @@ export type MealTheme = {
   notes: string;
   accent: MealAccent;
   active: boolean;
+  procurement?: MealProcurementMode;
 };
 
 export type MealPlanEntry = {
@@ -45,4 +49,12 @@ export type MealPlanEntry = {
   customTitle: string;
   notes: string;
   completed: boolean;
+};
+
+export type NutritionGuide = {
+  id: string;
+  kind: NutritionGuideKind;
+  title: string;
+  content: string;
+  accent: MealAccent;
 };

@@ -1,4 +1,49 @@
-import type { MealRecipe, MealTheme } from "./meal-types";
+import type { MealRecipe, MealTheme, NutritionGuide } from "./meal-types";
+
+export const defaultNutritionGuides: NutritionGuide[] = [
+  {
+    id: "nutrition-philosophy",
+    kind: "philosophy",
+    title: "我的健康观",
+    content: "我不追求健美式增肌，也不把健康变成一套高压打卡。目标是保留适量肌肉、稳定精力和心肺能力，让自己有精神、能长期行动，延缓衰老并降低生病风险。饮食和训练都服务于长期健康与生活质量，而不是短期外形数字。",
+    accent: "lime",
+  },
+  {
+    id: "nutrition-breakfast-formula",
+    kind: "formula",
+    title: "早餐公式",
+    content: "一份明确蛋白质（目标约 20–30g）＋一份主食或其他碳水＋一份完整水果。早餐不必强迫塞很多蔬菜；如果早餐变成早午饭，就把蛋白质和主食都加完整。",
+    accent: "coral",
+  },
+  {
+    id: "nutrition-main-meal-formula",
+    kind: "formula",
+    title: "午餐 / 晚餐公式",
+    content: "1–1.5 掌蛋白质＋约 1 拳主食＋1–2 拳蔬菜。训练日主食可以稍多；没有训练且不太饿时可以稍少，但不用戒米饭、面条或土豆。",
+    accent: "lavender",
+  },
+  {
+    id: "nutrition-training-formula",
+    kind: "formula",
+    title: "训练前后公式",
+    content: "训练前两小时内吃过正餐就不用额外加餐；隔了 3–4 小时可选香蕉＋酸奶。训练后几小时内正常吃蛋白质＋碳水即可，不追逐所谓 30 分钟窗口。",
+    accent: "blue",
+  },
+  {
+    id: "nutrition-coffee-rule",
+    kind: "rule",
+    title: "咖啡",
+    content: "尽量放在上午；默认 Medium；half sweet / less cane sugar；可以用 milk 替代较多 cream。",
+    accent: "coral",
+  },
+  {
+    id: "nutrition-daily-rule",
+    kind: "rule",
+    title: "日常底线",
+    content: "每天 2–3 次明确蛋白质；午晚餐有蔬菜；每天两份完整水果；正常吃主食；每周轮换鱼、豆腐、鸡蛋、肉和奶类。甜点是配角，不替代正餐。",
+    accent: "lime",
+  },
+];
 
 export const defaultMealThemes: MealTheme[] = [
   { id: "meal-tims-belt", title: "Tims 训练启动日", subtitle: "Bagel B.E.L.T.＋水果＋少糖 iced coffee", mealSlots: ["早餐"], source: "Tim Hortons", tags: ["训练日", "省时间", "高蛋白"], proteinHint: "约 24g；若当早午饭再加酸奶或鸡蛋", recipeId: "recipe-tims-belt", prepNote: "前一晚确认家里有香蕉或苹果", notes: "钠较高且含 bacon，一周 1–2 次即可。", accent: "coral", active: true },
@@ -19,13 +64,13 @@ export const defaultMealThemes: MealTheme[] = [
 ];
 
 export const defaultMealRecipes: MealRecipe[] = [
-  { id: "recipe-tims-belt", title: "Tims 训练启动早餐", servings: 1, prepMinutes: 5, cookMinutes: 0, ingredients: [{ name: "Bagel B.E.L.T.", amount: "1 个", category: "蛋白质" }, { name: "香蕉或苹果", amount: "1 份", category: "蔬果" }, { name: "Medium iced coffee", amount: "1 杯，half sweet，milk", category: "调味与其他" }, { name: "Plain Greek yogurt", amount: "1 盒（当早午饭时可选）", category: "乳品与替代", optional: true }], steps: ["在 Tim Hortons 点一个 Bagel B.E.L.T.。", "咖啡选 Medium、half sweet，尽量用 milk。", "搭配一份完整水果；若作为早午饭，再加 Greek yogurt 或两个水煮蛋。"], prepAhead: ["确认家里或 Nations 有可直接带走的水果。"], notes: "不需要用 5–10 个 Timbits 补足早午饭。" },
+  { id: "recipe-tims-belt", title: "Tims 训练启动早餐", servings: 1, prepMinutes: 5, cookMinutes: 0, ingredients: [{ name: "Bagel B.E.L.T.", amount: "1 个", category: "蛋白质" }, { name: "香蕉或苹果", amount: "1 份", category: "蔬果", purchaseMode: "grocery" }, { name: "Medium iced coffee", amount: "1 杯，half sweet，milk", category: "调味与其他" }, { name: "Plain Greek yogurt", amount: "1 盒（当早午饭时可选）", category: "乳品与替代", optional: true, purchaseMode: "grocery" }], steps: ["在 Tim Hortons 点一个 Bagel B.E.L.T.。", "咖啡选 Medium、half sweet，尽量用 milk。", "搭配一份完整水果；若作为早午饭，再加 Greek yogurt 或两个水煮蛋。"], prepAhead: ["确认家里或 Nations 有可直接带走的水果。"], notes: "不需要用 5–10 个 Timbits 补足早午饭。" },
   { id: "recipe-yogurt-oats", title: "Greek yogurt 燕麦碗", servings: 1, prepMinutes: 5, cookMinutes: 0, ingredients: [{ name: "Plain Greek yogurt", amount: "约 200g", category: "乳品与替代" }, { name: "燕麦", amount: "约半杯", category: "主食" }, { name: "香蕉或莓果", amount: "1 份", category: "蔬果" }, { name: "无盐坚果", amount: "一小把", category: "调味与其他" }], steps: ["Greek yogurt 放入碗或密封盒。", "加入燕麦和切好的水果。", "最后撒一小把坚果；想做 overnight oats 时前一晚冷藏。"], prepAhead: ["将燕麦和坚果分装成一周小份。", "莓果洗净并彻底沥干。"], notes: "普通早餐不需要同时大量加入 granola、蜂蜜和花生酱。" },
   { id: "recipe-chinese-breakfast", title: "中式温热早餐", servings: 1, prepMinutes: 5, cookMinutes: 8, ingredients: [{ name: "鸡蛋", amount: "2 个", category: "蛋白质" }, { name: "无糖豆奶或牛奶", amount: "1 杯", category: "乳品与替代" }, { name: "红薯、玉米或全麦面包", amount: "1 份", category: "主食" }, { name: "橙子、苹果或猕猴桃", amount: "1 份", category: "蔬果" }], steps: ["加热提前煮好的鸡蛋与红薯/玉米，或烤两片全麦面包。", "倒一杯无糖豆奶或牛奶。", "搭配一份完整水果。"], prepAhead: ["一次煮 6–8 个鸡蛋，冷藏分几天吃。", "蒸熟 2–3 份红薯或玉米。"], notes: "无糖豆奶优先；不要同时叠加油条和甜面包。" },
-  { id: "recipe-tims-protein", title: "Tims 轻量高蛋白早餐", servings: 1, prepMinutes: 5, cookMinutes: 0, ingredients: [{ name: "Egg & Cheese English Muffin", amount: "1 个", category: "蛋白质" }, { name: "Medium Iced Protein Latte", amount: "1 杯", category: "乳品与替代" }, { name: "香蕉、苹果或橙子", amount: "1 份", category: "蔬果" }], steps: ["点 Egg & Cheese English Muffin。", "饮料选 Medium Iced Protein Latte，不额外加糖浆。", "配一份从 Nations 带来的水果。"], prepAhead: ["前一天准备一份可带走的水果。"], notes: "门店菜单变化时在 Tim Hortons App 内确认。" },
+  { id: "recipe-tims-protein", title: "Tims 轻量高蛋白早餐", servings: 1, prepMinutes: 5, cookMinutes: 0, ingredients: [{ name: "Egg & Cheese English Muffin", amount: "1 个", category: "蛋白质" }, { name: "Medium Iced Protein Latte", amount: "1 杯", category: "乳品与替代" }, { name: "香蕉、苹果或橙子", amount: "1 份", category: "蔬果", purchaseMode: "grocery" }], steps: ["点 Egg & Cheese English Muffin。", "饮料选 Medium Iced Protein Latte，不额外加糖浆。", "配一份从 Nations 带来的水果。"], prepAhead: ["前一天准备一份可带走的水果。"], notes: "门店菜单变化时在 Tim Hortons App 内确认。" },
   { id: "recipe-pb-toast", title: "全麦花生酱早餐", servings: 1, prepMinutes: 5, cookMinutes: 2, ingredients: [{ name: "全麦面包", amount: "2 片", category: "主食" }, { name: "花生酱", amount: "1–2 汤匙", category: "调味与其他" }, { name: "Plain Greek yogurt", amount: "约 200g", category: "乳品与替代" }, { name: "香蕉", amount: "1 根", category: "蔬果" }], steps: ["全麦面包烤热，薄薄涂 1–2 汤匙花生酱。", "配 Greek yogurt 和香蕉。", "咖啡按上午、中杯、少糖规则处理。"], prepAhead: [], notes: "若改用整个 Bagel，减少花生酱或其他主食份量。" },
   { id: "recipe-strength-brunch", title: "力量训练早午饭", servings: 1, prepMinutes: 8, cookMinutes: 10, ingredients: [{ name: "鸡蛋", amount: "2–3 个", category: "蛋白质" }, { name: "全麦 Bagel 或面包", amount: "1 份", category: "主食" }, { name: "番茄、黄瓜或菠菜", amount: "1–2 拳", category: "蔬果" }, { name: "水果", amount: "1 份", category: "蔬果" }], steps: ["鸡蛋煎、煮或炒熟。", "加热全麦 Bagel 或面包。", "加入一到两种方便蔬菜和一份水果。"], prepAhead: ["洗好番茄、黄瓜或菠菜并分装。"], notes: "训练前吃时留出约 2–3 小时；训练后吃则正常完成整顿即可。" },
-  { id: "recipe-treat-breakfast", title: "有边界的甜点早餐", servings: 1, prepMinutes: 5, cookMinutes: 0, ingredients: [{ name: "Greek yogurt 或鸡蛋", amount: "1 份", category: "蛋白质" }, { name: "水果", amount: "1 份", category: "蔬果" }, { name: "燕麦", amount: "少量，可选", category: "主食", optional: true }, { name: "Timbits", amount: "1–2 个", category: "调味与其他" }, { name: "Medium coffee", amount: "1 杯", category: "调味与其他" }], steps: ["先吃鸡蛋或酸奶，再吃水果。", "最后吃 1–2 个最喜欢的 Timbits。", "咖啡选 Medium、少糖并放在上午。"], prepAhead: [], notes: "偶尔吃多一点不是严重问题，重点是不把它变成每日标准。" },
+  { id: "recipe-treat-breakfast", title: "有边界的甜点早餐", servings: 1, prepMinutes: 5, cookMinutes: 0, ingredients: [{ name: "Greek yogurt 或鸡蛋", amount: "1 份", category: "蛋白质" }, { name: "水果", amount: "1 份", category: "蔬果" }, { name: "燕麦", amount: "少量，可选", category: "主食", optional: true }, { name: "Timbits", amount: "1–2 个", category: "调味与其他", purchaseMode: "on-site" }, { name: "Medium coffee", amount: "1 杯", category: "调味与其他", purchaseMode: "on-site" }], steps: ["先吃鸡蛋或酸奶，再吃水果。", "最后吃 1–2 个最喜欢的 Timbits。", "咖啡选 Medium、少糖并放在上午。"], prepAhead: [], notes: "偶尔吃多一点不是严重问题，重点是不把它变成每日标准。" },
   { id: "recipe-nations-plate", title: "Nations Food Court 选餐法", servings: 1, prepMinutes: 3, cookMinutes: 0, ingredients: [{ name: "鸡肉、鱼、牛肉或豆腐", amount: "1 掌到 1.5 掌", category: "蛋白质" }, { name: "米饭、面或土豆", amount: "约 1 拳", category: "主食" }, { name: "两种蔬菜", amount: "共 1–2 拳", category: "蔬果" }], steps: ["先选一个明确蛋白质。", "再选一拳左右主食。", "最后补齐两种蔬菜；酱汁少一点。"], prepAhead: [], notes: "可以自由换菜，不需要追求每天完全相同。" },
   { id: "recipe-chicken-rice", title: "鸡肉双蔬饭", servings: 3, prepMinutes: 15, cookMinutes: 25, ingredients: [{ name: "鸡胸或去皮鸡腿", amount: "450–500g", category: "蛋白质" }, { name: "米", amount: "约 3 杯熟饭", category: "主食" }, { name: "西兰花", amount: "1 大颗或 1 袋冷冻", category: "蔬果" }, { name: "绿叶菜", amount: "1 把", category: "蔬果" }, { name: "食用油与基础调味", amount: "适量", category: "调味与其他" }], steps: ["鸡肉切成均匀大小，少量油和调味腌 10 分钟。", "鸡肉煎或烤至完全熟透。", "西兰花与绿叶菜快速蒸或炒熟。", "和米饭分装；酱汁单独保存。"], prepAhead: ["周日先完成鸡肉和西兰花的 3 份分装。", "绿叶菜洗净沥干，吃前再炒。"], notes: "冷藏熟食按气味、状态和食品安全判断，不要机械放满整周。" },
   { id: "recipe-beef-noodles", title: "牛肉蔬菜面", servings: 2, prepMinutes: 12, cookMinutes: 15, ingredients: [{ name: "瘦牛肉片", amount: "250g", category: "蛋白质" }, { name: "鸡蛋", amount: "2 个", category: "蛋白质" }, { name: "面条", amount: "2 份", category: "主食" }, { name: "青菜", amount: "2–3 拳", category: "蔬果" }, { name: "胡萝卜或甜椒", amount: "1 份", category: "蔬果" }], steps: ["牛肉分份调味，蔬菜切好。", "煮面并在最后加入青菜。", "牛肉快速炒熟，与鸡蛋和蔬菜一起放到面上。"], prepAhead: ["牛肉按每餐份量冷藏或冷冻。", "青菜提前洗净，彻底沥干后保存。"], notes: "汤面少喝高钠汤底；炒面避免额外大量油。" },
