@@ -177,6 +177,9 @@ test("completed tasks archive from the interface after 60 days", () => {
 test("workflow controls expose ranges, friendly weekdays, status filters, and undo", async () => {
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(source, /结束日期（跨日任务）/);
+  assert.match(source, /TaskTimeField/);
+  assert.match(source, /time: allDay \? null : time \|\| null/);
+  assert.match(source, /全天任务不会绑定具体时刻/);
   assert.match(source, /每周重复日期/);
   assert.match(source, /任务状态筛选/);
   assert.match(source, /undoLastAction/);
