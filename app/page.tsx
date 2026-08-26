@@ -584,6 +584,10 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchActiveIndex, setSearchActiveIndex] = useState(0);
   const [showCompletedToday, setShowCompletedToday] = useState(true);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [batchMode, setBatchMode] = useState(false);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
+  const [batchDate, setBatchDate] = useState(() => getTorontoToday());
   const semesterWeekOrder = data.uiPreferences.semesterWeekOrder;
   const navOrder = data.uiPreferences.navigationOrder;
   const mobileQuickViews = useMemo(() => [...new Set([navOrder[0] ?? DEFAULT_NAV_ORDER[0], "today", "semester", "notes", "planner"] as View[])].slice(0, 4), [navOrder]);
@@ -799,6 +803,7 @@ export default function Home() {
   const calendarTasks = useMemo(() => visibleTasks.filter((task) => task.status === "todo"), [visibleTasks]);
   const todayDisplayTasks = useMemo(() => visibleTasks.filter((task) => isTaskVisibleToday(task, today)), [visibleTasks, today]);
   const todayTasks = useMemo(() => todayDisplayTasks.filter((task) => task.status === "todo"), [todayDisplayTasks]);
+  const todayFocusTasks = useMemo(() => todayTasks.slice().sort((left, right) => Number(right.priority === "high") - Number(left.priority === "high") || (left.time || "99:99").localeCompare(right.time || "99:99") || left.title.localeCompare(right.title)).slice(0, 3), [todayTasks]);
   const todayRoutineEntries = useMemo(() => data.routines.flatMap((routine) => {
     const entry = routineTodayEntry(routine, today);
     return entry ? [{ routine, ...entry }] : [];
@@ -843,12 +848,25 @@ export default function Home() {
     return [...counts.entries()].sort(([left], [right]) => right.localeCompare(left));
   }, [data.applications]);
   const visibleApplications = applicationDateFilter === "all" ? data.applications : data.applications.filter((application) => application.date === applicationDateFilter);
+  const carriedOpenTasks = useMemo(() => visibleTasks.filter((task) => task.status === "todo" && Boolean(task.carriedFrom)), [visibleTasks]);
+  const unlinkedOpenTasks = useMemo(() => visibleTasks.filter((task) => task.status === "todo" && !task.goalId), [visibleTasks]);
+  const staleApplications = useMemo(() => data.applications.filter((application) => application.date && (application.stage === "已投" || application.stage === "面试") && daysBetween(application.date, today) >= (application.stage === "面试" ? 7 : 14)), [data.applications, today]);
+  const weekActivityLogs = useMemo(() => data.activityLogs.filter((log) => log.date >= weekStart && log.date <= weekEnd), [data.activityLogs, weekEnd, weekStart]);
+  const weekExerciseLogs = useMemo(() => data.exerciseLogs.filter((log) => log.date >= weekStart && log.date <= weekEnd), [data.exerciseLogs, weekEnd, weekStart]);
+  const weekMovementDays = useMemo(() => new Set([...weekActivityLogs.map((log) => log.date), ...weekExerciseLogs.map((log) => log.date)]).size, [weekActivityLogs, weekExerciseLogs]);
+  const weekActivityMinutes = weekActivityLogs.reduce((total, log) => total + log.durationMinutes, 0);
+  const weekMealDays = useMemo(() => new Set(data.mealPlans.filter((plan) => plan.date >= weekStart && plan.date <= weekEnd).map((plan) => plan.date)).size, [data.mealPlans, weekEnd, weekStart]);
+  const nextTripPurchaseCount = data.purchaseItems.filter((item) => item.status === "next" && !item.completedAt).length;
   const upcomingTask = useMemo(() => visibleTasks.filter((task) => task.status === "todo" && task.date > today).slice().sort((a, b) => a.date.localeCompare(b.date) || (a.time || "99:99").localeCompare(b.time || "99:99"))[0] || null, [visibleTasks, today]);
   const upcomingDate = upcomingTask ? dateCardParts(upcomingTask.date) : null;
   const courseCount = useMemo(() => new Set(data.schedule.filter((item) => item.kind === "课程").map((item) => item.code)).size, [data.schedule]);
   const taCount = data.schedule.filter((item) => item.kind === "TA").length;
   const statusFilteredTasks = useMemo(() => visibleTasks.filter((task) => plannerStatusFilter === "all" || (plannerStatusFilter === "done" ? task.status === "done" : task.status === "todo")), [visibleTasks, plannerStatusFilter]);
   const plannerTasks = useMemo(() => statusFilteredTasks.filter((task) => (filter === "全部" || task.category === filter) && (goalFilter === "all" || (goalFilter === "none" ? !task.goalId : task.goalId === goalFilter))).slice().sort((a, b) => Number(a.status === "done") - Number(b.status === "done") || a.date.localeCompare(b.date) || (a.time || "99:99").localeCompare(b.time || "99:99")), [statusFilteredTasks, filter, goalFilter]);
+  const selectedPlannerTasks = useMemo(() => {
+    const selected = new Set(selectedTaskIds);
+    return plannerTasks.filter((task) => selected.has(task.id));
+  }, [plannerTasks, selectedTaskIds]);
   const goalById = useMemo(() => new Map(data.goals.map((goal) => [goal.id, goal])), [data.goals]);
   const goalTaskStats = useMemo(() => new Map(data.goals.map((goal) => {
     const tasks = data.tasks.filter((task) => task.goalId === goal.id);
@@ -864,6 +882,7 @@ export default function Home() {
     return data.notes.filter((note) => note.category === "想法" && (!query || note.content.toLocaleLowerCase().includes(query))).slice().sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt));
   }, [data.notes, ideaQuery]);
   const backlogCount = backlogNotes.length;
+  const reviewAttentionCount = [carriedOpenTasks.length, unlinkedOpenTasks.length, backlogCount, staleApplications.length, nextTripPurchaseCount].filter((count) => count > 0).length;
   const visibleReferences = useMemo(() => {
     const query = referenceQuery.trim().toLocaleLowerCase();
     return data.references.filter((reference) => !query || reference.title.toLocaleLowerCase().includes(query) || reference.content.toLocaleLowerCase().includes(query)).slice().sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updatedAt.localeCompare(left.updatedAt));
@@ -1110,6 +1129,58 @@ export default function Home() {
   function deleteTask(id: string) {
     const task = data.tasks.find((item) => item.id === id);
     removeRecord("tasks", id, task ? `已删除任务「${task.title}」` : "已删除任务");
+  }
+
+  function toggleTaskPriority(id: string) {
+    const task = data.tasks.find((item) => item.id === id);
+    if (!task) return;
+    const nextPriority = task.priority === "high" ? "normal" : "high";
+    setData((current) => ({ ...current, tasks: current.tasks.map((item) => item.id === id ? { ...item, priority: nextPriority } : item) }));
+    showUndo(nextPriority === "high" ? `已将「${task.title}」设为今日重点` : `已取消「${task.title}」的重点标记`, (current) => ({ ...current, tasks: current.tasks.map((item) => item.id === id && item.priority === nextPriority ? { ...item, priority: task.priority } : item) }));
+  }
+
+  function toggleBatchMode() {
+    setBatchMode((active) => {
+      if (active) setSelectedTaskIds([]);
+      else setBatchDate(today);
+      return !active;
+    });
+  }
+
+  function toggleTaskSelection(id: string) {
+    setSelectedTaskIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  }
+
+  function toggleAllPlannerTasks() {
+    const visibleIds = plannerTasks.map((task) => task.id);
+    const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedTaskIds.includes(id));
+    setSelectedTaskIds((current) => allSelected ? current.filter((id) => !visibleIds.includes(id)) : [...new Set([...current, ...visibleIds])]);
+  }
+
+  function applyTaskBatch(message: string, transform: (tasks: Task[], selected: Set<string>) => Task[]) {
+    const selected = new Set(selectedPlannerTasks.map((task) => task.id));
+    if (!selected.size) return;
+    const originals = data.tasks.flatMap((task, index) => selected.has(task.id) ? [{ task, index }] : []);
+    setData((current) => ({ ...current, tasks: transform(current.tasks, selected) }));
+    showUndo(message, (current) => {
+      const restored = current.tasks.filter((task) => !selected.has(task.id));
+      for (const original of originals) restored.splice(Math.min(original.index, restored.length), 0, original.task);
+      return { ...current, tasks: restored };
+    });
+    setSelectedTaskIds([]);
+  }
+
+  function moveSelectedTasks() {
+    if (!batchDate) return;
+    applyTaskBatch(`已将 ${selectedPlannerTasks.length} 个任务改到 ${formatDate(batchDate)}`, (tasks, selected) => tasks.map((task) => selected.has(task.id) ? shiftTaskToDate(task, batchDate) as Task : task));
+  }
+
+  function completeSelectedTasks() {
+    applyTaskBatch(`已完成 ${selectedPlannerTasks.length} 个任务`, (tasks, selected) => tasks.map((task) => selected.has(task.id) ? { ...task, status: "done" as const, completedAt: today } : task));
+  }
+
+  function deleteSelectedTasks() {
+    applyTaskBatch(`已删除 ${selectedPlannerTasks.length} 个任务`, (tasks, selected) => tasks.filter((task) => !selected.has(task.id)));
   }
 
   function showUndo(message: string, restore: (current: AppData) => AppData) {
@@ -1621,7 +1692,7 @@ export default function Home() {
             <h1 className="desktop-page-title">{view === "today" ? "今天，先把最重要的事情往前推。" : view === "goals" ? "把想要的人生变成可执行路线。" : view === "semester" ? "看清当前阶段的时间与节奏。" : view === "career" ? "只投值得换掉保底的机会。" : view === "planner" ? "所有待办，一个出口。" : view === "notes" ? "没准备好排期的，先放进草稿箱。" : view === "vault" ? "零散资料，随手记下，一秒找到。" : view === "shopping" ? "想买的、要买的、还没决定的，各归其位。" : view === "meals" ? "提前决定吃什么，把精力留给生活。" : "健康不是剩余时间。"}</h1>
             <div className="mobile-page-title"><small>MAP</small><strong>{mobileViewTitle[view]}</strong></div>
           </div>
-          <div className="topbar-actions"><button className="global-search-button" onClick={openGlobalSearch} aria-label="搜索 MAP 中的模块和记录"><span>⌕</span><strong>搜索</strong><kbd>⌘K</kbd></button><button className="quick-vault-top" onClick={openVault}><span>⌁</span> 私人速记</button><button className="quick-note-top" onClick={openNotes}><span>✎</span> 记草稿</button><button className="primary-button" onClick={() => openNewTask()}><span>＋</span> 新建任务</button></div>
+          <div className="topbar-actions"><button className="review-button" onClick={() => setReviewOpen(true)} aria-label={`打开复盘中心，${reviewAttentionCount} 类事项待整理`}><span>↻</span><strong>复盘</strong>{reviewAttentionCount > 0 && <i>{reviewAttentionCount}</i>}</button><button className="global-search-button" onClick={openGlobalSearch} aria-label="搜索 MAP 中的模块和记录"><span>⌕</span><strong>搜索</strong><kbd>⌘K</kbd></button><button className="quick-vault-top" onClick={openVault}><span>⌁</span> 私人速记</button><button className="quick-note-top" onClick={openNotes}><span>✎</span> 记草稿</button><button className="primary-button" onClick={() => openNewTask()}><span>＋</span> 新建任务</button></div>
         </header>
 
         {view === "today" && (
@@ -1643,6 +1714,18 @@ export default function Home() {
               </div>
             </section>
 
+            <section className="today-focus-lane" aria-label="今日三件事">
+              <header><div><p className="section-kicker">TODAY FOCUS</p><h3>今天最值得推进的三件事</h3><span>优先任务排在前面；点星可随时改变重点。</span></div><button onClick={() => setReviewOpen(true)}>打开复盘中心 <b>→</b></button></header>
+              <div>
+                {todayFocusTasks.map((task, index) => <article className={task.priority === "high" ? "priority" : ""} key={task.id}>
+                  <button className="focus-complete" onClick={() => toggleTask(task.id)} aria-label={`完成${task.title}`}>✓</button>
+                  <button className="focus-main" onClick={() => setTaskEditor(task)}><small>0{index + 1} · {task.time || "全天"}</small><strong>{task.title}</strong><span>{task.category}{task.goalId && goalById.get(task.goalId) ? ` · ${goalById.get(task.goalId)?.title}` : ""}</span></button>
+                  <button className="focus-star" onClick={() => toggleTaskPriority(task.id)} aria-label={task.priority === "high" ? `取消${task.title}的重点标记` : `将${task.title}设为重点`} aria-pressed={task.priority === "high"}>{task.priority === "high" ? "★" : "☆"}</button>
+                </article>)}
+                {todayFocusTasks.length === 0 && <div className="focus-empty"><strong>今天没有待办。</strong><span>休息是正常状态；有新安排时再添加。</span><button onClick={() => openNewTask(today)}>＋ 添加今天的任务</button></div>}
+              </div>
+            </section>
+
             <div className="dashboard-grid">
               <section className="panel today-panel">
                 <div className="panel-heading">
@@ -1653,7 +1736,7 @@ export default function Home() {
                 <div className="task-stack">
                   {todayRoutineEntries.filter((entry) => showCompletedToday || !entry.completed).map(({ routine, occurrenceDate, completed, overdue }) => <RoutineTodayRow key={`${routine.id}-${occurrenceDate}`} routine={routine} occurrenceDate={occurrenceDate} completed={completed} overdue={overdue} goal={routine.goalId ? goalById.get(routine.goalId) : undefined} onToggle={() => toggleRoutineCompletion(routine.id, occurrenceDate)} onEdit={() => setRoutineEditor(routine)} />)}
                   {todayDisplayTasks.filter((task) => showCompletedToday || task.status !== "done").slice().sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99")).map((task) => (
-                    <TaskRow key={task.id} task={task} goal={task.goalId ? goalById.get(task.goalId) : undefined} onToggle={() => toggleTask(task.id)} onEdit={() => setTaskEditor(task)} onDelete={() => deleteTask(task.id)} compact />
+                    <TaskRow key={task.id} task={task} goal={task.goalId ? goalById.get(task.goalId) : undefined} onToggle={() => toggleTask(task.id)} onTogglePriority={() => toggleTaskPriority(task.id)} onEdit={() => setTaskEditor(task)} onDelete={() => deleteTask(task.id)} compact />
                   ))}
                 </div>
                 <button className="add-row" onClick={() => openNewTask(today)}>＋ 添加今天的任务</button>
@@ -1894,12 +1977,13 @@ export default function Home() {
             </section>
             <div className="planner-toolbar">
               <div className="filter-row">{(["全部", "学业", "求职", "生活", "健康"] as const).map((item) => <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}<span>{item === "全部" ? statusFilteredTasks.length : statusFilteredTasks.filter((task) => task.category === item).length}</span></button>)}</div>
-              <div className="planner-controls"><label className="goal-filter"><span>关联目标</span><select value={goalFilter} onChange={(event) => setGoalFilter(event.target.value)}><option value="all">全部目标</option><option value="none">未关联目标</option>{data.goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.title}</option>)}</select></label><div className="status-switch" role="group" aria-label="任务状态筛选"><button className={plannerStatusFilter === "open" ? "active" : ""} onClick={() => setPlannerStatusFilter("open")}>待处理</button><button className={plannerStatusFilter === "done" ? "active" : ""} onClick={() => setPlannerStatusFilter("done")}>已完成</button><button className={plannerStatusFilter === "all" ? "active" : ""} onClick={() => setPlannerStatusFilter("all")}>全部</button></div></div>
+              <div className="planner-controls"><label className="goal-filter"><span>关联目标</span><select value={goalFilter} onChange={(event) => setGoalFilter(event.target.value)}><option value="all">全部目标</option><option value="none">未关联目标</option>{data.goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.title}</option>)}</select></label><div className="status-switch" role="group" aria-label="任务状态筛选"><button className={plannerStatusFilter === "open" ? "active" : ""} onClick={() => setPlannerStatusFilter("open")}>待处理</button><button className={plannerStatusFilter === "done" ? "active" : ""} onClick={() => setPlannerStatusFilter("done")}>已完成</button><button className={plannerStatusFilter === "all" ? "active" : ""} onClick={() => setPlannerStatusFilter("all")}>全部</button></div><button className={`batch-mode-button ${batchMode ? "active" : ""}`} onClick={toggleBatchMode}>{batchMode ? "退出批量" : "批量整理"}</button></div>
             </div>
+            {batchMode && <section className="task-batch-bar" aria-label="批量整理任务"><div><strong>{selectedPlannerTasks.length}</strong><span>个任务已选择</span><button onClick={toggleAllPlannerTasks}>{plannerTasks.length > 0 && plannerTasks.every((task) => selectedTaskIds.includes(task.id)) ? "取消全选" : "全选当前结果"}</button></div><label><span>统一改到</span><input type="date" value={batchDate} onChange={(event) => setBatchDate(event.target.value)} /></label><button onClick={moveSelectedTasks} disabled={!selectedPlannerTasks.length || !batchDate}>移动日期</button><button onClick={completeSelectedTasks} disabled={!selectedPlannerTasks.length}>标记完成</button><button className="danger" onClick={deleteSelectedTasks} disabled={!selectedPlannerTasks.length}>删除</button></section>}
             <p className="task-retention-note">完成任务会保留 60 天，之后自动从界面归档；导出备份仍会保留历史数据。</p>
             <section className="panel task-library">
-              <div className="task-table-head"><span>任务</span><span>日期</span><span>类别</span><span>状态</span><span /></div>
-              {plannerTasks.map((task) => <TaskRow key={task.id} task={task} goal={task.goalId ? goalById.get(task.goalId) : undefined} onToggle={() => toggleTask(task.id)} onEdit={() => setTaskEditor(task)} onDelete={() => deleteTask(task.id)} />)}
+              <div className="task-table-head"><span>{batchMode ? "选择任务" : "任务"}</span><span>日期</span><span>类别</span><span>状态</span><span /></div>
+              {plannerTasks.map((task) => <TaskRow key={task.id} task={task} goal={task.goalId ? goalById.get(task.goalId) : undefined} selectionMode={batchMode} selected={selectedTaskIds.includes(task.id)} onSelect={() => toggleTaskSelection(task.id)} onToggle={() => toggleTask(task.id)} onTogglePriority={() => toggleTaskPriority(task.id)} onEdit={() => setTaskEditor(task)} onDelete={() => deleteTask(task.id)} />)}
               {plannerTasks.length === 0 && <div className="empty-state">这里暂时没有符合条件的任务。</div>}
             </section>
           </div>
@@ -2031,6 +2115,30 @@ export default function Home() {
       </section>
 
       {searchOpen && <GlobalSearchPalette query={searchQuery} results={globalSearchResults} activeIndex={searchActiveIndex} onQueryChange={(query) => { setSearchQuery(query); setSearchActiveIndex(0); }} onActiveIndexChange={setSearchActiveIndex} onSelect={openSearchResult} onClose={() => setSearchOpen(false)} />}
+      {reviewOpen && <ReviewCenter
+        attentionCount={reviewAttentionCount}
+        carriedCount={carriedOpenTasks.length}
+        unlinkedCount={unlinkedOpenTasks.length}
+        backlogCount={backlogCount}
+        staleApplicationCount={staleApplications.length}
+        movementDays={weekMovementDays}
+        activityMinutes={weekActivityMinutes}
+        mealDays={weekMealDays}
+        purchaseCount={nextTripPurchaseCount}
+        syncMessage={syncMessage}
+        syncStatus={syncStatus}
+        online={online}
+        onClose={() => setReviewOpen(false)}
+        onOpenToday={() => { setReviewOpen(false); setView("today"); }}
+        onOpenUnlinked={() => { setReviewOpen(false); setView("planner"); setPlannerStatusFilter("open"); setGoalFilter("none"); }}
+        onOpenBacklog={() => { setReviewOpen(false); setView("notes"); setNotesMode("backlog"); }}
+        onOpenCareer={() => { setReviewOpen(false); setView("career"); setApplicationDateFilter("all"); }}
+        onOpenWellness={() => { setReviewOpen(false); setView("wellness"); }}
+        onOpenMeals={() => { setReviewOpen(false); setView("meals"); }}
+        onOpenShopping={() => { setReviewOpen(false); setView("shopping"); }}
+        onSync={() => void synchronizeData()}
+        onExport={exportData}
+      />}
 
       <nav className="mobile-nav" aria-label="手机主导航">
         {mobileQuickViews.map((item, index) => <button className={view === item ? "active" : ""} onClick={() => openNavigationView(item)} key={item} aria-label={`${index === 0 ? "置顶 · " : ""}${NAV_LABELS[item]}`}><span>{MOBILE_NAV_META[item].icon}</span><strong>{MOBILE_NAV_META[item].label}</strong></button>)}
@@ -2113,6 +2221,32 @@ function GlobalSearchPalette({ query, results, activeIndex, onQueryChange, onAct
   </div>;
 }
 
+function ReviewCenter({ attentionCount, carriedCount, unlinkedCount, backlogCount, staleApplicationCount, movementDays, activityMinutes, mealDays, purchaseCount, syncMessage, syncStatus, online, onClose, onOpenToday, onOpenUnlinked, onOpenBacklog, onOpenCareer, onOpenWellness, onOpenMeals, onOpenShopping, onSync, onExport }: { attentionCount: number; carriedCount: number; unlinkedCount: number; backlogCount: number; staleApplicationCount: number; movementDays: number; activityMinutes: number; mealDays: number; purchaseCount: number; syncMessage: string; syncStatus: SyncStatus; online: boolean; onClose: () => void; onOpenToday: () => void; onOpenUnlinked: () => void; onOpenBacklog: () => void; onOpenCareer: () => void; onOpenWellness: () => void; onOpenMeals: () => void; onOpenShopping: () => void; onSync: () => void; onExport: () => void }) {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", onKeyDown);
+    return () => { document.body.style.overflow = previousOverflow; window.removeEventListener("keydown", onKeyDown); };
+  }, [onClose]);
+  const reviewCards = [
+    { id: "carried", eyebrow: "TODAY", title: "未完成顺延", value: carriedCount, detail: carriedCount ? "先决定继续做、改期，还是删除。" : "没有被昨天拖过来的任务。", tone: "coral", action: "看今天", onOpen: onOpenToday },
+    { id: "unlinked", eyebrow: "DIRECTION", title: "未关联目标", value: unlinkedCount, detail: unlinkedCount ? "检查它们是否真的值得做。" : "待办都已归入目标或已经清空。", tone: "lavender", action: "整理任务", onOpen: onOpenUnlinked },
+    { id: "backlog", eyebrow: "INBOX", title: "待安排草稿", value: backlogCount, detail: backlogCount ? "把成熟的草稿排期，其余继续保留。" : "草稿箱没有待处理内容。", tone: "blue", action: "打开草稿箱", onOpen: onOpenBacklog },
+    { id: "career", eyebrow: "CAREER", title: "可能要跟进", value: staleApplicationCount, detail: staleApplicationCount ? "已投 14 天或面试 7 天未更新。" : "求职看板暂时没有陈旧状态。", tone: "coral", action: "看求职记录", onOpen: onOpenCareer },
+    { id: "movement", eyebrow: "HEALTH", title: "本周有效运动", value: movementDays, suffix: "天", detail: activityMinutes ? `另有 ${activityMinutes} 分钟自由运动记录。` : "力量、散步、徒步和篮球都算。", tone: "lime", action: "打开健康", onOpen: onOpenWellness },
+    { id: "meals", eyebrow: "FOOD", title: "本周已安排饮食", value: mealDays, suffix: "天", detail: "无需排满七天，只处理会消耗决策力的餐。", tone: "lavender", action: "安排饮食", onOpen: onOpenMeals },
+    { id: "shopping", eyebrow: "SHOPPING", title: "下次出门购买", value: purchaseCount, detail: purchaseCount ? "出门前只看这一列即可。" : "下次出门清单是空的。", tone: "blue", action: "打开清单", onOpen: onOpenShopping },
+  ];
+  return <div className="review-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="review-center" role="dialog" aria-modal="true" aria-label="MAP 复盘中心">
+      <header className="review-hero"><div><p className="section-kicker">WEEKLY RESET</p><h2>把生活重新放回<br />可控制的范围。</h2><p>不制造连续打卡压力。这里只把需要你做决定的事情捞出来，不会替你改动任何数据。</p></div><div className="review-score"><span>待整理类别</span><strong>{attentionCount}</strong><small>{attentionCount ? "逐项处理，不必一次清零" : "当前系统很干净"}</small></div><button className="review-close" onClick={onClose} aria-label="关闭复盘中心">×</button></header>
+      <div className="review-grid">{reviewCards.map((card) => <article className={`review-card ${card.tone}`} key={card.id}><div><span>{card.eyebrow}</span><strong>{card.value}<small>{card.suffix || "项"}</small></strong></div><h3>{card.title}</h3><p>{card.detail}</p><button onClick={card.onOpen}>{card.action} <b>→</b></button></article>)}</div>
+      <footer className="review-data-health"><div><span className={`sync-dot ${syncStatus}`} /><p><strong>{syncMessage}</strong><small>离线仍可编辑；联网后同步。私人速记继续遵循逐条授权。</small></p></div><div><button onClick={onExport}>导出恢复点</button><button onClick={onSync} disabled={!online || syncStatus === "syncing"}>{syncStatus === "syncing" ? "同步中…" : "立即同步"}</button></div></footer>
+    </section>
+  </div>;
+}
+
 function TaskCalendarCheck({ task, onToggle }: { task: Task; onToggle: () => void }) {
   return <button type="button" draggable={false} className={`calendar-task-check ${task.status === "done" ? "checked" : ""}`} onMouseDown={(event) => event.stopPropagation()} onDragStart={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={(event) => { event.stopPropagation(); onToggle(); }} aria-label={task.status === "done" ? `将「${task.title}」标记为未完成` : `完成「${task.title}」`}>{task.status === "done" ? "✓" : ""}</button>;
 }
@@ -2129,14 +2263,14 @@ function RoutineTodayRow({ routine, occurrenceDate, completed, overdue, goal, on
   </div>;
 }
 
-function TaskRow({ task, goal, onToggle, onEdit, onDelete, compact = false }: { task: Task; goal?: Goal; onToggle: () => void; onEdit: () => void; onDelete: () => void; compact?: boolean }) {
+function TaskRow({ task, goal, onToggle, onTogglePriority, onEdit, onDelete, compact = false, selectionMode = false, selected = false, onSelect }: { task: Task; goal?: Goal; onToggle: () => void; onTogglePriority?: () => void; onEdit: () => void; onDelete: () => void; compact?: boolean; selectionMode?: boolean; selected?: boolean; onSelect?: () => void }) {
   const carried = Boolean(task.carriedFrom) && task.status === "todo";
-  return <div className={`task-row ${task.status === "done" ? "done" : ""} ${carried ? "carried" : ""} ${compact ? "compact" : ""}`}>
-    <button className="task-check" onClick={onToggle} aria-label={task.status === "done" ? "标记未完成" : "标记完成"}>{task.status === "done" ? "✓" : ""}</button>
+  return <div className={`task-row ${task.status === "done" ? "done" : ""} ${carried ? "carried" : ""} ${compact ? "compact" : ""} ${selectionMode ? "selecting" : ""} ${selected ? "selected" : ""}`}>
+    <button className={`task-check ${selectionMode ? "task-select-check" : ""}`} onClick={selectionMode ? onSelect : onToggle} aria-label={selectionMode ? selected ? `取消选择${task.title}` : `选择${task.title}` : task.status === "done" ? "标记未完成" : "标记完成"}>{selectionMode ? selected ? "✓" : "" : task.status === "done" ? "✓" : ""}</button>
     <button className="task-main" onClick={onEdit} aria-label={`编辑任务：${task.title}`}><strong>{task.title}</strong>{task.details && <p className="task-details">{task.details}</p>}{compact && <span><i className={`dot ${categoryTone[task.category]}`} />{task.category}{goal ? <b className="task-goal-label">→ {goal.title}</b> : null}{task.endDate ? ` · 截止 ${formatDate(task.endDate)}` : ""}{carried && <b className="rollover-label">未完成顺延 · 原定 {formatDate(task.carriedFrom!)}</b>}</span>}{!compact && <span className="task-meta-line">{goal && <b className="task-goal-label">服务目标：{goal.title}</b>}{carried && <b className="rollover-meta">未完成顺延 · 原定 {formatDate(task.carriedFrom!)}</b>}</span>}</button>
     {!compact && <><span className="task-date">{formatDate(task.date)}{task.endDate ? ` → ${formatDate(task.endDate)}` : ""}{task.time ? ` · ${task.time}` : ""}</span><span className={`category-pill ${categoryTone[task.category]}`}>{task.category}</span><span className={`status-label ${carried ? "carried" : ""}`}>{task.status === "done" ? "已完成" : carried ? "未完成顺延" : task.priority === "high" ? "优先" : task.endDate ? "进行中" : "待处理"}</span></>}
     {compact && <time>{task.time || "全天"}</time>}
-    <div className="task-actions"><button onClick={onEdit}>编辑</button><button onClick={onDelete}>删除</button></div>
+    <div className="task-actions">{onTogglePriority && <button className={task.priority === "high" ? "priority-active" : ""} onClick={onTogglePriority}>{task.priority === "high" ? "取消重点" : "设为重点"}</button>}<button onClick={onEdit}>编辑</button><button onClick={onDelete}>删除</button></div>
   </div>;
 }
 

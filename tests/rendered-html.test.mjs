@@ -681,6 +681,45 @@ test("job capture API strips unrelated model operations before preview", { concu
   }
 });
 
+test("review center turns existing modules into one decision workflow without duplicating data", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(source, /function ReviewCenter/);
+  assert.match(source, /WEEKLY RESET/);
+  assert.match(source, /不制造连续打卡压力/);
+  assert.match(source, /carriedOpenTasks/);
+  assert.match(source, /unlinkedOpenTasks/);
+  assert.match(source, /staleApplications/);
+  assert.match(source, /weekMovementDays/);
+  assert.match(source, /weekMealDays/);
+  assert.match(source, /nextTripPurchaseCount/);
+  assert.match(source, /onExport=\{exportData\}/);
+  assert.match(styles, /\.review-grid/);
+  assert.match(styles, /\.review-data-health/);
+});
+
+test("today focus reuses task priority instead of creating a competing task model", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /const todayFocusTasks = useMemo/);
+  assert.match(source, /Number\(right\.priority === "high"\) - Number\(left\.priority === "high"\)/);
+  assert.match(source, /TODAY FOCUS/);
+  assert.match(source, /toggleTaskPriority/);
+  assert.match(source, /onTogglePriority/);
+  assert.doesNotMatch(source, /focusTaskIds/);
+});
+
+test("planner batch operations preserve ranges and remain undoable", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /function applyTaskBatch/);
+  assert.match(source, /shiftTaskToDate\(task, batchDate\)/);
+  assert.match(source, /function completeSelectedTasks/);
+  assert.match(source, /function deleteSelectedTasks/);
+  assert.match(source, /showUndo\(message/);
+  assert.match(source, /全选当前结果/);
+  assert.match(source, /统一改到/);
+  assert.match(source, /selectionMode=\{batchMode\}/);
+});
+
 test("unfinished tasks roll forward without duplication", () => {
   const tasks = [
     { id: "old", status: "todo", date: "2026-08-22", endDate: null },
