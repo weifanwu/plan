@@ -361,6 +361,139 @@ button.task-main { min-width: 0; padding: 7px 0; border: 0; border-radius: 4px; 
   .offline-banner { top: calc(7px + env(safe-area-inset-top)); }.undo-toast { bottom: calc(82px + env(safe-area-inset-bottom)); }
 }
 
+/* Mobile interaction system: a distinct touch UI. Desktop geometry remains unchanged. */
+@media (max-width: 760px) {
+  :root { --mobile-touch: 48px; }
+
+  /* Mobile uses a calmer information hierarchy and larger thumb-safe hit areas. */
+  .page-shell { padding-bottom: calc(92px + env(safe-area-inset-bottom)); }
+  .topbar-actions { gap: 8px; }
+  .topbar-actions > button,
+  .topbar-actions > .sync-status,
+  .mobile-system-actions button { min-width: var(--mobile-touch); min-height: var(--mobile-touch); }
+  .mobile-nav { min-height: calc(76px + env(safe-area-inset-bottom)); padding: 7px 8px calc(8px + env(safe-area-inset-bottom)); gap: 5px; }
+  .mobile-nav button { min-height: 60px; border-radius: 13px; }
+
+  /* Task cards become native-style rows: tap the row to edit; destructive actions live in detail. */
+  .task-row { column-gap: 10px; }
+  .task-row .task-actions { display: none !important; }
+  .task-row.compact,
+  .today-routine-row { grid-template-columns: 44px minmax(0,1fr) auto; min-height: 76px; padding-block: 10px; }
+  .task-row:not(.compact) { grid-template-columns: 44px minmax(0,1fr) auto; min-height: 118px; padding: 14px 12px; }
+  .task-row:not(.compact) .task-main { grid-column: 2 / -1; }
+  .task-check { width: 38px; height: 38px; border-width: 1.5px; font-size: 14px; }
+  .task-main { min-height: var(--mobile-touch); padding: 5px 2px; }
+  .task-main strong { font-size: 14px; line-height: 1.4; }
+  .task-details { font-size: 11px; line-height: 1.55; }
+  .routine-row { grid-template-columns: 42px minmax(0,1fr); gap: 10px; padding-block: 12px; }
+  .routine-row .task-check { width: 38px; height: 38px; }
+  .routine-row-actions { gap: 8px; }
+  .routine-row-actions button { min-height: 44px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--white); }
+
+  /* Calendar has a touch list on mobile; checks and date cells no longer use desktop-sized targets. */
+  .calendar-nav { gap: 8px; }
+  .calendar-nav button { width: 44px !important; height: 44px !important; min-width: 44px; min-height: 44px; border-radius: 10px; }
+  .mobile-month-grid > button { min-height: 46px; }
+  .mobile-day-agenda > header { min-height: 78px; }
+  .mobile-day-agenda header button,
+  .mobile-agenda-empty button,
+  .week-task-add { min-height: 44px; padding-inline: 14px; }
+  .mobile-agenda-item,
+  .mobile-week-span-item,
+  .week-task-item { grid-template-columns: 40px minmax(0,1fr); min-height: 72px; gap: 10px; padding: 11px; }
+  .calendar-task-check,
+  .week-task-item .calendar-task-check,
+  .month-span-task .calendar-task-check,
+  .week-span-bar .calendar-task-check { width: 36px; height: 36px; margin: 0; font-size: 13px; }
+  .mobile-agenda-item > button:not(.calendar-task-check) { min-height: 48px; }
+
+  /* Editors are mobile bottom sheets with an Apple-like action hierarchy. */
+  .modal-backdrop { align-items: flex-end; padding: 0; }
+  .modal,
+  .meal-modal,
+  .fitness-modal,
+  .purchase-modal,
+  .shopping-import-modal { width: 100%; max-width: none; max-height: 94dvh; padding: 20px 18px calc(20px + env(safe-area-inset-bottom)); border-radius: 20px 20px 0 0; box-shadow: 0 -12px 45px rgba(22,24,19,.24); }
+  .modal-head,
+  .meal-modal > header,
+  .fitness-modal > header { min-height: 58px; }
+  .modal-close,
+  .quick-task-modal > header > button { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
+  .form-grid { grid-template-columns: 1fr; gap: 14px; }
+  .form-grid > .wide { grid-column: 1; }
+  .form-grid input:not([type="checkbox"]):not([type="range"]),
+  .form-grid select,
+  .form-grid button,
+  .meal-form input,
+  .meal-form select,
+  .quick-task-modal label input { min-height: var(--mobile-touch); font-size: 16px; }
+  .form-grid textarea { min-height: 118px; font-size: 16px; line-height: 1.55; }
+  .weekday-picker button,
+  .meal-slot-picker button,
+  .fitness-exercise-picker button { min-height: 44px; }
+  .modal-actions { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px; margin-top: 22px; }
+  .modal-actions > button { min-height: var(--mobile-touch); padding: 10px 12px; border-radius: 10px; }
+  .modal-actions > .primary-button { grid-column: 1 / -1; grid-row: 1; }
+  .modal-actions > .danger-button,
+  .modal-actions > .safe-delete-button { grid-column: 1 / -1; margin-top: 7px; }
+  .modal-danger { min-height: 0; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .modal-danger button { width: 100%; min-height: var(--mobile-touch); border: 1px solid #e2b3aa; border-radius: 10px; background: #fff2ef; font-size: 11px; font-weight: 750; }
+
+  /* Keep quick actions available, but separate them spatially so a thumb cannot hit two controls. */
+  .draft-row-actions { gap: 9px; padding-right: 10px; }
+  .draft-schedule { min-height: 44px; padding-inline: 12px; }
+  .draft-delete { width: 44px; height: 44px; min-width: 44px; }
+  .idea-document-toolbar,
+  .reference-document-toolbar { align-items: stretch; flex-direction: column; gap: 10px; padding: 12px; }
+  .idea-document-toolbar > div:last-child,
+  .reference-document-toolbar > div:last-child { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
+  .idea-document-toolbar button,
+  .reference-document-toolbar button { min-height: 44px; padding: 8px 10px; font-size: 10px; }
+  .idea-document-toolbar .idea-ai-organize,
+  .idea-document-toolbar .idea-voice-action,
+  .reference-document-toolbar .reference-ai-access { grid-column: 1 / -1; }
+  .idea-document-editor,
+  .reference-document-editor { padding: 25px 18px 38px; }
+  .idea-document-editor > textarea,
+  .reference-document-editor > textarea { font-size: 17px; line-height: 1.72; }
+
+  .shopping-row { grid-template-columns: 44px minmax(0,1fr) 48px; min-height: 96px; gap: 9px; }
+  .shopping-check { width: 38px; height: 38px; }
+  .shopping-row-main { min-height: 58px; padding-block: 7px; }
+  .shopping-row-delete { width: 44px; height: 44px; min-width: 44px; border: 1px solid transparent; }
+  .shopping-row-delete.armed { width: 52px; font-size: 9px; }
+  .shopping-bought > div button { min-height: 44px; }
+  .shopping-import-list input[type="checkbox"] { width: 28px; height: 28px; }
+
+  .meal-tabs button,
+  .fitness-tabs button { min-height: 48px; }
+  .meal-week-actions button,
+  .meal-hero-actions button,
+  .fitness-plan-reference-actions button,
+  .fitness-section-head > button { min-height: 44px; }
+  .meal-check { width: 38px; height: 38px; }
+  .meal-slot > div { grid-template-columns: 42px minmax(0,1fr) auto; }
+  .meal-slot-main { min-height: 52px; }
+  .meal-slot-actions { gap: 7px; }
+  .meal-slot-actions button { min-width: 44px; min-height: 44px; }
+  .meal-snack-chip > button { min-height: 40px; }
+  .meal-theme-side > div { gap: 8px; }
+  .meal-theme-side > div button { min-height: 44px; }
+  .nutrition-guide-heading > button,
+  .nutrition-rule-grid header button,
+  .nutrition-formula-grid article > button { min-height: 44px; padding: 9px 12px; }
+  .fitness-log-list article { grid-template-columns: 58px minmax(0,1fr); gap: 8px; }
+  .fitness-log-list article > button { min-height: 42px; padding: 8px; }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  button { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+  button:active:not(:disabled) { transform: scale(.985); filter: brightness(.96); }
+  .safe-delete-button.armed { border-color: #b13d2b !important; background: #b13d2b !important; color: white !important; font-weight: 850; }
+  .safe-delete-button.armed::after { content: ""; }
+  [draggable="true"] { -webkit-user-drag: none; }
+}
+
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; } }
 
 /* Operating layer — focus and safe batch decisions */
@@ -790,4 +923,21 @@ button.task-main { min-width: 0; padding: 7px 0; border: 0; border-radius: 4px; 
   .nutrition-guide-heading { padding: 22px; align-items: stretch; flex-direction: column; }.nutrition-formula-grid article { padding: 22px 18px; grid-template-columns: 32px 1fr; }.nutrition-formula-grid h3 { font-size: 22px; }.nutrition-formula-grid p { font-size: 12px; }
   .nutrition-rule-grid { grid-template-columns: 1fr; }.nutrition-rule-grid article,.nutrition-rule-grid article:nth-child(2n) { min-height: 180px; padding: 23px; border-right: 0; border-bottom: 1px solid var(--ink); }.nutrition-rule-grid article:last-child { border-bottom: 0; }.nutrition-rule-grid article > p { font-size: 12px; }
   .quick-task-backdrop { padding-top: 18vh; }.quick-task-modal form > input { font-size: 16px; }.quick-task-modal form > .quick-task-timing { grid-template-columns: 1fr auto; }.quick-task-modal .quick-time-mode { grid-column: 1 / -1; }
+}
+
+/* Final component overrides keep later feature styles inside the mobile touch contract. */
+@media (max-width: 760px) {
+  .shopping-row { min-height: 96px; grid-template-columns: 44px minmax(0,1fr) 48px; gap: 9px; }
+  .shopping-check { width: 38px; height: 38px; }
+  .shopping-row-delete { width: 44px; height: 44px; min-width: 44px; }
+  .meal-theme-side > div button,
+  .meal-slot-actions button,
+  .meal-week-actions button,
+  .meal-hero-actions button,
+  .fitness-plan-reference-actions button,
+  .fitness-section-head > button { min-height: 44px; }
+  .meal-tabs button,
+  .fitness-tabs button { min-height: 48px; }
+  .fitness-log-list article { grid-template-columns: 58px minmax(0,1fr); }
+  .fitness-log-list article > button { min-height: 42px; }
 }

@@ -483,6 +483,7 @@ test("system UX audit keeps every module reachable and risky actions recoverable
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   const shopping = await readFile(new URL("../app/components/ShoppingModule.tsx", import.meta.url), "utf8");
+  const safeDelete = await readFile(new URL("../app/components/SafeDeleteButton.tsx", import.meta.url), "utf8");
   assert.match(page, /GlobalSearchPalette/);
   assert.match(page, /event\.metaKey \|\| event\.ctrlKey/);
   assert.match(page, /本机搜索，不会发送给 AI/);
@@ -492,7 +493,14 @@ test("system UX audit keeps every module reachable and risky actions recoverable
   assert.match(styles, /\.sidebar > nav \{[^}]*overflow-y: auto/);
   assert.match(styles, /\.task-row:focus-within \.task-actions/);
   assert.match(shopping, /onDelete: \(item: PurchaseItem\) => void/);
-  assert.match(shopping, /onClick=\{\(\) => onDelete\(item\)\}/);
+  assert.match(shopping, /<SafeDeleteButton className="shopping-row-delete"/);
+  assert.match(shopping, /onConfirm=\{\(\) => onDelete\(item\)\}/);
+  assert.match(safeDelete, /matchMedia\?\.\("\(pointer: coarse\)"\)/);
+  assert.match(safeDelete, /confirmLabel = "再点确认"/);
+  assert.match(styles, /Mobile interaction system: a distinct touch UI/);
+  assert.match(styles, /--mobile-touch: 48px/);
+  assert.match(styles, /\.task-row \.task-actions \{ display: none !important; \}/);
+  assert.match(styles, /\.calendar-nav button \{ width: 44px !important; height: 44px !important/);
 });
 
 test("AI meal operation changes only the requested dated meal plan", () => {
