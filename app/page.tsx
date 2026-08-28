@@ -715,6 +715,25 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    const closeVoiceSession = () => {
+      voiceSessionRef.current += 1;
+      voiceAbortRef.current?.abort();
+      voiceAbortRef.current = null;
+      if (mediaRecorderRef.current?.state !== "inactive") mediaRecorderRef.current?.stop();
+      voiceStreamRef.current?.getTracks().forEach((track) => track.stop());
+      voiceStreamRef.current = null;
+      mediaRecorderRef.current = null;
+      if (voiceTimeoutRef.current) clearTimeout(voiceTimeoutRef.current);
+      voiceTimeoutRef.current = null;
+    };
+    window.addEventListener("pagehide", closeVoiceSession);
+    return () => {
+      window.removeEventListener("pagehide", closeVoiceSession);
+      closeVoiceSession();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!ready) return;
     const task = window.setTimeout(() => {
       if (!online) {
@@ -1453,12 +1472,30 @@ export default function Home() {
     if (result.outcome === "accepted") setInstallPrompt(null);
   }
 
-  function releaseVoiceResources() {
+  function pauseVoiceResources() {
     if (voiceTimeoutRef.current) clearTimeout(voiceTimeoutRef.current);
     voiceTimeoutRef.current = null;
+    voiceStreamRef.current?.getAudioTracks().forEach((track) => { track.enabled = false; });
+    mediaRecorderRef.current = null;
+  }
+
+  function releaseVoiceResources() {
+    pauseVoiceResources();
     voiceStreamRef.current?.getTracks().forEach((track) => track.stop());
     voiceStreamRef.current = null;
-    mediaRecorderRef.current = null;
+  }
+
+  async function getVoiceStream() {
+    const reusable = voiceStreamRef.current;
+    const hasLiveAudio = reusable?.active && reusable.getAudioTracks().some((track) => track.readyState === "live");
+    if (hasLiveAudio) {
+      reusable.getAudioTracks().forEach((track) => { track.enabled = true; });
+      return reusable;
+    }
+    releaseVoiceResources();
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    voiceStreamRef.current = stream;
+    return stream;
   }
 
   async function toggleVoiceInput(target: VoiceTarget = "ai") {
@@ -1479,7 +1516,7 @@ export default function Home() {
     else if (target === "idea") setIdeaVoiceError("");
     else setDraftVoiceError("");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await getVoiceStream();
       if (session !== voiceSessionRef.current) { stream.getTracks().forEach((track) => track.stop()); return; }
       const mimeType = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm"].find((type) => MediaRecorder.isTypeSupported(type)) || "";
       const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
@@ -1489,7 +1526,7 @@ export default function Home() {
       recorder.ondataavailable = (event) => { if (event.data.size) voiceChunksRef.current.push(event.data); };
       recorder.onerror = () => {
         if (session === voiceSessionRef.current) showVoiceError("录音失败，请重新允许麦克风权限后再试。");
-        releaseVoiceResources();
+        pauseVoiceResources();
         setVoiceState("idle");
         setVoiceTarget(null);
       };
@@ -1546,7 +1583,7 @@ export default function Home() {
       releaseVoiceResources();
       setVoiceState("idle");
       setVoiceTarget(null);
-      showVoiceError(error instanceof DOMException && error.name === "NotAllowedError" ? "需要允许麦克风权限才能使用语音输入。" : "无法启动麦克风，请检查浏览器权限。");
+      showVoiceError(error instanceof DOMException && error.name === "NotAllowedError" ? "首次使用必须允许麦克风。若 iPhone 仍反复询问，请在 Safari 的此网站设置里把“麦克风”改成“允许”。" : "无法启动麦克风，请检查浏览器权限。");
     }
   }
 
@@ -2149,7 +2186,7 @@ export default function Home() {
           <button type="button" className={`voice-button ${aiVoiceState}`} onClick={() => void toggleVoiceInput("ai")} disabled={aiLoading || aiVoiceState === "transcribing" || voiceTarget === "draft" || !online} aria-label={aiVoiceState === "recording" ? "停止录音" : aiVoiceState === "transcribing" ? "正在转写语音" : "开始语音输入"}>{aiVoiceState === "recording" ? "■" : aiVoiceState === "transcribing" ? "…" : "麦"}</button>
           <button type="submit" className="ai-send-button" disabled={!aiText.trim() || aiLoading || aiVoiceState !== "idle" || voiceTarget === "draft" || !online} aria-label="发送消息">↑</button>
         </form>
-        <p className="ai-privacy">普通分析不会附带私人速记；只有已开启“AI 可读 · 云端同步”的资料，才可能在你明确要求管理私人速记时发送给 OpenAI。语音会发送至 OpenAI 转写，MAP 不保存录音。</p>
+        <p className="ai-privacy">普通分析不会附带私人速记；只有已开启“AI 可读 · 云端同步”的资料，才可能在你明确要求管理私人速记时发送给 OpenAI。语音会发送至 OpenAI 转写，MAP 不保存录音。授权后，本次打开期间会复用已静音的麦克风会话；只有录音时采集，离开 App 即释放。</p>
       </aside>}
 
       {taskEditor && <TaskModal value={taskEditor} goals={data.goals} prefill={taskPrefill || undefined} sourceDraft={Boolean(promotingNoteId)} defaultDate={newTaskDate || undefined} defaultGoalId={newTaskGoalId || undefined} onClose={closeTaskEditor} onSave={saveTaskFromEditor} onDelete={taskEditor === "new" ? undefined : () => { deleteTask(taskEditor.id); closeTaskEditor(); }} />}

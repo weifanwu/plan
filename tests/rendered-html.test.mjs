@@ -397,6 +397,11 @@ test("voice input supports both the MAP AI composer and one-tap auto-send", asyn
   assert.match(source, /await sendAIMessage\(result\.text, true\)/);
   assert.match(source, /setAiOpen\(true\)/);
   assert.match(source, /\/api\/transcribe/);
+  assert.match(source, /async function getVoiceStream\(\)/);
+  assert.match(source, /hasLiveAudio/);
+  assert.match(source, /track\.enabled = false/);
+  assert.match(source, /window\.addEventListener\("pagehide", closeVoiceSession\)/);
+  assert.match(source, /Safari 的此网站设置里把“麦克风”改成“允许”/);
   assert.match(source, /MAP 不保存录音/);
   assert.match(styles, /\.ai-voice-launcher\.recording/);
   assert.match(styles, /\.ai-voice-launcher\.transcribing/);
