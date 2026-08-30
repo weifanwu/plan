@@ -551,7 +551,7 @@ export default function Home() {
   const [notesMode, setNotesMode] = useState<"backlog" | "ideas">("backlog");
   const [ideaQuery, setIdeaQuery] = useState("");
   const [ideaEditor, setIdeaEditor] = useState<Note | null>(null);
-  const [ideaPasteError, setIdeaPasteError] = useState("");
+  const [ideaCopiedId, setIdeaCopiedId] = useState<string | null>(null);
   const [referenceQuery, setReferenceQuery] = useState("");
   const [referenceEditor, setReferenceEditor] = useState<ReferenceNote | null>(null);
   const [referenceCopiedId, setReferenceCopiedId] = useState<string | null>(null);
@@ -627,6 +627,7 @@ export default function Home() {
   const skipNextSyncRef = useRef(false);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ideaCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const referenceCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const todayLabel = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", weekday: "long", month: "long", day: "numeric" }).format(new Date()).toUpperCase();
   const phaseTiming = today < data.phase.startDate ? "before" : today > data.phase.endDate ? "after" : "active";
@@ -816,6 +817,7 @@ export default function Home() {
 
   useEffect(() => () => {
     if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    if (ideaCopyTimerRef.current) clearTimeout(ideaCopyTimerRef.current);
     if (referenceCopyTimerRef.current) clearTimeout(referenceCopyTimerRef.current);
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
   }, []);
@@ -1025,26 +1027,14 @@ export default function Home() {
     window.requestAnimationFrame(() => ideaDocumentRef.current?.focus());
   }
 
-  async function pasteIdeaNote() {
-    setIdeaPasteError("");
-    if (!navigator.clipboard?.readText) {
-      setIdeaPasteError("这个浏览器不能自动读取剪贴板。请点“新笔记”，再长按粘贴。");
-      return;
-    }
+  async function copyIdeaNote(note: Note) {
     try {
-      const content = (await navigator.clipboard.readText()).trim();
-      if (!content) {
-        setIdeaPasteError("剪贴板里没有可粘贴的文字。");
-        return;
-      }
-      const now = new Date().toISOString();
-      const note: Note = { id: uid(), content, category: "想法", pinned: false, createdAt: now, updatedAt: now };
-      setData((current) => ({ ...current, notes: [note, ...current.notes] }));
-      setIdeaEditor(note);
-      setNotesMode("ideas");
-      window.requestAnimationFrame(() => ideaDocumentRef.current?.focus());
+      await navigator.clipboard.writeText(note.content);
+      setIdeaCopiedId(note.id);
+      if (ideaCopyTimerRef.current) clearTimeout(ideaCopyTimerRef.current);
+      ideaCopyTimerRef.current = setTimeout(() => setIdeaCopiedId(null), 1800);
     } catch {
-      setIdeaPasteError("浏览器没有允许读取剪贴板。请点“新笔记”，再长按粘贴。");
+      window.alert("浏览器阻止了复制，请在编辑器里全选后手动复制。");
     }
   }
 
@@ -2103,8 +2093,7 @@ export default function Home() {
               </section>
             </section> : <section className={`idea-workbench ${ideaEditor ? "editing" : "browsing"}`}>
               <aside className="idea-sidebar panel">
-                <header><div><p className="section-kicker">IDEA NOTEBOOK</p><h2>灵感笔记</h2><span>{ideaNotes.length} 篇 · 自动保存</span></div><div className="idea-header-actions"><button className="idea-paste" onClick={() => void pasteIdeaNote()}>⌘ 一键粘贴</button><button className="idea-new" onClick={createIdeaNote}>＋ 新笔记</button></div></header>
-                {ideaPasteError && <p className="idea-paste-error" role="status">{ideaPasteError}</p>}
+                <header><div><p className="section-kicker">IDEA NOTEBOOK</p><h2>灵感笔记</h2><span>{ideaNotes.length} 篇 · 自动保存</span></div><button className="idea-new" onClick={createIdeaNote}>＋ 新笔记</button></header>
                 <label className="idea-search"><span>⌕</span><input value={ideaQuery} onChange={(event) => setIdeaQuery(event.target.value)} placeholder="搜索灵感" /></label>
                 <div className="idea-note-list">{ideaNotes.map((note) => <button className={`idea-note-row ${note.pinned ? "pinned" : ""} ${ideaEditor?.id === note.id ? "active" : ""}`} key={note.id} onClick={() => { setIdeaEditor(note); window.requestAnimationFrame(() => ideaDocumentRef.current?.focus()); }}><span>{note.pinned ? "●" : "✎"}</span><div><strong>{noteTitle(note)}</strong><p>{notePreview(note) || "空白灵感"}</p></div><time>{formatNoteTime(note.updatedAt)}</time></button>)}</div>
                 {ideaNotes.length === 0 && <div className="idea-list-empty">{ideaQuery ? "没有找到相关灵感" : "突然有想法时，点“新笔记”就直接开始写"}</div>}
@@ -2113,7 +2102,7 @@ export default function Home() {
 
               <section className="idea-document panel">
                 {ideaEditor ? <>
-                  <header className="idea-document-toolbar"><div><button className="mobile-idea-back" onClick={() => setIdeaEditor(null)}>← 返回灵感列表</button><span>{ideaEditor.pinned ? "置顶灵感" : "自由笔记"}</span><time>自动保存 · {formatNoteTime(ideaEditor.updatedAt)}</time></div><div><button className="idea-ai-organize" onClick={() => openIdeaOrganizerAI(ideaEditor)} disabled={!online}>✦ 交给 MAP AI 整理</button><button className={`idea-voice-action ${ideaVoiceState}`} onClick={() => void toggleVoiceInput("idea")} disabled={!online || ideaVoiceState === "transcribing" || (voiceState !== "idle" && voiceTarget !== "idea")}>{ideaVoiceState === "recording" ? `■ 停止 · ${voiceElapsedLabel}` : ideaVoiceState === "transcribing" ? "… 转写中" : "◉ 语音转文字"}</button><button onClick={() => updateIdeaNote(ideaEditor, { pinned: !ideaEditor.pinned })}>{ideaEditor.pinned ? "取消置顶" : "置顶"}</button><SafeDeleteButton className="idea-delete" onConfirm={() => deleteIdeaNote(ideaEditor)}>删除</SafeDeleteButton></div></header>
+                  <header className="idea-document-toolbar"><div><button className="mobile-idea-back" onClick={() => setIdeaEditor(null)}>← 返回灵感列表</button><span>{ideaEditor.pinned ? "置顶灵感" : "自由笔记"}</span><time>自动保存 · {formatNoteTime(ideaEditor.updatedAt)}</time></div><div><button className="idea-ai-organize" onClick={() => openIdeaOrganizerAI(ideaEditor)} disabled={!online}>✦ 交给 MAP AI 整理</button><button className={`idea-voice-action ${ideaVoiceState}`} onClick={() => void toggleVoiceInput("idea")} disabled={!online || ideaVoiceState === "transcribing" || (voiceState !== "idle" && voiceTarget !== "idea")}>{ideaVoiceState === "recording" ? `■ 停止 · ${voiceElapsedLabel}` : ideaVoiceState === "transcribing" ? "… 转写中" : "◉ 语音转文字"}</button><button className={ideaCopiedId === ideaEditor.id ? "copied" : ""} onClick={() => void copyIdeaNote(ideaEditor)}>{ideaCopiedId === ideaEditor.id ? "✓ 已复制" : "复制全文"}</button><button onClick={() => updateIdeaNote(ideaEditor, { pinned: !ideaEditor.pinned })}>{ideaEditor.pinned ? "取消置顶" : "置顶"}</button><SafeDeleteButton className="idea-delete" onConfirm={() => deleteIdeaNote(ideaEditor)}>删除</SafeDeleteButton></div></header>
                   {ideaVoiceError && <p className="idea-voice-error" role="status">{ideaVoiceError}</p>}
                   <div className="idea-document-editor">
                     <textarea ref={ideaDocumentRef} value={ideaEditor.content} onChange={(event) => updateIdeaNote(ideaEditor, { content: event.target.value })} placeholder={ideaVoiceState === "recording" ? "正在听…说完后再点一次停止。" : ideaVoiceState === "transcribing" ? "正在做高质量语音转写…" : "第一行写标题，然后直接展开你的想法……\n\n你可以写一段推理、项目构想、观察或任何还不需要变成任务的内容。"} aria-label="灵感笔记内容" />

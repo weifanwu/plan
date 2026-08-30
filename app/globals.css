@@ -927,17 +927,10 @@ button.task-main { min-width: 0; padding: 7px 0; border: 0; border-radius: 4px; 
 
 .ai-voice-launcher.recording span,
 .voice-button.recording { font-size: 7px; letter-spacing: -.04em; }
-.idea-header-actions { display: flex; align-items: center; gap: 6px; }
-.idea-header-actions button { min-height: 38px; padding: 7px 9px; border: 1px solid var(--ink); border-radius: 6px; color: var(--ink); font-size: 8px; font-weight: 850; cursor: pointer; white-space: nowrap; }
-.idea-paste { background: var(--white); }
-.idea-paste:hover { background: var(--lime); }
-.idea-paste-error { margin: 0; padding: 9px 12px; border-bottom: 1px solid #d2b952; background: #fff4c4; color: #6d5817; font-size: 8px; line-height: 1.5; }
+.idea-document-toolbar button.copied { border-color: var(--ink); background: var(--lime); color: var(--ink); }
 
 /* Final component overrides keep later feature styles inside the mobile touch contract. */
 @media (max-width: 760px) {
-  .idea-sidebar > header { align-items: stretch; flex-direction: column; }
-  .idea-header-actions { display: grid; grid-template-columns: 1fr 1fr; }
-  .idea-header-actions button { min-height: 44px; font-size: 10px; }
   .shopping-row { min-height: 96px; grid-template-columns: 44px minmax(0,1fr) 48px; gap: 9px; }
   .shopping-check { width: 38px; height: 38px; }
   .shopping-row-delete { width: 44px; height: 44px; min-width: 44px; }

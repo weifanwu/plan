@@ -303,9 +303,10 @@ test("drafts split compact backlog from long-form idea notes and navigation orde
   assert.match(source, /灵感笔记/);
   assert.match(source, /idea-document-editor/);
   assert.match(source, /交给 MAP AI 整理/);
-  assert.match(source, /一键粘贴/);
-  assert.match(source, /navigator\.clipboard\.readText/);
-  assert.match(source, /notes: \[note, \.\.\.current\.notes\]/);
+  assert.match(source, /copyIdeaNote/);
+  assert.match(source, /navigator\.clipboard\.writeText\(note\.content\)/);
+  assert.match(source, /复制全文/);
+  assert.doesNotMatch(source, /一键粘贴/);
   assert.match(source, /toggleVoiceInput\("idea"\)/);
   assert.match(source, /NAV_ORDER_STORAGE_KEY/);
   assert.match(source, /moveNavigationItem/);
