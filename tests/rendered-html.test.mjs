@@ -205,6 +205,7 @@ test("draft inbox reuses online voice transcription without auto-saving", async 
   assert.match(source, /高质量转写后追加进编辑框，不自动保存/);
   assert.match(source, /setNoteDraft\(\(current\)/);
   assert.match(source, /语音需要联网，打字仍可离线保存/);
+  assert.match(source, /最长 30 分钟/);
   assert.match(styles, /\.draft-voice-button/);
 });
 
@@ -302,6 +303,9 @@ test("drafts split compact backlog from long-form idea notes and navigation orde
   assert.match(source, /灵感笔记/);
   assert.match(source, /idea-document-editor/);
   assert.match(source, /交给 MAP AI 整理/);
+  assert.match(source, /一键粘贴/);
+  assert.match(source, /navigator\.clipboard\.readText/);
+  assert.match(source, /notes: \[note, \.\.\.current\.notes\]/);
   assert.match(source, /toggleVoiceInput\("idea"\)/);
   assert.match(source, /NAV_ORDER_STORAGE_KEY/);
   assert.match(source, /moveNavigationItem/);
@@ -391,6 +395,7 @@ test("tasks can link to goals and be filtered by that execution path", async () 
 test("voice input supports both the MAP AI composer and one-tap auto-send", async () => {
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
   assert.match(source, /开始语音输入/);
   assert.match(source, /toggleVoiceInput\("quick-ai"\)/);
   assert.match(source, /语音问 AI/);
@@ -403,6 +408,13 @@ test("voice input supports both the MAP AI composer and one-tap auto-send", asyn
   assert.match(source, /window\.addEventListener\("pagehide", closeVoiceSession\)/);
   assert.match(source, /Safari 的此网站设置里把“麦克风”改成“允许”/);
   assert.match(source, /MAP 不保存录音/);
+  assert.match(source, /VOICE_MAX_SECONDS = 30 \* 60/);
+  assert.match(source, /VOICE_AUDIO_BITS_PER_SECOND = 48_000/);
+  assert.match(source, /recorder\.start\(1000\)/);
+  assert.match(source, /voiceElapsedLabel/);
+  assert.doesNotMatch(source, /120000/);
+  assert.doesNotMatch(worker, /两分钟以内/);
+  assert.match(worker, /24 \* 1024 \* 1024/);
   assert.match(styles, /\.ai-voice-launcher\.recording/);
   assert.match(styles, /\.ai-voice-launcher\.transcribing/);
 });

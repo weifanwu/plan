@@ -225,7 +225,7 @@ async function handleTranscription(request: Request, env: Env): Promise<Response
     const incoming = await request.formData();
     const audio = incoming.get("audio");
     if (!(audio instanceof File) || audio.size === 0) return Response.json({ error: "没有收到有效的录音。" }, { status: 400 });
-    if (audio.size > 12 * 1024 * 1024) return Response.json({ error: "录音太长了，请控制在两分钟以内。" }, { status: 413 });
+    if (audio.size > 24 * 1024 * 1024) return Response.json({ error: "这段录音超过 24 MB，无法一次稳定转写。请分成两段录制。" }, { status: 413 });
 
     const form = new FormData();
     form.append("model", "gpt-transcribe");

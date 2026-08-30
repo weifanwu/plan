@@ -140,6 +140,8 @@ const SEMESTER_LAYOUT_STORAGE_KEY = "map-semester-week-layout-v1";
 const NAV_ORDER_STORAGE_KEY = "map-navigation-order-v1";
 const SYNC_META_KEY = "map-sync-meta-v1";
 const SYNC_DIRTY_KEY = "map-sync-dirty-v1";
+const VOICE_MAX_SECONDS = 30 * 60;
+const VOICE_AUDIO_BITS_PER_SECOND = 48_000;
 const DEFAULT_SEMESTER_WEEK_ORDER: SemesterWeekModule[] = ["schedule", "tasks"];
 const LEGACY_DEFAULT_NAV_ORDER = ["today", "goals", "semester", "career", "planner", "notes", "vault", "meals", "wellness"];
 const DEFAULT_NAV_ORDER: View[] = ["semester", "today", "goals", "career", "planner", "notes", "vault", "shopping", "meals", "wellness"];
@@ -161,6 +163,13 @@ const LEGACY_TASK_GOALS: Record<string, string> = { stephnie: "graduate", leetco
 
 function getTorontoToday() {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Toronto", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+}
+
+function formatVoiceDuration(seconds: number) {
+  const safeSeconds = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(safeSeconds / 60);
+  const remainder = safeSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
 }
 
 function getWeekKey(dateString = getTorontoToday()) {
@@ -542,6 +551,7 @@ export default function Home() {
   const [notesMode, setNotesMode] = useState<"backlog" | "ideas">("backlog");
   const [ideaQuery, setIdeaQuery] = useState("");
   const [ideaEditor, setIdeaEditor] = useState<Note | null>(null);
+  const [ideaPasteError, setIdeaPasteError] = useState("");
   const [referenceQuery, setReferenceQuery] = useState("");
   const [referenceEditor, setReferenceEditor] = useState<ReferenceNote | null>(null);
   const [referenceCopiedId, setReferenceCopiedId] = useState<string | null>(null);
@@ -556,6 +566,7 @@ export default function Home() {
   const [aiModel, setAiModel] = useState<AIModel>("gpt-5.6-luna");
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const [voiceTarget, setVoiceTarget] = useState<VoiceTarget | null>(null);
+  const [voiceElapsedSeconds, setVoiceElapsedSeconds] = useState(0);
   const [draftVoiceError, setDraftVoiceError] = useState("");
   const [ideaVoiceError, setIdeaVoiceError] = useState("");
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("local");
@@ -604,6 +615,8 @@ export default function Home() {
   const voiceStreamRef = useRef<MediaStream | null>(null);
   const voiceChunksRef = useRef<Blob[]>([]);
   const voiceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const voiceElapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const voiceStartedAtRef = useRef(0);
   const voiceAbortRef = useRef<AbortController | null>(null);
   const dataRef = useRef<AppData>(initialData);
   const syncRevisionRef = useRef(0);
@@ -629,6 +642,7 @@ export default function Home() {
   const quickAiVoiceState: VoiceState = voiceTarget === "quick-ai" ? voiceState : "idle";
   const draftVoiceState: VoiceState = voiceTarget === "draft" ? voiceState : "idle";
   const ideaVoiceState: VoiceState = voiceTarget === "idea" ? voiceState : "idle";
+  const voiceElapsedLabel = formatVoiceDuration(voiceElapsedSeconds);
 
   useEffect(() => {
     const saved = window.localStorage.getItem(STORAGE_KEY);
@@ -725,6 +739,8 @@ export default function Home() {
       mediaRecorderRef.current = null;
       if (voiceTimeoutRef.current) clearTimeout(voiceTimeoutRef.current);
       voiceTimeoutRef.current = null;
+      if (voiceElapsedTimerRef.current) clearInterval(voiceElapsedTimerRef.current);
+      voiceElapsedTimerRef.current = null;
     };
     window.addEventListener("pagehide", closeVoiceSession);
     return () => {
@@ -1007,6 +1023,29 @@ export default function Home() {
     setIdeaEditor(note);
     setNotesMode("ideas");
     window.requestAnimationFrame(() => ideaDocumentRef.current?.focus());
+  }
+
+  async function pasteIdeaNote() {
+    setIdeaPasteError("");
+    if (!navigator.clipboard?.readText) {
+      setIdeaPasteError("这个浏览器不能自动读取剪贴板。请点“新笔记”，再长按粘贴。");
+      return;
+    }
+    try {
+      const content = (await navigator.clipboard.readText()).trim();
+      if (!content) {
+        setIdeaPasteError("剪贴板里没有可粘贴的文字。");
+        return;
+      }
+      const now = new Date().toISOString();
+      const note: Note = { id: uid(), content, category: "想法", pinned: false, createdAt: now, updatedAt: now };
+      setData((current) => ({ ...current, notes: [note, ...current.notes] }));
+      setIdeaEditor(note);
+      setNotesMode("ideas");
+      window.requestAnimationFrame(() => ideaDocumentRef.current?.focus());
+    } catch {
+      setIdeaPasteError("浏览器没有允许读取剪贴板。请点“新笔记”，再长按粘贴。");
+    }
   }
 
   function openIdeaOrganizerAI(note: Note) {
@@ -1475,6 +1514,8 @@ export default function Home() {
   function pauseVoiceResources() {
     if (voiceTimeoutRef.current) clearTimeout(voiceTimeoutRef.current);
     voiceTimeoutRef.current = null;
+    if (voiceElapsedTimerRef.current) clearInterval(voiceElapsedTimerRef.current);
+    voiceElapsedTimerRef.current = null;
     voiceStreamRef.current?.getAudioTracks().forEach((track) => { track.enabled = false; });
     mediaRecorderRef.current = null;
   }
@@ -1512,6 +1553,7 @@ export default function Home() {
 
     const session = ++voiceSessionRef.current;
     setVoiceTarget(target);
+    setVoiceElapsedSeconds(0);
     if (target === "ai" || target === "quick-ai") setAiError("");
     else if (target === "idea") setIdeaVoiceError("");
     else setDraftVoiceError("");
@@ -1519,7 +1561,13 @@ export default function Home() {
       const stream = await getVoiceStream();
       if (session !== voiceSessionRef.current) { stream.getTracks().forEach((track) => track.stop()); return; }
       const mimeType = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm"].find((type) => MediaRecorder.isTypeSupported(type)) || "";
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      const recorderOptions: MediaRecorderOptions = { audioBitsPerSecond: VOICE_AUDIO_BITS_PER_SECOND, ...(mimeType ? { mimeType } : {}) };
+      let recorder: MediaRecorder;
+      try {
+        recorder = new MediaRecorder(stream, recorderOptions);
+      } catch {
+        recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      }
       voiceStreamRef.current = stream;
       mediaRecorderRef.current = recorder;
       voiceChunksRef.current = [];
@@ -1533,10 +1581,10 @@ export default function Home() {
       recorder.onstop = async () => {
         const chunks = voiceChunksRef.current;
         const recordedType = recorder.mimeType || mimeType || "audio/webm";
-        releaseVoiceResources();
+        pauseVoiceResources();
         if (session !== voiceSessionRef.current) return;
         const audio = new Blob(chunks, { type: recordedType });
-        if (!audio.size) { showVoiceError("没有录到声音，请再试一次。"); setVoiceState("idle"); setVoiceTarget(null); return; }
+        if (!audio.size) { showVoiceError("没有录到声音，请再试一次。"); setVoiceState("idle"); setVoiceTarget(null); setVoiceElapsedSeconds(0); return; }
         setVoiceState("transcribing");
         const controller = new AbortController();
         voiceAbortRef.current = controller;
@@ -1572,17 +1620,22 @@ export default function Home() {
         } catch (error) {
           if (session === voiceSessionRef.current && !(error instanceof DOMException && error.name === "AbortError")) showVoiceError(error instanceof Error ? error.message : "语音暂时无法转写。");
         } finally {
-          if (session === voiceSessionRef.current) { setVoiceState("idle"); setVoiceTarget(null); }
+          if (session === voiceSessionRef.current) { setVoiceState("idle"); setVoiceTarget(null); setVoiceElapsedSeconds(0); }
           if (voiceAbortRef.current === controller) voiceAbortRef.current = null;
         }
       };
-      recorder.start();
+      recorder.start(1000);
       setVoiceState("recording");
-      voiceTimeoutRef.current = setTimeout(() => { if (recorder.state !== "inactive") recorder.stop(); }, 120000);
+      voiceStartedAtRef.current = Date.now();
+      voiceElapsedTimerRef.current = setInterval(() => {
+        setVoiceElapsedSeconds(Math.min(VOICE_MAX_SECONDS, Math.floor((Date.now() - voiceStartedAtRef.current) / 1000)));
+      }, 500);
+      voiceTimeoutRef.current = setTimeout(() => { if (recorder.state !== "inactive") recorder.stop(); }, VOICE_MAX_SECONDS * 1000);
     } catch (error) {
       releaseVoiceResources();
       setVoiceState("idle");
       setVoiceTarget(null);
+      setVoiceElapsedSeconds(0);
       showVoiceError(error instanceof DOMException && error.name === "NotAllowedError" ? "首次使用必须允许麦克风。若 iPhone 仍反复询问，请在 Safari 的此网站设置里把“麦克风”改成“允许”。" : "无法启动麦克风，请检查浏览器权限。");
     }
   }
@@ -1597,6 +1650,7 @@ export default function Home() {
       releaseVoiceResources();
       setVoiceState("idle");
       setVoiceTarget(null);
+      setVoiceElapsedSeconds(0);
     }
     setAiOpen(false);
     setAiText("");
@@ -2029,9 +2083,9 @@ export default function Home() {
                 <p>适合要买的东西、待处理的小事和还没决定哪天做的 backlog。长篇想法请放进“灵感笔记”。</p>
                 <div className={`draft-input-shell ${draftVoiceState}`}>
                   <textarea ref={noteDraftRef} value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); saveQuickNote(); } }} placeholder={draftVoiceState === "recording" ? "正在听…说完后再点一次停止" : draftVoiceState === "transcribing" ? "正在转写并整理成清晰的小事…" : "例如：买眼药水；之后再决定哪天去。"} aria-label="快速记录待安排的小事" />
-                  <button type="button" className={`draft-voice-button ${draftVoiceState}`} onClick={() => void toggleVoiceInput("draft")} disabled={!online || draftVoiceState === "transcribing" || (voiceState !== "idle" && voiceTarget !== "draft")} aria-label={draftVoiceState === "recording" ? "停止草稿录音" : draftVoiceState === "transcribing" ? "正在转写草稿语音" : "用语音记录草稿"}><span>{draftVoiceState === "recording" ? "■" : draftVoiceState === "transcribing" ? "…" : "麦"}</span>{draftVoiceState === "recording" ? "停止" : draftVoiceState === "transcribing" ? "转写中" : "语音记录"}</button>
+                  <button type="button" className={`draft-voice-button ${draftVoiceState}`} onClick={() => void toggleVoiceInput("draft")} disabled={!online || draftVoiceState === "transcribing" || (voiceState !== "idle" && voiceTarget !== "draft")} aria-label={draftVoiceState === "recording" ? `停止草稿录音，已录 ${voiceElapsedLabel}` : draftVoiceState === "transcribing" ? "正在转写草稿语音" : "用语音记录草稿"}><span>{draftVoiceState === "recording" ? "■" : draftVoiceState === "transcribing" ? "…" : "麦"}</span>{draftVoiceState === "recording" ? `停止 ${voiceElapsedLabel}` : draftVoiceState === "transcribing" ? "转写中" : "语音记录"}</button>
                 </div>
-                <div className="draft-voice-meta"><span>{online ? "高质量转写后追加进编辑框，不自动保存" : "语音需要联网，打字仍可离线保存"}</span><strong>最长 2 分钟</strong></div>
+                <div className="draft-voice-meta"><span>{online ? "高质量转写后追加进编辑框，不自动保存" : "语音需要联网，打字仍可离线保存"}</span><strong>{draftVoiceState === "recording" ? `已录 ${voiceElapsedLabel}` : "最长 30 分钟"}</strong></div>
                 {draftVoiceError && <p className="draft-voice-error" role="status">{draftVoiceError}</p>}
                 <div className="draft-type-label">归到哪里？</div>
                 <div className="note-category-switch" role="group" aria-label="草稿分类">{(["待办", "课程", "项目", "求职", "生活"] as NoteCategory[]).map((category) => <button key={category} className={noteCategory === category ? "active" : ""} onClick={() => setNoteCategory(category)}>{category}</button>)}</div>
@@ -2049,7 +2103,8 @@ export default function Home() {
               </section>
             </section> : <section className={`idea-workbench ${ideaEditor ? "editing" : "browsing"}`}>
               <aside className="idea-sidebar panel">
-                <header><div><p className="section-kicker">IDEA NOTEBOOK</p><h2>灵感笔记</h2><span>{ideaNotes.length} 篇 · 自动保存</span></div><button className="idea-new" onClick={createIdeaNote}>＋ 新笔记</button></header>
+                <header><div><p className="section-kicker">IDEA NOTEBOOK</p><h2>灵感笔记</h2><span>{ideaNotes.length} 篇 · 自动保存</span></div><div className="idea-header-actions"><button className="idea-paste" onClick={() => void pasteIdeaNote()}>⌘ 一键粘贴</button><button className="idea-new" onClick={createIdeaNote}>＋ 新笔记</button></div></header>
+                {ideaPasteError && <p className="idea-paste-error" role="status">{ideaPasteError}</p>}
                 <label className="idea-search"><span>⌕</span><input value={ideaQuery} onChange={(event) => setIdeaQuery(event.target.value)} placeholder="搜索灵感" /></label>
                 <div className="idea-note-list">{ideaNotes.map((note) => <button className={`idea-note-row ${note.pinned ? "pinned" : ""} ${ideaEditor?.id === note.id ? "active" : ""}`} key={note.id} onClick={() => { setIdeaEditor(note); window.requestAnimationFrame(() => ideaDocumentRef.current?.focus()); }}><span>{note.pinned ? "●" : "✎"}</span><div><strong>{noteTitle(note)}</strong><p>{notePreview(note) || "空白灵感"}</p></div><time>{formatNoteTime(note.updatedAt)}</time></button>)}</div>
                 {ideaNotes.length === 0 && <div className="idea-list-empty">{ideaQuery ? "没有找到相关灵感" : "突然有想法时，点“新笔记”就直接开始写"}</div>}
@@ -2058,7 +2113,7 @@ export default function Home() {
 
               <section className="idea-document panel">
                 {ideaEditor ? <>
-                  <header className="idea-document-toolbar"><div><button className="mobile-idea-back" onClick={() => setIdeaEditor(null)}>← 返回灵感列表</button><span>{ideaEditor.pinned ? "置顶灵感" : "自由笔记"}</span><time>自动保存 · {formatNoteTime(ideaEditor.updatedAt)}</time></div><div><button className="idea-ai-organize" onClick={() => openIdeaOrganizerAI(ideaEditor)} disabled={!online}>✦ 交给 MAP AI 整理</button><button className={`idea-voice-action ${ideaVoiceState}`} onClick={() => void toggleVoiceInput("idea")} disabled={!online || ideaVoiceState === "transcribing" || (voiceState !== "idle" && voiceTarget !== "idea")}>{ideaVoiceState === "recording" ? "■ 停止录音" : ideaVoiceState === "transcribing" ? "… 转写中" : "◉ 语音转文字"}</button><button onClick={() => updateIdeaNote(ideaEditor, { pinned: !ideaEditor.pinned })}>{ideaEditor.pinned ? "取消置顶" : "置顶"}</button><SafeDeleteButton className="idea-delete" onConfirm={() => deleteIdeaNote(ideaEditor)}>删除</SafeDeleteButton></div></header>
+                  <header className="idea-document-toolbar"><div><button className="mobile-idea-back" onClick={() => setIdeaEditor(null)}>← 返回灵感列表</button><span>{ideaEditor.pinned ? "置顶灵感" : "自由笔记"}</span><time>自动保存 · {formatNoteTime(ideaEditor.updatedAt)}</time></div><div><button className="idea-ai-organize" onClick={() => openIdeaOrganizerAI(ideaEditor)} disabled={!online}>✦ 交给 MAP AI 整理</button><button className={`idea-voice-action ${ideaVoiceState}`} onClick={() => void toggleVoiceInput("idea")} disabled={!online || ideaVoiceState === "transcribing" || (voiceState !== "idle" && voiceTarget !== "idea")}>{ideaVoiceState === "recording" ? `■ 停止 · ${voiceElapsedLabel}` : ideaVoiceState === "transcribing" ? "… 转写中" : "◉ 语音转文字"}</button><button onClick={() => updateIdeaNote(ideaEditor, { pinned: !ideaEditor.pinned })}>{ideaEditor.pinned ? "取消置顶" : "置顶"}</button><SafeDeleteButton className="idea-delete" onConfirm={() => deleteIdeaNote(ideaEditor)}>删除</SafeDeleteButton></div></header>
                   {ideaVoiceError && <p className="idea-voice-error" role="status">{ideaVoiceError}</p>}
                   <div className="idea-document-editor">
                     <textarea ref={ideaDocumentRef} value={ideaEditor.content} onChange={(event) => updateIdeaNote(ideaEditor, { content: event.target.value })} placeholder={ideaVoiceState === "recording" ? "正在听…说完后再点一次停止。" : ideaVoiceState === "transcribing" ? "正在做高质量语音转写…" : "第一行写标题，然后直接展开你的想法……\n\n你可以写一段推理、项目构想、观察或任何还不需要变成任务的内容。"} aria-label="灵感笔记内容" />
@@ -2164,7 +2219,7 @@ export default function Home() {
         </aside>
       </div>}
 
-      {!aiOpen && <button className={`ai-voice-launcher ${quickAiVoiceState} ${!online ? "offline" : ""}`} onClick={() => void toggleVoiceInput("quick-ai")} disabled={!online || aiLoading || (voiceState !== "idle" && voiceTarget !== "quick-ai")} aria-label={quickAiVoiceState === "recording" ? "停止并发送语音给 MAP AI" : quickAiVoiceState === "transcribing" ? "正在转写并发送给 MAP AI" : "语音问 MAP AI"}><span>{quickAiVoiceState === "recording" ? "■" : quickAiVoiceState === "transcribing" ? "…" : "麦"}</span><strong>{quickAiVoiceState === "recording" ? "停止" : quickAiVoiceState === "transcribing" ? "发送中" : "语音问 AI"}</strong></button>}
+      {!aiOpen && <button className={`ai-voice-launcher ${quickAiVoiceState} ${!online ? "offline" : ""}`} onClick={() => void toggleVoiceInput("quick-ai")} disabled={!online || aiLoading || (voiceState !== "idle" && voiceTarget !== "quick-ai")} aria-label={quickAiVoiceState === "recording" ? `停止并发送语音给 MAP AI，已录 ${voiceElapsedLabel}` : quickAiVoiceState === "transcribing" ? "正在转写并发送给 MAP AI" : "语音问 MAP AI"}><span>{quickAiVoiceState === "recording" ? voiceElapsedLabel : quickAiVoiceState === "transcribing" ? "…" : "麦"}</span><strong>{quickAiVoiceState === "recording" ? "停止" : quickAiVoiceState === "transcribing" ? "发送中" : "语音问 AI"}</strong></button>}
       <button className={`ai-launcher ${aiOpen ? "active" : ""} ${!online ? "offline" : ""}`} onClick={toggleAIChat} aria-label={aiOpen ? "关闭 MAP AI" : "打开 MAP AI"}><span>✦</span><strong>{online ? "MAP AI" : "AI 离线"}</strong></button>
       {aiOpen && <aside className="ai-panel ai-chat-panel" aria-label="MAP AI 对话助手">
         <header><div><p className="section-kicker">YOUR LIFE · IN CONTEXT</p><h2>MAP AI</h2></div><div className="ai-header-actions"><label><span>模型</span><select value={aiModel} onChange={(event) => setAiModel(event.target.value as AIModel)} disabled={aiLoading}><option value="gpt-5.6-luna">最快 · GPT-5.6 Luna</option><option value="gpt-5.6-terra">均衡 · GPT-5.6 Terra</option><option value="gpt-5.6-sol">最强 · GPT-5.6 Sol</option><option value="gpt-5.4-mini">旧版快速 · GPT-5.4 mini</option><option value="gpt-5.4">旧版深度 · GPT-5.4</option></select></label><button onClick={closeAIChat} aria-label="关闭并清空本次对话">×</button></div></header>
@@ -2182,11 +2237,11 @@ export default function Home() {
           </section>}
         </div>
         <form className="ai-composer" onSubmit={(event) => { event.preventDefault(); void sendAIMessage(); }}>
-          <textarea ref={aiInputRef} value={aiText} onChange={(event) => setAiText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendAIMessage(); } }} placeholder={aiVoiceState === "recording" ? "正在听…再次点击麦克风即可停止" : aiVoiceState === "transcribing" ? "正在把语音转成文字…" : online ? "问问题、做分析，或让我修改 MAP…" : "恢复网络后继续对话"} disabled={aiLoading || aiVoiceState !== "idle" || voiceTarget === "draft" || !online} />
-          <button type="button" className={`voice-button ${aiVoiceState}`} onClick={() => void toggleVoiceInput("ai")} disabled={aiLoading || aiVoiceState === "transcribing" || voiceTarget === "draft" || !online} aria-label={aiVoiceState === "recording" ? "停止录音" : aiVoiceState === "transcribing" ? "正在转写语音" : "开始语音输入"}>{aiVoiceState === "recording" ? "■" : aiVoiceState === "transcribing" ? "…" : "麦"}</button>
+          <textarea ref={aiInputRef} value={aiText} onChange={(event) => setAiText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendAIMessage(); } }} placeholder={aiVoiceState === "recording" ? `正在听 · ${voiceElapsedLabel}…再次点击麦克风即可停止` : aiVoiceState === "transcribing" ? "正在把语音转成文字…" : online ? "问问题、做分析，或让我修改 MAP…" : "恢复网络后继续对话"} disabled={aiLoading || aiVoiceState !== "idle" || voiceTarget === "draft" || !online} />
+          <button type="button" className={`voice-button ${aiVoiceState}`} onClick={() => void toggleVoiceInput("ai")} disabled={aiLoading || aiVoiceState === "transcribing" || voiceTarget === "draft" || !online} aria-label={aiVoiceState === "recording" ? `停止录音，已录 ${voiceElapsedLabel}` : aiVoiceState === "transcribing" ? "正在转写语音" : "开始语音输入"}>{aiVoiceState === "recording" ? voiceElapsedLabel : aiVoiceState === "transcribing" ? "…" : "麦"}</button>
           <button type="submit" className="ai-send-button" disabled={!aiText.trim() || aiLoading || aiVoiceState !== "idle" || voiceTarget === "draft" || !online} aria-label="发送消息">↑</button>
         </form>
-        <p className="ai-privacy">普通分析不会附带私人速记；只有已开启“AI 可读 · 云端同步”的资料，才可能在你明确要求管理私人速记时发送给 OpenAI。语音会发送至 OpenAI 转写，MAP 不保存录音。授权后，本次打开期间会复用已静音的麦克风会话；只有录音时采集，离开 App 即释放。</p>
+        <p className="ai-privacy">普通分析不会附带私人速记；只有已开启“AI 可读 · 云端同步”的资料，才可能在你明确要求管理私人速记时发送给 OpenAI。语音会发送至 OpenAI 转写，MAP 不保存录音。单次最长 30 分钟；授权后，本次打开期间会复用已静音的麦克风会话，只有录音时采集，离开 App 即释放。</p>
       </aside>}
 
       {taskEditor && <TaskModal value={taskEditor} goals={data.goals} prefill={taskPrefill || undefined} sourceDraft={Boolean(promotingNoteId)} defaultDate={newTaskDate || undefined} defaultGoalId={newTaskGoalId || undefined} onClose={closeTaskEditor} onSave={saveTaskFromEditor} onDelete={taskEditor === "new" ? undefined : () => { deleteTask(taskEditor.id); closeTaskEditor(); }} />}
