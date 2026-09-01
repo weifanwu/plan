@@ -928,6 +928,36 @@ button.task-main { min-width: 0; padding: 7px 0; border: 0; border-radius: 4px; 
 .ai-voice-launcher.recording span,
 .voice-button.recording { font-size: 7px; letter-spacing: -.04em; }
 .idea-document-toolbar button.copied { border-color: var(--ink); background: var(--lime); color: var(--ink); }
+.idea-document-toolbar button:disabled { opacity: .42; cursor: not-allowed; }
+.idea-document-toolbar .idea-history-action:not(:disabled) { border-color: #7562bc; color: #513b9a; background: #f1edff; }
+.ai-detail-list { margin-top: 12px; display: grid; gap: 8px; }
+.ai-detail-list details { overflow: hidden; border: 1px solid #4d5147; border-radius: 7px; background: #1b1d19; }
+.ai-detail-list summary { min-height: 41px; padding: 9px 10px; display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 8px; cursor: pointer; list-style: none; }
+.ai-detail-list summary::-webkit-details-marker { display: none; }
+.ai-detail-list summary > span { padding: 3px 6px; border-radius: 99px; background: rgba(184,168,255,.16); color: var(--lavender); font-size: 7px; font-weight: 850; }
+.ai-detail-list summary > strong { min-width: 0; overflow: hidden; color: #e1e4da; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.ai-detail-list summary > i { color: #7d8177; font-size: 7px; font-style: normal; }
+.ai-detail-comparison { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid #4d5147; }
+.ai-detail-comparison section { min-width: 0; padding: 9px; }
+.ai-detail-comparison section:first-child { border-right: 1px solid #4d5147; background: rgba(255,107,74,.045); }
+.ai-detail-comparison section:last-child { background: rgba(200,245,90,.045); }
+.ai-detail-comparison .ai-detail-label { display: block; margin-bottom: 7px; color: #92968b; font-family: var(--font-geist-mono); font-size: 7px; font-weight: 850; text-transform: uppercase; }
+.ai-detail-comparison pre { max-height: 230px; margin: 0; overflow: auto; color: #d7dad0; font-family: inherit; font-size: 9px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.idea-version-workbench { min-height: 390px; display: grid; grid-template-columns: 178px minmax(0,1fr); overflow: hidden; border: 1px solid var(--ink); border-radius: 8px; }
+.idea-version-workbench > aside { min-width: 0; border-right: 1px solid var(--ink); background: var(--paper-deep); }
+.idea-version-workbench > aside > p { margin: 0; padding: 12px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 8px; line-height: 1.5; }
+.idea-version-workbench > aside > div { max-height: 390px; overflow-y: auto; }
+.idea-version-workbench > aside button { width: 100%; min-height: 74px; padding: 10px 11px; display: grid; gap: 3px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
+.idea-version-workbench > aside button.active { background: var(--lavender); box-shadow: inset 4px 0 0 var(--ink); }
+.idea-version-workbench > aside strong { font-size: 10px; }
+.idea-version-workbench > aside time,.idea-version-workbench > aside span { color: var(--muted); font-size: 7px; }
+.idea-version-workbench > section { min-width: 0; display: flex; flex-direction: column; background: var(--white); }
+.idea-version-workbench > section > header { min-height: 58px; padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid var(--line); }
+.idea-version-workbench > section > header span,.idea-version-workbench > section > header time { display: block; }
+.idea-version-workbench > section > header span { font-size: 9px; font-weight: 850; }
+.idea-version-workbench > section > header time { margin-top: 3px; color: var(--muted); font-size: 7px; }
+.idea-version-workbench > section > header button { min-height: 34px; padding: 7px 9px; border: 1px solid var(--ink); border-radius: 6px; background: var(--paper); font-size: 8px; cursor: pointer; }
+.idea-version-workbench > section > pre { flex: 1; max-height: 430px; margin: 0; padding: 21px; overflow: auto; color: var(--ink); font-family: inherit; font-size: 13px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
 .shopping-board-guide { min-height: 39px; margin-bottom: -15px; padding: 0 12px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 8px; }
 .shopping-board-guide > span { color: var(--ink); font-family: var(--font-geist-mono); font-weight: 900; letter-spacing: -.12em; }
 .shopping-board-guide > strong { color: var(--ink); font-size: 9px; }
@@ -943,6 +973,16 @@ button.task-main { min-width: 0; padding: 7px 0; border: 0; border-radius: 4px; 
 
 /* Final component overrides keep later feature styles inside the mobile touch contract. */
 @media (max-width: 760px) {
+  .ai-detail-comparison { grid-template-columns: 1fr; }
+  .ai-detail-comparison section:first-child { border-right: 0; border-bottom: 1px solid #4d5147; }
+  .ai-detail-list summary { grid-template-columns: auto minmax(0,1fr); }
+  .ai-detail-list summary > i { display: none; }
+  .idea-version-workbench { min-height: 0; grid-template-columns: 1fr; }
+  .idea-version-workbench > aside { border-right: 0; border-bottom: 1px solid var(--ink); }
+  .idea-version-workbench > aside > div { max-height: 168px; display: flex; overflow-x: auto; overflow-y: hidden; }
+  .idea-version-workbench > aside button { min-width: 165px; border-right: 1px solid var(--line); border-bottom: 0; }
+  .idea-version-workbench > section > header button { min-height: 44px; }
+  .idea-version-workbench > section > pre { max-height: 42vh; padding: 17px; font-size: 15px; }
   .shopping-board-guide { margin-bottom: -10px; padding: 0 4px; }
   .shopping-board-guide > span,.shopping-board-guide > strong { display: none; }
   .shopping-board-guide > small { margin-left: 0; font-size: 8px; }

@@ -317,6 +317,22 @@ test("drafts split compact backlog from long-form idea notes and navigation orde
   assert.match(styles, /nav button\.drag-over/);
 });
 
+test("AI revisions show full before and after content and keep recoverable idea history", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(source, /deriveAIChangeDetails/);
+  assert.match(source, /修改前/);
+  assert.match(source, /修改后/);
+  assert.match(source, /ai-detail-comparison/);
+  assert.match(source, /NOTE_HISTORY_STORAGE_KEY/);
+  assert.match(source, /archiveChangedIdeaNotes/);
+  assert.match(source, /版本历史 ·/);
+  assert.match(source, /restoreIdeaVersion/);
+  assert.match(source, /showUndo\(`AI 修改已应用/);
+  assert.match(styles, /\.ai-detail-comparison/);
+  assert.match(styles, /\.idea-version-workbench/);
+});
+
 test("ordered navigation and semester layout sync across devices", async () => {
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const syncSource = await readFile(new URL("../lib/sync-state.mjs", import.meta.url), "utf8");

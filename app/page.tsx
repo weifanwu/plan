@@ -79,7 +79,9 @@ type Application = { id: string; company: string; role: string; stage: Applicati
 type Note = { id: string; content: string; category: NoteCategory; pinned: boolean; createdAt: string; updatedAt: string };
 type Routine = { id: string; title: string; details: string; category: TaskCategory; goalId?: string | null; startDate: string; time?: string | null; frequency: RoutineFrequency; intervalDays: number; active: boolean; completedDates: string[] };
 type ReferenceNote = { id: string; title: string; content: string; pinned: boolean; aiExcluded: boolean; createdAt: string; updatedAt: string };
-type AIPlanPreview = { summary: string; changes: string[]; nextData: AppData };
+type AIChangeDetail = { id: string; title: string; action: "新增" | "修改" | "删除"; before: string; after: string };
+type AIPlanPreview = { summary: string; changes: string[]; details: AIChangeDetail[]; nextData: AppData };
+type NoteVersion = { id: string; noteId: string; content: string; savedAt: string; reason: string };
 type AIModel = "gpt-5.6-luna" | "gpt-5.6-terra" | "gpt-5.6-sol" | "gpt-5.4-mini" | "gpt-5.4";
 type AIChatMessage = { id: string; role: "user" | "assistant"; content: string };
 type AICollection = "tasks" | "routines" | "schedule" | "goals" | "habits" | "workouts" | "trainingPlans" | "exercises" | "exerciseLogs" | "activityLogs" | "mealThemes" | "mealPlans" | "mealRecipes" | "nutritionGuides" | "purchaseItems" | "applications" | "notes" | "references";
@@ -136,12 +138,14 @@ const APPLICATION_STAGES: ApplicationStage[] = ["已投", "面试", "Offer", "�
 const NOTE_CATEGORIES: NoteCategory[] = ["待办", "想法", "课程", "项目", "求职", "生活"];
 const BASE_DATE = "2026-08-23";
 const STORAGE_KEY = "map-life-os-v1";
+const NOTE_HISTORY_STORAGE_KEY = "map-idea-note-history-v1";
 const SEMESTER_LAYOUT_STORAGE_KEY = "map-semester-week-layout-v1";
 const NAV_ORDER_STORAGE_KEY = "map-navigation-order-v1";
 const SYNC_META_KEY = "map-sync-meta-v1";
 const SYNC_DIRTY_KEY = "map-sync-dirty-v1";
 const VOICE_MAX_SECONDS = 30 * 60;
 const VOICE_AUDIO_BITS_PER_SECOND = 48_000;
+const NOTE_HISTORY_LIMIT_PER_NOTE = 20;
 const DEFAULT_SEMESTER_WEEK_ORDER: SemesterWeekModule[] = ["schedule", "tasks"];
 const LEGACY_DEFAULT_NAV_ORDER = ["today", "goals", "semester", "career", "planner", "notes", "vault", "meals", "wellness"];
 const DEFAULT_NAV_ORDER: View[] = ["semester", "today", "goals", "career", "planner", "notes", "vault", "shopping", "meals", "wellness"];
@@ -411,6 +415,68 @@ function deriveAIChanges(current: AppData, next: AppData) {
   return changes.length > 40 ? [...changes.slice(0, 40), `另有 ${changes.length - 40} 项变更`] : changes;
 }
 
+function formatAIRecordPreview(collection: AICollection, record: Record<string, unknown> | null) {
+  if (!record) return "（没有这条记录）";
+  if (collection === "notes") return String(record.content || "（空白灵感）");
+  if (collection === "references") return [record.title, record.content].filter(Boolean).join("\n\n") || "（空白速记）";
+  if (collection === "applications") return [
+    `公司：${record.company || "未填写"}`,
+    `职位：${record.role || "未填写"}`,
+    `状态：${record.stage || "未填写"}`,
+    `日期：${record.date || "未填写"}`,
+    record.link ? `链接：${record.link}` : "",
+    record.contact ? `联系人：${record.contact}` : "",
+    record.notes ? `备注：${record.notes}` : "",
+  ].filter(Boolean).join("\n");
+  if (collection === "tasks") return [
+    `任务：${record.title || "未填写"}`,
+    record.details ? `细节：${record.details}` : "",
+    `日期：${record.date || "未填写"}${record.endDate ? ` → ${record.endDate}` : ""}`,
+    `时间：${record.time || "全天"}`,
+    `类别：${record.category || "未填写"}`,
+    `优先级：${record.priority || "normal"}`,
+  ].filter(Boolean).join("\n");
+  const visibleRecord = { ...record };
+  delete visibleRecord.id;
+  return JSON.stringify(visibleRecord, null, 2);
+}
+
+function deriveAIChangeDetails(current: AppData, next: AppData) {
+  const collections: Array<[AICollection, string]> = [["tasks", "任务"], ["routines", "固定任务"], ["schedule", "固定安排"], ["goals", "目标"], ["habits", "饮食习惯"], ["workouts", "旧版运动"], ["trainingPlans", "训练计划"], ["exercises", "动作"], ["exerciseLogs", "力量记录"], ["activityLogs", "运动记录"], ["mealThemes", "饮食主题"], ["mealPlans", "用餐安排"], ["mealRecipes", "菜谱"], ["nutritionGuides", "饮食理念"], ["purchaseItems", "购物事项"], ["applications", "求职记录"], ["notes", "草稿"], ["references", "私人速记"]];
+  const details: AIChangeDetail[] = [];
+  const displayName = (item: Record<string, unknown> | null) => String(item?.title || item?.company || item?.label || item?.code || item?.content || item?.id || "未命名记录").split("\n")[0].slice(0, 60);
+  for (const [collection, label] of collections) {
+    const before = current[collection] as unknown as Array<Record<string, unknown> & { id: string }>;
+    const after = next[collection] as unknown as Array<Record<string, unknown> & { id: string }>;
+    const beforeMap = new Map(before.map((item) => [item.id, item]));
+    const afterMap = new Map(after.map((item) => [item.id, item]));
+    for (const item of after) {
+      const previous = beforeMap.get(item.id) || null;
+      if (previous && JSON.stringify(previous) === JSON.stringify(item)) continue;
+      details.push({ id: `${collection}-${item.id}`, title: `${label} · ${displayName(item)}`, action: previous ? "修改" : "新增", before: formatAIRecordPreview(collection, previous), after: formatAIRecordPreview(collection, item) });
+    }
+    for (const item of before) {
+      if (afterMap.has(item.id)) continue;
+      details.push({ id: `${collection}-${item.id}`, title: `${label} · ${displayName(item)}`, action: "删除", before: formatAIRecordPreview(collection, item), after: "（这条记录将被删除）" });
+    }
+  }
+  return details.slice(0, 40);
+}
+
+function addNoteVersions(history: NoteVersion[], additions: NoteVersion[]) {
+  const deduplicated = additions.reduce<NoteVersion[]>((versions, version) => {
+    if (versions.some((item) => item.noteId === version.noteId && item.content === version.content)) return versions;
+    return [version, ...versions];
+  }, history);
+  const counts = new Map<string, number>();
+  return deduplicated.filter((version) => {
+    const count = counts.get(version.noteId) || 0;
+    if (count >= NOTE_HISTORY_LIMIT_PER_NOTE) return false;
+    counts.set(version.noteId, count + 1);
+    return true;
+  }).slice(0, 200);
+}
+
 function formatDate(date: string) {
   const value = new Date(`${date}T12:00:00`);
   return `${value.getMonth() + 1}月${value.getDate()}日`;
@@ -552,6 +618,8 @@ export default function Home() {
   const [ideaQuery, setIdeaQuery] = useState("");
   const [ideaEditor, setIdeaEditor] = useState<Note | null>(null);
   const [ideaCopiedId, setIdeaCopiedId] = useState<string | null>(null);
+  const [noteVersions, setNoteVersions] = useState<NoteVersion[]>([]);
+  const [ideaVersionViewer, setIdeaVersionViewer] = useState<NoteVersion | null>(null);
   const [referenceQuery, setReferenceQuery] = useState("");
   const [referenceEditor, setReferenceEditor] = useState<ReferenceNote | null>(null);
   const [referenceCopiedId, setReferenceCopiedId] = useState<string | null>(null);
@@ -647,6 +715,7 @@ export default function Home() {
 
   useEffect(() => {
     const saved = window.localStorage.getItem(STORAGE_KEY);
+    const savedNoteVersions = window.localStorage.getItem(NOTE_HISTORY_STORAGE_KEY);
     const savedSemesterLayout = window.localStorage.getItem(SEMESTER_LAYOUT_STORAGE_KEY);
     const savedNavOrder = window.localStorage.getItem(NAV_ORDER_STORAGE_KEY);
     const savedSyncMeta = window.localStorage.getItem(SYNC_META_KEY);
@@ -654,6 +723,12 @@ export default function Home() {
     let parsedSemesterLayout: unknown = null;
     let parsedNavOrder: unknown = null;
     if (saved) try { parsed = JSON.parse(saved) as Partial<AppData>; } catch { /* keep safe defaults */ }
+    if (savedNoteVersions) try {
+      const parsedVersions = JSON.parse(savedNoteVersions) as NoteVersion[];
+      // Restore device-local recovery snapshots after the server-rendered shell mounts.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (Array.isArray(parsedVersions)) setNoteVersions(parsedVersions.filter((version) => version && typeof version.noteId === "string" && typeof version.content === "string" && typeof version.savedAt === "string").slice(0, 200));
+    } catch { /* start with an empty local version history */ }
     hadLocalDataRef.current = Boolean(saved);
     if (savedSemesterLayout) try { parsedSemesterLayout = JSON.parse(savedSemesterLayout); } catch { /* keep the default module order */ }
     if (savedNavOrder) try { parsedNavOrder = JSON.parse(savedNavOrder); } catch { /* keep the default navigation order */ }
@@ -673,7 +748,6 @@ export default function Home() {
       } as UIPreferences,
     }, currentDay);
     // Hydrate device-local state after the server-rendered shell mounts.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setToday(currentDay);
     dataRef.current = hydratedData;
     setData(hydratedData);
@@ -708,6 +782,10 @@ export default function Home() {
   useEffect(() => {
     if (ready) window.localStorage.setItem(NAV_ORDER_STORAGE_KEY, JSON.stringify(navOrder));
   }, [ready, navOrder]);
+
+  useEffect(() => {
+    if (ready) window.localStorage.setItem(NOTE_HISTORY_STORAGE_KEY, JSON.stringify(noteVersions));
+  }, [noteVersions, ready]);
 
   useEffect(() => {
     if (view === "notes" && notesMode === "backlog") window.requestAnimationFrame(() => noteDraftRef.current?.focus());
@@ -1038,6 +1116,35 @@ export default function Home() {
     }
   }
 
+  function archiveChangedIdeaNotes(before: AppData, after: AppData, reason: string) {
+    const savedAt = new Date().toISOString();
+    const additions = before.notes.flatMap((note) => {
+      if (note.category !== "想法") return [];
+      const updated = after.notes.find((item) => item.id === note.id);
+      if (!updated || updated.content === note.content) return [];
+      return [{ id: uid(), noteId: note.id, content: note.content, savedAt, reason } satisfies NoteVersion];
+    });
+    if (additions.length) setNoteVersions((history) => addNoteVersions(history, additions));
+  }
+
+  function openIdeaVersionHistory(note: Note) {
+    const latest = noteVersions.find((version) => version.noteId === note.id);
+    if (latest) setIdeaVersionViewer(latest);
+  }
+
+  function restoreIdeaVersion(version: NoteVersion) {
+    const currentNote = data.notes.find((note) => note.id === version.noteId);
+    if (!currentNote || currentNote.content === version.content) { setIdeaVersionViewer(null); return; }
+    const now = new Date().toISOString();
+    const backup: NoteVersion = { id: uid(), noteId: currentNote.id, content: currentNote.content, savedAt: now, reason: "恢复前自动备份" };
+    const restored: Note = { ...currentNote, content: version.content, category: "想法", updatedAt: now };
+    setNoteVersions((history) => addNoteVersions(history, [backup]));
+    setData((current) => ({ ...current, notes: current.notes.map((note) => note.id === restored.id ? restored : note) }));
+    setIdeaEditor(restored);
+    setIdeaVersionViewer(null);
+    showUndo(`已恢复「${noteTitle(restored)}」的历史版本`, (current) => ({ ...current, notes: current.notes.map((note) => note.id === currentNote.id ? currentNote : note) }));
+  }
+
   function openIdeaOrganizerAI(note: Note) {
     setAiOpen(true);
     setAiText(`请帮我整理灵感笔记「${noteTitle(note)}」。保留原意和具体信息，改善结构与表达；修改前先给我预览。`);
@@ -1244,7 +1351,10 @@ export default function Home() {
 
   function undoLastAction() {
     if (!undoNotice) return;
-    setData((current) => undoNotice.restore(current));
+    const restored = undoNotice.restore(data);
+    setData(restored);
+    if (ideaEditor) setIdeaEditor(restored.notes.find((note) => note.id === ideaEditor.id) || null);
+    if (referenceEditor) setReferenceEditor(restored.references.find((reference) => reference.id === referenceEditor.id) || null);
     setUndoNotice(null);
     if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
     undoTimerRef.current = null;
@@ -1694,8 +1804,9 @@ export default function Home() {
           references: normalizeReferences(operatedData.references),
         };
         const changes = deriveAIChanges(data, nextData);
+        const details = deriveAIChangeDetails(data, nextData);
         if (changes.length === 1 && changes[0] === "没有检测到实际数据变化。") throw new Error("AI 没有生成有效的数据修改，请换一种说法再试。 ");
-        setAiPreview({ summary: result.summary || "应用本次修改", changes, nextData });
+        setAiPreview({ summary: result.summary || "应用本次修改", changes, details, nextData });
       }
     } catch (error) {
       if (session !== aiSessionRef.current) return;
@@ -1707,7 +1818,13 @@ export default function Home() {
 
   function applyAIPlan() {
     if (!aiPreview) return;
-    setData({ ...aiPreview.nextData, tasks: rollOverTasks(aiPreview.nextData.tasks, today), habitDate: today, workoutWeek: getWeekKey(today) });
+    const previousData = data;
+    const appliedData = { ...aiPreview.nextData, tasks: rollOverTasks(aiPreview.nextData.tasks, today), habitDate: today, workoutWeek: getWeekKey(today) };
+    archiveChangedIdeaNotes(previousData, appliedData, `MAP AI 修改前 · ${aiPreview.summary}`);
+    setData(appliedData);
+    if (ideaEditor) setIdeaEditor(appliedData.notes.find((note) => note.id === ideaEditor.id) || null);
+    if (referenceEditor) setReferenceEditor(appliedData.references.find((reference) => reference.id === referenceEditor.id) || null);
+    showUndo(`AI 修改已应用：${aiPreview.summary}`, () => previousData);
     setAiMessages((current) => [...current, { id: uid(), role: "assistant", content: `已经应用：${aiPreview.summary}` }]);
     setAiPreview(null);
     setAiError("");
@@ -2102,7 +2219,7 @@ export default function Home() {
 
               <section className="idea-document panel">
                 {ideaEditor ? <>
-                  <header className="idea-document-toolbar"><div><button className="mobile-idea-back" onClick={() => setIdeaEditor(null)}>← 返回灵感列表</button><span>{ideaEditor.pinned ? "置顶灵感" : "自由笔记"}</span><time>自动保存 · {formatNoteTime(ideaEditor.updatedAt)}</time></div><div><button className="idea-ai-organize" onClick={() => openIdeaOrganizerAI(ideaEditor)} disabled={!online}>✦ 交给 MAP AI 整理</button><button className={`idea-voice-action ${ideaVoiceState}`} onClick={() => void toggleVoiceInput("idea")} disabled={!online || ideaVoiceState === "transcribing" || (voiceState !== "idle" && voiceTarget !== "idea")}>{ideaVoiceState === "recording" ? `■ 停止 · ${voiceElapsedLabel}` : ideaVoiceState === "transcribing" ? "… 转写中" : "◉ 语音转文字"}</button><button className={ideaCopiedId === ideaEditor.id ? "copied" : ""} onClick={() => void copyIdeaNote(ideaEditor)}>{ideaCopiedId === ideaEditor.id ? "✓ 已复制" : "复制全文"}</button><button onClick={() => updateIdeaNote(ideaEditor, { pinned: !ideaEditor.pinned })}>{ideaEditor.pinned ? "取消置顶" : "置顶"}</button><SafeDeleteButton className="idea-delete" onConfirm={() => deleteIdeaNote(ideaEditor)}>删除</SafeDeleteButton></div></header>
+                  <header className="idea-document-toolbar"><div><button className="mobile-idea-back" onClick={() => setIdeaEditor(null)}>← 返回灵感列表</button><span>{ideaEditor.pinned ? "置顶灵感" : "自由笔记"}</span><time>自动保存 · {formatNoteTime(ideaEditor.updatedAt)}</time></div><div><button className="idea-ai-organize" onClick={() => openIdeaOrganizerAI(ideaEditor)} disabled={!online}>✦ 交给 MAP AI 整理</button><button className={`idea-voice-action ${ideaVoiceState}`} onClick={() => void toggleVoiceInput("idea")} disabled={!online || ideaVoiceState === "transcribing" || (voiceState !== "idle" && voiceTarget !== "idea")}>{ideaVoiceState === "recording" ? `■ 停止 · ${voiceElapsedLabel}` : ideaVoiceState === "transcribing" ? "… 转写中" : "◉ 语音转文字"}</button><button className={ideaCopiedId === ideaEditor.id ? "copied" : ""} onClick={() => void copyIdeaNote(ideaEditor)}>{ideaCopiedId === ideaEditor.id ? "✓ 已复制" : "复制全文"}</button><button className="idea-history-action" onClick={() => openIdeaVersionHistory(ideaEditor)} disabled={!noteVersions.some((version) => version.noteId === ideaEditor.id)}>版本历史 · {noteVersions.filter((version) => version.noteId === ideaEditor.id).length}</button><button onClick={() => updateIdeaNote(ideaEditor, { pinned: !ideaEditor.pinned })}>{ideaEditor.pinned ? "取消置顶" : "置顶"}</button><SafeDeleteButton className="idea-delete" onConfirm={() => deleteIdeaNote(ideaEditor)}>删除</SafeDeleteButton></div></header>
                   {ideaVoiceError && <p className="idea-voice-error" role="status">{ideaVoiceError}</p>}
                   <div className="idea-document-editor">
                     <textarea ref={ideaDocumentRef} value={ideaEditor.content} onChange={(event) => updateIdeaNote(ideaEditor, { content: event.target.value })} placeholder={ideaVoiceState === "recording" ? "正在听…说完后再点一次停止。" : ideaVoiceState === "transcribing" ? "正在做高质量语音转写…" : "第一行写标题，然后直接展开你的想法……\n\n你可以写一段推理、项目构想、观察或任何还不需要变成任务的内容。"} aria-label="灵感笔记内容" />
@@ -2221,7 +2338,8 @@ export default function Home() {
             <div className="ai-preview-head"><span>等待你确认</span><strong>尚未写入</strong></div>
             <h3>{aiPreview.summary}</h3>
             <div className="ai-change-list">{aiPreview.changes.map((change, index) => <div key={`${change}-${index}`}><span>{String(index + 1).padStart(2, "0")}</span><p>{change}</p></div>)}</div>
-            <p className="ai-confirm-note">确认后才会更新这台电脑里的 MAP 数据。你也可以继续聊天，让我调整方案。</p>
+            <div className="ai-detail-list">{aiPreview.details.map((detail) => <details key={detail.id} open={aiPreview.details.length <= 3}><summary><span>{detail.action}</span><strong>{detail.title}</strong><i>展开 / 收起全文</i></summary><div className="ai-detail-comparison"><section><span className="ai-detail-label">修改前</span><pre>{detail.before}</pre></section><section><span className="ai-detail-label">修改后</span><pre>{detail.after}</pre></section></div></details>)}</div>
+            <p className="ai-confirm-note">请先核对上面的修改前 / 修改后全文。确认后才会更新 MAP；被替换的灵感正文会自动保存到版本历史，并可立即撤销。</p>
             <div className="ai-preview-actions"><button className="ghost-button" onClick={() => { setAiText("请调整这个方案："); window.requestAnimationFrame(() => aiInputRef.current?.focus()); }}>继续调整</button><button className="primary-button" onClick={applyAIPlan}>确认并应用</button></div>
           </section>}
         </div>
@@ -2243,6 +2361,7 @@ export default function Home() {
       {workoutEditor && <WorkoutModal value={workoutEditor} onClose={() => setWorkoutEditor(null)} onSave={(workout) => { setData((current) => ({ ...current, workouts: workoutEditor === "new" ? [...current.workouts, workout] : current.workouts.map((item) => item.id === workout.id ? workout : item) })); setWorkoutEditor(null); }} onDelete={workoutEditor === "new" ? undefined : () => { removeRecord("workouts", workoutEditor.id, `已删除运动「${workoutEditor.title}」`); setWorkoutEditor(null); }} />}
       {applicationEditor && <ApplicationModal value={applicationEditor} onClose={() => setApplicationEditor(null)} onSave={(application) => { setData((current) => ({ ...current, applications: applicationEditor === "new" ? [...current.applications, application] : current.applications.map((item) => item.id === application.id ? application : item) })); setApplicationEditor(null); }} onDelete={applicationEditor === "new" ? undefined : () => { removeRecord("applications", applicationEditor.id, `已删除求职记录「${applicationEditor.company}」`); setApplicationEditor(null); }} />}
       {noteEditor && <NoteModal value={noteEditor} onClose={() => setNoteEditor(null)} onSave={(note) => { setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? note : item) })); setNoteEditor(null); }} onDelete={() => { removeRecord("notes", noteEditor.id, `已删除草稿「${noteTitle(noteEditor)}」`); setNoteEditor(null); }} />}
+      {ideaVersionViewer && <IdeaVersionModal value={ideaVersionViewer} versions={noteVersions.filter((version) => version.noteId === ideaVersionViewer.noteId)} onSelect={setIdeaVersionViewer} onRestore={restoreIdeaVersion} onClose={() => setIdeaVersionViewer(null)} />}
       {installHelp && <ModalFrame title="安装 MAP 到 Mac" subtitle="OFFLINE APP" onClose={() => setInstallHelp(false)}><div className="install-guide"><p>这台浏览器没有提供一键安装按钮。你仍然可以把 MAP 安装成独立的 Mac App：</p><ol><li>使用 Safari 打开 MAP 网站。</li><li>选择菜单栏的“文件”→“添加到程序坞”。</li><li>首次联网打开一次；之后断网也能查看和编辑计划。</li></ol><p className="install-guide-note">任务、草稿、目标、课表、求职和健康会在联网后跨设备同步；私人速记只有逐条开启授权后才同步，其他资料仍只留当前设备。MAP AI 和语音转写需要联网。</p><div className="modal-actions"><button className="primary-button" onClick={() => setInstallHelp(false)}>知道了</button></div></div></ModalFrame>}
     </main>
   );
@@ -2298,6 +2417,17 @@ function TaskRow({ task, goal, onToggle, onTogglePriority, onEdit, onDelete, com
 function ModalFrame({ title, subtitle, onClose, onDelete, children }: { title: string; subtitle: string; onClose: () => void; onDelete?: () => void; children: React.ReactNode }) {
   useEffect(() => { const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); }; const previousOverflow = document.body.style.overflow; document.body.style.overflow = "hidden"; window.addEventListener("keydown", onKeyDown); return () => { document.body.style.overflow = previousOverflow; window.removeEventListener("keydown", onKeyDown); }; }, [onClose]);
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="modal" role="dialog" aria-modal="true" aria-label={title}><div className="modal-head"><div><p className="section-kicker">{subtitle}</p><h2>{title}</h2></div><button className="modal-close" onClick={onClose} aria-label={`关闭${title}`}>×</button></div>{children}<div className="modal-danger">{onDelete && <SafeDeleteButton onConfirm={onDelete}>删除这条记录</SafeDeleteButton>}</div></section></div>;
+}
+
+function IdeaVersionModal({ value, versions, onSelect, onRestore, onClose }: { value: NoteVersion; versions: NoteVersion[]; onSelect: (version: NoteVersion) => void; onRestore: (version: NoteVersion) => void; onClose: () => void }) {
+  const ordered = versions.slice().sort((left, right) => right.savedAt.localeCompare(left.savedAt));
+  return <ModalFrame title="灵感版本历史" subtitle="LOCAL RECOVERY" onClose={onClose}>
+    <div className="idea-version-workbench">
+      <aside><p>仅保存在当前设备 · 最多保留每篇最近 {NOTE_HISTORY_LIMIT_PER_NOTE} 个版本</p><div>{ordered.map((version, index) => <button className={version.id === value.id ? "active" : ""} onClick={() => onSelect(version)} key={version.id}><strong>{index === 0 ? "最近备份" : `历史版本 ${ordered.length - index}`}</strong><time>{formatNoteTime(version.savedAt)}</time><span>{version.reason}</span></button>)}</div></aside>
+      <section><header><div><span>已保存的完整正文</span><time>{formatNoteTime(value.savedAt)}</time></div><button onClick={() => void navigator.clipboard.writeText(value.content)}>复制这个版本</button></header><pre>{value.content || "（空白版本）"}</pre></section>
+    </div>
+    <div className="modal-actions"><button className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" onClick={() => onRestore(value)}>恢复这个版本</button></div>
+  </ModalFrame>;
 }
 
 function Field({ label, children, wide = false }: { label: string; children: React.ReactNode; wide?: boolean }) { return <label className={wide ? "wide" : ""}><span>{label}</span>{children}</label>; }
