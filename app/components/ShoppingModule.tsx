@@ -19,8 +19,9 @@ type Props = {
 };
 
 type ImportDraft = { id: string; selected: boolean; title: string; quantity: string; category: PurchaseCategory };
+type ActivePurchaseStatus = Exclude<PurchaseStatus, "bought">;
 
-const SECTIONS: Array<{ status: PurchaseStatus; title: string; eyebrow: string; description: string }> = [
+const SECTIONS: Array<{ status: ActivePurchaseStatus; title: string; eyebrow: string; description: string }> = [
   { status: "next", title: "下次出门就买", eyebrow: "NEXT TRIP", description: "已经决定，需要在下一次去超市或商店时买。" },
   { status: "planned", title: "计划购买", eyebrow: "PLANNED", description: "确定需要，但不急着在下一次出门完成。" },
   { status: "considering", title: "考虑中", eyebrow: "MAYBE", description: "可买可不买，先记录，比较后再决定。" },
@@ -53,6 +54,8 @@ export default function ShoppingModule({ today, items, mealThemes, mealPlans, me
   const [quickStatus, setQuickStatus] = useState<PurchaseStatus>("next");
   const [editor, setEditor] = useState<PurchaseItem | "new" | null>(null);
   const [importDraft, setImportDraft] = useState<ImportDraft[] | null>(null);
+  const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
+  const [dragOverStatus, setDragOverStatus] = useState<ActivePurchaseStatus | null>(null);
   const weekStart = mondayOf(today);
   const weekEnd = dateAt(weekStart, 6);
   const bought = items.filter((item) => item.status === "bought").sort((a, b) => (b.completedAt || "").localeCompare(a.completedAt || ""));
@@ -87,6 +90,18 @@ export default function ShoppingModule({ today, items, mealThemes, mealPlans, me
     onChange(items.map((current) => current.id === item.id ? { ...current, status: done ? "bought" : "planned", completedAt: done ? new Date().toISOString() : null } : current));
   }
 
+  function movePurchaseItem(itemId: string, status: ActivePurchaseStatus) {
+    const item = items.find((current) => current.id === itemId);
+    if (!item || item.status === status) {
+      setDraggedItemId(null);
+      setDragOverStatus(null);
+      return;
+    }
+    onChange(items.map((current) => current.id === itemId ? { ...current, status, completedAt: null } : current));
+    setDraggedItemId(null);
+    setDragOverStatus(null);
+  }
+
   function confirmImport() {
     if (!importDraft) return;
     const now = new Date().toISOString();
@@ -117,10 +132,33 @@ export default function ShoppingModule({ today, items, mealThemes, mealPlans, me
       <button className="shopping-import-action" onClick={() => setImportDraft(groceryPreview)}><span>食</span><div><strong>从本周饮食计划导入</strong><small>{groceryPreview.length ? `${groceryPreview.length} 项新食材 · 先预览再加入` : "没有新的食材需要导入"}</small></div><i>→</i></button>
     </section>
 
+    <div className="shopping-board-guide"><span>⋮⋮</span><strong>拖动购物项调整分区</strong><small>手机上可用每项下方的“移动到”</small></div>
     <section className="shopping-board">
       {SECTIONS.map((section) => {
         const sectionItems = items.filter((item) => item.status === section.status);
-        return <article className={`shopping-column ${section.status}`} key={section.status}><header><div><p className="section-kicker">{section.eyebrow}</p><h3>{section.title}</h3><span>{section.description}</span></div><strong>{sectionItems.length}</strong></header><div className="shopping-list">{sectionItems.map((item) => <div className="shopping-row" key={item.id}><button className="shopping-check" onClick={() => toggleBought(item)} aria-label={`标记已买：${item.title}`}>✓</button><button className="shopping-row-main" onClick={() => setEditor(item)}><strong>{item.title}</strong>{item.quantity && <span>{item.quantity}</span>}<small>{item.category}{item.details ? ` · ${item.details}` : ""}</small></button><SafeDeleteButton className="shopping-row-delete" confirmLabel="确认" onConfirm={() => onDelete(item)} aria-label={`删除：${item.title}`}>×</SafeDeleteButton></div>)}<button className="shopping-empty-add" onClick={() => { setQuickStatus(section.status); setEditor("new"); }}>＋ 添加到这里</button></div></article>;
+        return <article
+          className={`shopping-column ${section.status} ${dragOverStatus === section.status ? "drag-over" : ""}`}
+          key={section.status}
+          onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverStatus(section.status); }}
+          onDrop={(event) => { event.preventDefault(); movePurchaseItem(event.dataTransfer.getData("text/plain") || draggedItemId || "", section.status); }}
+        >
+          <header><div><p className="section-kicker">{section.eyebrow}</p><h3>{section.title}</h3><span>{section.description}</span></div><strong>{sectionItems.length}</strong></header>
+          <div className="shopping-list">
+            {sectionItems.map((item) => <div
+              className={`shopping-row ${draggedItemId === item.id ? "dragging" : ""}`}
+              key={item.id}
+              draggable
+              onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", item.id); setDraggedItemId(item.id); }}
+              onDragEnd={() => { setDraggedItemId(null); setDragOverStatus(null); }}
+            >
+              <button className="shopping-check" onClick={() => toggleBought(item)} aria-label={`标记已买：${item.title}`}>✓</button>
+              <button className="shopping-row-main" onClick={() => setEditor(item)}><i className="shopping-drag-handle" aria-hidden="true">⋮⋮</i><strong>{item.title}</strong>{item.quantity && <span>{item.quantity}</span>}<small>{item.category}{item.details ? ` · ${item.details}` : ""}</small></button>
+              <select className="shopping-move-select" value={item.status} onChange={(event) => movePurchaseItem(item.id, event.target.value as ActivePurchaseStatus)} aria-label={`移动 ${item.title} 到其他分区`}><option value="next">移动到：下次就买</option><option value="planned">移动到：计划购买</option><option value="considering">移动到：考虑中</option></select>
+              <SafeDeleteButton className="shopping-row-delete" confirmLabel="确认" onConfirm={() => onDelete(item)} aria-label={`删除：${item.title}`}>×</SafeDeleteButton>
+            </div>)}
+            <button className="shopping-empty-add" onClick={() => { setQuickStatus(section.status); setEditor("new"); }}>＋ 添加到这里</button>
+          </div>
+        </article>;
       })}
     </section>
 

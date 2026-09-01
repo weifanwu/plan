@@ -928,12 +928,30 @@ button.task-main { min-width: 0; padding: 7px 0; border: 0; border-radius: 4px; 
 .ai-voice-launcher.recording span,
 .voice-button.recording { font-size: 7px; letter-spacing: -.04em; }
 .idea-document-toolbar button.copied { border-color: var(--ink); background: var(--lime); color: var(--ink); }
+.shopping-board-guide { min-height: 39px; margin-bottom: -15px; padding: 0 12px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 8px; }
+.shopping-board-guide > span { color: var(--ink); font-family: var(--font-geist-mono); font-weight: 900; letter-spacing: -.12em; }
+.shopping-board-guide > strong { color: var(--ink); font-size: 9px; }
+.shopping-board-guide > small { margin-left: auto; font-size: 7px; }
+.shopping-column { transition: background .16s ease, box-shadow .16s ease; }
+.shopping-column.drag-over { background: rgba(200,245,90,.16); box-shadow: inset 0 0 0 4px var(--lime); }
+.shopping-row { position: relative; cursor: grab; transition: opacity .15s ease, transform .15s ease, background .15s ease; }
+.shopping-row:active { cursor: grabbing; }
+.shopping-row.dragging { opacity: .35; transform: scale(.985); }
+.shopping-row-main { position: relative; padding-right: 27px; }
+.shopping-drag-handle { position: absolute; top: 0; right: 3px; color: #99968d; font-family: var(--font-geist-mono); font-size: 10px; font-style: normal; letter-spacing: -.13em; }
+.shopping-move-select { display: none; }
 
 /* Final component overrides keep later feature styles inside the mobile touch contract. */
 @media (max-width: 760px) {
-  .shopping-row { min-height: 96px; grid-template-columns: 44px minmax(0,1fr) 48px; gap: 9px; }
-  .shopping-check { width: 38px; height: 38px; }
-  .shopping-row-delete { width: 44px; height: 44px; min-width: 44px; }
+  .shopping-board-guide { margin-bottom: -10px; padding: 0 4px; }
+  .shopping-board-guide > span,.shopping-board-guide > strong { display: none; }
+  .shopping-board-guide > small { margin-left: 0; font-size: 8px; }
+  .shopping-row { min-height: 142px; grid-template-columns: 44px minmax(0,1fr) 48px; grid-template-rows: minmax(62px,auto) 44px; gap: 9px; cursor: default; }
+  .shopping-check { width: 38px; height: 38px; grid-column: 1; grid-row: 1; }
+  .shopping-row-main { min-height: 58px; grid-column: 2; grid-row: 1; padding-right: 0; }
+  .shopping-drag-handle { display: none; }
+  .shopping-move-select { width: 100%; min-height: 44px; padding: 8px 35px 8px 11px; display: block; grid-column: 2 / 4; grid-row: 2; border: 1px solid var(--ink); border-radius: 7px; background: var(--paper); color: var(--ink); font-size: 16px; }
+  .shopping-row-delete { width: 44px; height: 44px; min-width: 44px; grid-column: 3; grid-row: 1; }
   .meal-theme-side > div button,
   .meal-slot-actions button,
   .meal-week-actions button,

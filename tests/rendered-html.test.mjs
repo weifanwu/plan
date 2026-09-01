@@ -486,6 +486,7 @@ test("meal planner connects flexible weekly choices to recipes, groceries, prep,
 test("shopping memory separates urgency and previews meal-derived groceries", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const component = await readFile(new URL("../app/components/ShoppingModule.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   const procurement = await readFile(new URL("../lib/meal-procurement.ts", import.meta.url), "utf8");
   for (const label of ["下次出门就买", "计划购买", "考虑中", "从本周饮食计划导入", "确认要加入的食材"]) assert.match(component, new RegExp(label));
   assert.match(page, /view === "shopping"/);
@@ -495,6 +496,14 @@ test("shopping memory separates urgency and previews meal-derived groceries", as
   assert.match(component, /先预览再加入/);
   assert.doesNotMatch(component, /sectionItems\.length === 0 && <button className="shopping-empty-add"/);
   assert.match(component, /<button className="shopping-empty-add"/);
+  assert.match(component, /function movePurchaseItem/);
+  assert.match(component, /draggable/);
+  assert.match(component, /onDragStart/);
+  assert.match(component, /onDrop/);
+  assert.match(component, /shopping-move-select/);
+  assert.match(styles, /\.shopping-column\.drag-over/);
+  assert.match(styles, /\.shopping-row\.dragging/);
+  assert.match(styles, /\.shopping-move-select \{ width: 100%; min-height: 44px/);
 });
 
 test("system UX audit keeps every module reachable and risky actions recoverable", async () => {
