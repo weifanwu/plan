@@ -692,7 +692,7 @@ export default function Home() {
   const syncReadyRef = useRef(false);
   const hadLocalDataRef = useRef(false);
   const syncInFlightRef = useRef(false);
-  const skipNextSyncRef = useRef(false);
+  const skipNextSyncPayloadRef = useRef<SyncedAppData | null>(null);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ideaCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -760,7 +760,13 @@ export default function Home() {
     dataRef.current = data;
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     if (!syncReadyRef.current) return;
-    if (skipNextSyncRef.current) { skipNextSyncRef.current = false; return; }
+    if (skipNextSyncPayloadRef.current) {
+      const expectedPayload = skipNextSyncPayloadRef.current;
+      skipNextSyncPayloadRef.current = null;
+      // Skip only the exact cloud-applied render. If a local action was
+      // batched into the same render, it must still be marked dirty and synced.
+      if (syncPayloadEquals(toSyncPayload(data), expectedPayload)) return;
+    }
     window.localStorage.setItem(SYNC_DIRTY_KEY, "1");
     if (!window.navigator.onLine) {
       queueMicrotask(() => {
@@ -1238,7 +1244,10 @@ export default function Home() {
   }
 
   function toggleTask(id: string) {
-    setData((current) => ({ ...current, tasks: rollOverTasks(current.tasks.map((task) => task.id === id ? { ...task, status: task.status === "done" ? "todo" as const : "done" as const, completedAt: task.status === "done" ? null : today } : task), today) }));
+    const current = dataRef.current;
+    const next = { ...current, tasks: rollOverTasks(current.tasks.map((task) => task.id === id ? { ...task, status: task.status === "done" ? "todo" as const : "done" as const, completedAt: task.status === "done" ? null : today } : task), today) };
+    dataRef.current = next;
+    setData(next);
   }
 
   function beginTaskDrag(event: React.DragEvent<HTMLElement>, task: Task) {
@@ -1263,11 +1272,16 @@ export default function Home() {
   function dropTaskOnDate(event: React.DragEvent<HTMLElement>, date: string) {
     event.preventDefault();
     const id = event.dataTransfer.getData("application/x-map-task") || draggedTaskId;
-    const task = data.tasks.find((item) => item.id === id);
+    // Resolve the task at drop time. A sync may have updated it while the user
+    // was dragging; applying the drag-start snapshot would resurrect old state.
+    const current = dataRef.current;
+    const task = current.tasks.find((item) => item.id === id);
     endTaskDrag();
     if (!task || task.date === date) return;
     const shifted = shiftTaskToDate(task, date) as Task;
-    setData((current) => ({ ...current, tasks: current.tasks.map((item) => item.id === task.id ? shifted : item) }));
+    const next = { ...current, tasks: current.tasks.map((item) => item.id === task.id ? shifted : item) };
+    dataRef.current = next;
+    setData(next);
     showUndo(`已将「${task.title}」改到 ${formatDate(date)}`, (current) => ({ ...current, tasks: current.tasks.map((item) => item.id === task.id ? task : item) }));
   }
 
@@ -1581,7 +1595,7 @@ export default function Home() {
       const mergedReferences = mergeDeviceAndCloudReferences(dataRef.current.references, nextPayload.references);
       const nextData = hydrateAppData({ ...nextPayload, references: mergedReferences }, getTorontoToday(), mergedReferences);
       if (!syncPayloadEquals(toSyncPayload(dataRef.current), nextPayload)) {
-        skipNextSyncRef.current = !hasFollowUpChanges;
+        skipNextSyncPayloadRef.current = hasFollowUpChanges ? null : toSyncPayload(nextData) as SyncedAppData;
         dataRef.current = nextData;
         setData(nextData);
       }

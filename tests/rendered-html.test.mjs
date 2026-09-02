@@ -227,6 +227,39 @@ test("sync includes only explicitly authorized references and merges independent
   assert.deepEqual(payload.references, [authorized]);
 });
 
+test("task sync merges independent fields without reverting moves or resurrecting completion", () => {
+  const base = { phase: {}, uiPreferences: {}, habitDate: "2026-09-01", workoutWeek: "2026-08-31", tasks: [{ id: "t1", title: "申请职位", date: "2026-09-01", endDate: null, status: "todo", completedAt: null, priority: "normal" }], routines: [], schedule: [], goals: [], habits: [], workouts: [], trainingPlans: [], exercises: [], exerciseLogs: [], activityLogs: [], mealThemes: [], mealPlans: [], mealRecipes: [], nutritionGuides: [], purchaseItems: [], applications: [], notes: [], references: [] };
+  const movedLocally = structuredClone(base);
+  movedLocally.tasks[0].date = "2026-09-04";
+  const completedRemotely = structuredClone(base);
+  completedRemotely.tasks[0].status = "done";
+  completedRemotely.tasks[0].completedAt = "2026-09-01";
+
+  const merged = mergeSyncPayload(base, movedLocally, completedRemotely);
+  assert.equal(merged.conflicts, 0);
+  assert.equal(merged.data.tasks[0].date, "2026-09-04");
+  assert.equal(merged.data.tasks[0].status, "done");
+  assert.equal(merged.data.tasks[0].completedAt, "2026-09-01");
+
+  const movedRemotely = structuredClone(base);
+  movedRemotely.tasks[0].date = "2026-09-04";
+  const completedLocally = structuredClone(base);
+  completedLocally.tasks[0].status = "done";
+  completedLocally.tasks[0].completedAt = "2026-09-01";
+  const inverse = mergeSyncPayload(base, completedLocally, movedRemotely);
+  assert.equal(inverse.data.tasks[0].date, "2026-09-04");
+  assert.equal(inverse.data.tasks[0].status, "done");
+});
+
+test("calendar task mutations use the latest task and do not swallow a batched local sync", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /const current = dataRef\.current;\n\s+const task = current\.tasks\.find/);
+  assert.match(source, /dataRef\.current = next;\n\s+setData\(next\)/);
+  assert.match(source, /skipNextSyncPayloadRef/);
+  assert.match(source, /syncPayloadEquals\(toSyncPayload\(data\), expectedPayload\)/);
+  assert.doesNotMatch(source, /skipNextSyncRef/);
+});
+
 test("Sites D1 sync API uses authenticated ownership and revision checks", async () => {
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
   const hosting = JSON.parse(await readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"));
