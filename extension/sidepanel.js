@@ -89,6 +89,12 @@ function setAutofillStatus(message, tone = "") {
   autofillElements["autofill-status"].className = `status ${tone}`.trim();
 }
 
+function autofillErrorMessage(error) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  if (/cannot access contents|must request permission|cannot access a chrome/i.test(message)) return "MAP 还没有当前网站的访问权限。更新扩展后请在 chrome://extensions 重新加载，再回到申请页重试。";
+  return message || "自动填写失败。";
+}
+
 async function refreshAutofillState(tab = null) {
   const currentTab = tab || await getActiveTab();
   const origin = pageOrigin(currentTab?.url);
@@ -136,7 +142,7 @@ async function fillCurrentPage() {
     const tab = await getActiveTab();
     await injectAndFill(tab);
   } catch (error) {
-    setAutofillStatus(error instanceof Error ? error.message : "自动填写失败。", "error");
+    setAutofillStatus(autofillErrorMessage(error), "error");
   } finally {
     button.disabled = false;
   }

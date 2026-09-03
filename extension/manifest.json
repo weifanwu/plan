@@ -1,12 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "MAP Job Capture",
+  "name": "MAP Career Assist",
   "description": "保存 LinkedIn 岗位，并用本地资料自动填写申请表。",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "minimum_chrome_version": "114",
   "permissions": ["activeTab", "scripting", "sidePanel", "storage"],
   "host_permissions": [
     "https://*.linkedin.com/jobs/*",
+    "https://*.myworkdayjobs.com/*",
+    "https://*.myworkdaysite.com/*",
+    "https://*.workday.com/*",
     "https://map-life-weifan.deep-robin-3429.chatgpt.site/*",
     "http://localhost:3000/*"
   ],

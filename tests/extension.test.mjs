@@ -15,6 +15,8 @@ test("MAP extension limits LinkedIn access to jobs pages and uses a narrow MAP b
   assert.deepEqual(manifest.host_permissions.filter((permission) => permission.includes("linkedin.com")), [
     "https://*.linkedin.com/jobs/*",
   ]);
+  assert.ok(manifest.host_permissions.includes("https://*.myworkdayjobs.com/*"));
+  assert.ok(manifest.host_permissions.includes("https://*.myworkdaysite.com/*"));
   assert.deepEqual(manifest.content_scripts[0].matches, [
     "https://map-life-weifan.deep-robin-3429.chatgpt.site/*",
     "http://localhost:3000/*",
@@ -83,6 +85,9 @@ test("autofill profile stays local and dangerous fields remain manual", async ()
   assert.match(autofill, /social\\s\*security/);
   assert.match(autofill, /String\(field\.value/);
   assert.match(autofill, /MutationObserver/);
+  assert.match(autofill, /phoneCountryCode/);
+  assert.match(autofill, /hasSeparateCallingCode/);
+  assert.match(autofill, /phone\\s\*\(extension/);
   assert.match(options, /不会自动处理/);
   assert.match(options, /SIN\/SSN/);
 });

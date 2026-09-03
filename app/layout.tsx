@@ -6,14 +6,14 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "MAP — Life Operating System",
+  title: "MAP Life OS — My Action Plan",
   description: "管理长期目标、日程、任务、求职、笔记与健康的个人生活操作系统。",
   manifest: "/manifest.webmanifest",
-  applicationName: "MAP",
+  applicationName: "MAP Life OS",
   appleWebApp: { capable: true, title: "MAP", statusBarStyle: "black-translucent" },
   icons: { icon: [{ url: "/favicon.svg", type: "image/svg+xml" }, { url: "/icon-192.png", sizes: "192x192", type: "image/png" }], shortcut: "/favicon.svg", apple: "/icon-192.png" },
-  openGraph: { title: "MAP — Life Operating System", description: "把长期目标、日程、任务、求职、笔记与健康放进同一个个人系统。" },
-  twitter: { card: "summary", title: "MAP — Life Operating System", description: "管理目标，也管理每天怎样生活。" },
+  openGraph: { title: "MAP Life OS — My Action Plan", description: "把长期目标、日程、任务、求职、笔记与健康放进同一个个人系统。" },
+  twitter: { card: "summary", title: "MAP Life OS — My Action Plan", description: "管理目标，也管理每天怎样生活。" },
 };
 
 export const viewport: Viewport = { themeColor: "#171914", colorScheme: "light", viewportFit: "cover" };

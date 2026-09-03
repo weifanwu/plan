@@ -52,7 +52,7 @@ test("server-renders MAP", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   const html = await response.text();
   assert.match(html, /<title>MAP/);
-  assert.match(html, /Life Operating System/);
+  assert.match(html, /MAP Life OS — My Action Plan/);
   assert.match(html, /草稿箱/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
 });

@@ -18,6 +18,7 @@
     email: "email",
     tel: "phone",
     "tel-national": "phone",
+    "tel-country-code": "phoneCountryCode",
     "street-address": "address",
     "address-line1": "address",
     "address-level2": "city",
@@ -32,6 +33,7 @@
     ["lastName", /last\s*name|family\s*name|surname|legal\s*last|姓\b/i],
     ["fullName", /full\s*name|legal\s*name|candidate\s*name|your\s*name|姓名/i],
     ["email", /e-?mail|email\s*address|电子邮件|邮箱/i],
+    ["phoneCountryCode", /country\s*(phone|calling|dial(ling)?)\s*code|phone\s*country\s*code|calling\s*code|dial(ling)?\s*code|国家.*区号|电话区号/i],
     ["phone", /phone|mobile|telephone|cell|联系电话|手机号|电话/i],
     ["address", /street\s*address|address\s*line\s*1|home\s*address|mailing\s*address|街道|地址/i],
     ["city", /\bcity\b|town|municipality|城市/i],
@@ -141,6 +143,7 @@
   }
 
   function profileKeyFor(field, descriptor) {
+    if (/phone\s*(extension|ext\b)|extension\s*(number|phone)|电话分机|分机号码|phone\s*(device\s*)?type/i.test(descriptor)) return "";
     const autocomplete = normalize(field.getAttribute("autocomplete")).split(" ").find((token) => autocompleteMap[token]);
     if (autocomplete) return autocompleteMap[autocomplete];
     if (blockedField.test(descriptor)) return "";
@@ -169,6 +172,34 @@
     if (!match || match.disabled) return false;
     setNativeValue(field, match.value);
     return true;
+  }
+
+  function callingCode(profile) {
+    const explicit = String(profile.phoneCountryCode || "").trim();
+    if (explicit) return explicit.startsWith("+") ? explicit : `+${explicit}`;
+    const country = normalize(profile.country);
+    if (/^(canada|united states|usa|us|加拿大|美国)$/.test(country)) return "+1";
+    if (/^(china|中国)$/.test(country)) return "+86";
+    if (/^(united kingdom|uk|great britain|英国)$/.test(country)) return "+44";
+    return "";
+  }
+
+  function hasSeparateCallingCode(fields, phoneField) {
+    return fields.some((field) => field !== phoneField && profileKeyFor(field, labelText(field)) === "phoneCountryCode");
+  }
+
+  function profileValueFor(field, key, profile, fields) {
+    if (key === "phoneCountryCode") {
+      const code = callingCode(profile);
+      const country = String(profile.country || "").trim();
+      if (!code) return "";
+      return field instanceof HTMLSelectElement ? [country && `${country} (${code})`, country && `${country} ${code}`, code].filter(Boolean) : code;
+    }
+    const raw = String(profile[key] || "").trim();
+    if (key !== "phone" || !raw || !hasSeparateCallingCode(fields, field)) return raw;
+    const digits = raw.replace(/\D/g, "");
+    const codeDigits = callingCode(profile).replace(/\D/g, "");
+    return codeDigits && digits.startsWith(codeDigits) ? digits.slice(codeDigits.length) : digits;
   }
 
   function experienceValue(experience, key, field) {
@@ -338,7 +369,7 @@
       const descriptor = labelText(field);
       if (!descriptor || blockedField.test(descriptor)) continue;
       const key = profileKeyFor(field, descriptor);
-      const desired = key ? String(profile[key] || "").trim() : "";
+      const desired = key ? profileValueFor(field, key, profile, fields) : "";
       if (!desired) continue;
       const success = field instanceof HTMLSelectElement ? fillSelect(field, desired) : (setNativeValue(field, desired), true);
       if (success) {
