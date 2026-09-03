@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "MAP Job Capture",
-  "description": "把当前 LinkedIn 岗位带入 MAP，检查后再保存。",
-  "version": "1.0.0",
+  "description": "保存 LinkedIn 岗位，并用本地资料自动填写申请表。",
+  "version": "1.2.0",
   "minimum_chrome_version": "114",
   "permissions": ["activeTab", "scripting", "sidePanel", "storage"],
   "host_permissions": [
@@ -10,6 +10,11 @@
     "https://map-life-weifan.deep-robin-3429.chatgpt.site/*",
     "http://localhost:3000/*"
   ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "options_page": "options.html",
   "background": {
     "service_worker": "service-worker.js",
     "type": "module"

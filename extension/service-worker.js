@@ -3,6 +3,7 @@
 const MAP_ORIGIN = "https://map-life-weifan.deep-robin-3429.chatgpt.site";
 const MAP_MATCHES = [`${MAP_ORIGIN}/*`, "http://localhost:3000/*"];
 const PENDING_CAPTURE_KEY = "pendingMapJobCapture";
+const AUTOFILL_ORIGINS_KEY = "mapAutofillOrigins";
 
 async function configureExtension() {
   await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
@@ -41,4 +42,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     .then((result) => sendResponse({ ok: true, ...result }))
     .catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : "无法打开 MAP。" }));
   return true;
+});
+
+function pageOrigin(value) {
+  try {
+    const url = new URL(value || "");
+    return url.protocol === "https:" || url.protocol === "http:" ? url.origin : "";
+  } catch {
+    return "";
+  }
+}
+
+async function injectAutofillForEnabledSite(tabId, url) {
+  const origin = pageOrigin(url);
+  if (!origin) return;
+  const stored = await chrome.storage.local.get(AUTOFILL_ORIGINS_KEY);
+  const enabledOrigins = Array.isArray(stored[AUTOFILL_ORIGINS_KEY]) ? stored[AUTOFILL_ORIGINS_KEY] : [];
+  if (!enabledOrigins.includes(origin)) return;
+  await chrome.scripting.executeScript({ target: { tabId }, files: ["autofill.js"] });
+}
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== "complete") return;
+  void injectAutofillForEnabledSite(tabId, tab.url).catch(() => undefined);
 });

@@ -10,6 +10,8 @@ test("MAP extension limits LinkedIn access to jobs pages and uses a narrow MAP b
   assert.ok(manifest.permissions.includes("activeTab"));
   assert.ok(manifest.permissions.includes("scripting"));
   assert.equal(manifest.permissions.includes("tabs"), false);
+  assert.deepEqual(manifest.optional_host_permissions, ["https://*/*", "http://*/*"]);
+  assert.equal(manifest.options_page, "options.html");
   assert.deepEqual(manifest.host_permissions.filter((permission) => permission.includes("linkedin.com")), [
     "https://*.linkedin.com/jobs/*",
   ]);
@@ -67,4 +69,32 @@ test("open side panel follows LinkedIn SPA job URL changes automatically", async
   assert.match(sidepanel, /scheduleAutoRead/);
   assert.match(markup, /随岗位自动更新/);
   assert.match(markup, /手动重试/);
+});
+
+test("autofill profile stays local and dangerous fields remain manual", async () => {
+  const manifest = JSON.parse(await readFile(new URL("extension/manifest.json", root), "utf8"));
+  const autofill = await readFile(new URL("extension/autofill.js", root), "utf8");
+  const options = await readFile(new URL("extension/options.html", root), "utf8");
+  const optionsScript = await readFile(new URL("extension/options.js", root), "utf8");
+  assert.ok(manifest.permissions.includes("storage"));
+  assert.match(optionsScript, /chrome\.storage\.local\.set/);
+  assert.doesNotMatch(optionsScript, /fetch\s*\(/);
+  assert.match(autofill, /blockedField/);
+  assert.match(autofill, /social\\s\*security/);
+  assert.match(autofill, /String\(field\.value/);
+  assert.match(autofill, /MutationObserver/);
+  assert.match(options, /不会自动处理/);
+  assert.match(options, /SIN\/SSN/);
+});
+
+test("autofill requests access per recruiting site and never submits forms", async () => {
+  const sidepanel = await readFile(new URL("extension/sidepanel.js", root), "utf8");
+  const worker = await readFile(new URL("extension/service-worker.js", root), "utf8");
+  const autofill = await readFile(new URL("extension/autofill.js", root), "utf8");
+  assert.match(sidepanel, /chrome\.permissions\.request/);
+  assert.match(sidepanel, /MAP_AUTOFILL_RUN/);
+  assert.match(worker, /mapAutofillOrigins/);
+  assert.match(worker, /changeInfo\.status !== "complete"/);
+  assert.doesNotMatch(autofill, /\.submit\s*\(/);
+  assert.doesNotMatch(autofill, /fetch\s*\(/);
 });

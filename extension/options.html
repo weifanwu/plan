@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MAP 自动填表资料</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div><span class="mark">M</span><div><p>MAP AUTOFILL</p><h1>我的申请资料</h1></div></div>
+        <p>只保存在这台电脑的 Chrome 扩展中。留空的项目不会填写。</p>
+      </header>
+
+      <form id="profile-form">
+        <section>
+          <div class="section-title"><span>01</span><div><h2>基本联系信息</h2><p>最常出现、最适合自动填写的字段。</p></div></div>
+          <div class="fields">
+            <label><span>First name</span><input name="firstName" autocomplete="given-name" /></label>
+            <label><span>Last name</span><input name="lastName" autocomplete="family-name" /></label>
+            <label><span>Full legal name</span><input name="fullName" autocomplete="name" /></label>
+            <label><span>Preferred name</span><input name="preferredName" /></label>
+            <label><span>Email</span><input name="email" type="email" autocomplete="email" /></label>
+            <label><span>Phone</span><input name="phone" type="tel" autocomplete="tel" /></label>
+          </div>
+        </section>
+
+        <section>
+          <div class="section-title"><span>02</span><div><h2>地址与链接</h2><p>不会保存密码、SIN、SSN 或银行卡信息。</p></div></div>
+          <div class="fields">
+            <label class="wide"><span>Street address</span><input name="address" autocomplete="street-address" /></label>
+            <label><span>City</span><input name="city" autocomplete="address-level2" /></label>
+            <label><span>Province / State</span><input name="province" autocomplete="address-level1" /></label>
+            <label><span>Postal / ZIP code</span><input name="postalCode" autocomplete="postal-code" /></label>
+            <label><span>Country</span><input name="country" autocomplete="country-name" /></label>
+            <label class="wide"><span>LinkedIn URL</span><input name="linkedin" type="url" placeholder="https://www.linkedin.com/in/..." /></label>
+            <label class="wide"><span>GitHub URL</span><input name="github" type="url" placeholder="https://github.com/..." /></label>
+            <label class="wide"><span>Portfolio / personal website</span><input name="portfolio" type="url" placeholder="https://" /></label>
+          </div>
+        </section>
+
+        <section>
+          <div class="section-title"><span>03</span><div><h2>教育与工作资格</h2><p>资格问题只会使用你在这里明确选择的答案。</p></div></div>
+          <div class="fields">
+            <label class="wide"><span>School / University</span><input name="school" /></label>
+            <label><span>Degree</span><input name="degree" placeholder="例如 Master’s" /></label>
+            <label><span>Program / Major</span><input name="program" /></label>
+            <label><span>Graduation date / year</span><input name="graduation" /></label>
+            <label><span>Authorized to work?</span><select name="workAuthorization"><option value="">不自动填写</option><option value="Yes">Yes</option><option value="No">No</option></select></label>
+            <label><span>Need sponsorship?</span><select name="sponsorship"><option value="">不自动填写</option><option value="Yes">Yes</option><option value="No">No</option></select></label>
+          </div>
+        </section>
+
+        <aside><strong>不会自动处理</strong><span>密码、SIN/SSN、出生日期、性别与族裔、残障与退伍军人信息、薪资期望、签名、银行卡和简历文件上传。</span></aside>
+        <div class="save-bar"><span id="save-status" role="status">尚未保存</span><button type="submit">保存到这台电脑</button></div>
+      </form>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>
