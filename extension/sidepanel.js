@@ -118,7 +118,7 @@ elements["job-form"].addEventListener("submit", async (event) => {
   try {
     const response = await chrome.runtime.sendMessage({ type: "QUEUE_MAP_JOB_CAPTURE", capture });
     if (!response?.ok) throw new Error(response?.error || "无法打开 MAP。");
-    setStatus(action === "save" ? "已交给 MAP 直接保存；如果岗位已存在，不会重复添加。" : "MAP 已打开。请在预览中确认后再保存。", "success");
+    setStatus(action === "save" ? "已在后台交给 MAP 保存；你可以继续浏览 LinkedIn。重复岗位不会再添加。" : "MAP 已打开。请在预览中确认后再保存。", "success");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "无法把岗位送到 MAP。", "error");
   } finally {

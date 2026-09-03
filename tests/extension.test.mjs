@@ -43,6 +43,8 @@ test("job capture offers validated one-click save without bypassing MAP", async 
   assert.match(sidepanel, /action === "save"/);
   assert.match(bridge, /action: capture\.action/);
   assert.match(worker, /QUEUE_MAP_JOB_CAPTURE/);
+  assert.match(worker, /active: capture\.action !== "save"/);
+  assert.match(worker, /if \(capture\.action !== "save"\) await chrome\.tabs\.update/);
   assert.doesNotMatch(worker, /fetch\s*\(/);
   assert.match(page, /没有重复保存/);
   assert.match(page, /已直接保存/);

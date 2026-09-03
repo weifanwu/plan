@@ -27,12 +27,12 @@ async function openMapWithCapture(capture) {
   const mapTabs = await chrome.tabs.query({ url: MAP_MATCHES });
   const existing = mapTabs.find((tab) => typeof tab.id === "number");
   if (existing?.id) {
-    await chrome.tabs.update(existing.id, { active: true });
+    if (capture.action !== "save") await chrome.tabs.update(existing.id, { active: true });
     await deliverToExistingMapTab(existing.id, capture).catch(() => undefined);
-    return { opened: false };
+    return { opened: false, background: capture.action === "save" };
   }
-  await chrome.tabs.create({ url: `${MAP_ORIGIN}/` });
-  return { opened: true };
+  await chrome.tabs.create({ url: `${MAP_ORIGIN}/`, active: capture.action !== "save" });
+  return { opened: true, background: capture.action === "save" };
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
