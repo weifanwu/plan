@@ -20,6 +20,7 @@
       source: "map-job-capture-extension",
       type: "MAP_JOB_CAPTURE",
       captureId: capture.captureId,
+      action: capture.action,
       payload: capture.application,
     }, window.location.origin);
   }

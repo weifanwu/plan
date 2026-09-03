@@ -10,7 +10,7 @@
     <main>
       <header class="brand">
         <div><span>MAP</span><strong>JOB CAPTURE</strong></div>
-        <i>只读取当前页</i>
+        <i>随岗位自动更新</i>
       </header>
       <section id="status" class="status" role="status">正在读取当前 LinkedIn 岗位…</section>
       <form id="job-form" hidden>
@@ -24,9 +24,9 @@
         <label><span>职位链接</span><input id="link" type="url" required /></label>
         <label><span>岗位描述</span><textarea id="description" rows="13"></textarea></label>
         <p class="stage-note">MAP 的看板从「已投」开始。如果你还没真正提交申请，请先保留预览，投递后再确认保存。</p>
-        <div class="actions"><button id="refresh" type="button">重新读取</button><button class="primary" type="submit">在 MAP 中预览</button></div>
+        <div class="actions"><button id="refresh" class="retry" type="button" title="读取异常时手动重试" aria-label="手动重新读取">↻</button><button type="submit" value="preview">先预览</button><button class="primary" type="submit" value="save">直接保存</button></div>
       </form>
-      <section class="privacy"><strong>本地直达</strong><p>扩展不会调用 AI，也不会直接写数据库。岗位只会送到你的 MAP 页面，必须由你再次确认。</p></section>
+      <section class="privacy"><strong>本地直达</strong><p>扩展不会调用 AI，也不会自己连接数据库。“直接保存”仍由已登录的 MAP 页面校验和去重。</p></section>
     </main>
     <script type="module" src="sidepanel.js"></script>
   </body>

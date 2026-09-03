@@ -112,7 +112,7 @@ type UndoNotice = { message: string; restore: (current: AppData) => AppData };
 type PWAInstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
 type LockableScreenOrientation = ScreenOrientation & { lock?: (orientation: "portrait-primary") => Promise<void> };
 type TaskPrefill = { title: string; details: string; category: TaskCategory };
-type ExtensionJobCapture = { captureId: string; application: Application };
+type ExtensionJobCapture = { captureId: string; action: "preview" | "save"; application: Application };
 type UIPreferences = { navigationOrder: View[]; semesterWeekOrder: SemesterWeekModule[] };
 type SearchKind = "view" | "task" | "routine" | "goal" | "application" | "schedule" | "note" | "reference" | "purchase" | "meal" | "exercise";
 type GlobalSearchResult = { id: string; kind: SearchKind; view: View; title: string; meta: string; recordId?: string };
@@ -637,6 +637,7 @@ function parseExtensionJobCapture(value: unknown): ExtensionJobCapture | null {
   const capturedAt = clean(record.capturedAt, 80) || new Date().toISOString();
   return {
     captureId: clean(envelope.captureId, 160) || uid(),
+    action: envelope.action === "save" ? "save" : "preview",
     application: appendApplicationStage({
       id: uid(),
       company,
@@ -1013,14 +1014,22 @@ export default function Home() {
       setApplicationDateFilter("all");
       if (duplicate) {
         setApplicationPrefill(null);
-        setApplicationEditor(duplicate);
-        setApplicationImportNotice(`「${duplicate.company} · ${duplicate.role}」已经在看板中，已为你打开原记录。`);
+        setApplicationEditor(capture.action === "preview" ? duplicate : null);
+        setApplicationImportNotice(`「${duplicate.company} · ${duplicate.role}」已经在看板中，没有重复保存。`);
+      } else if (capture.action === "save") {
+        const latest = dataRef.current;
+        const next = { ...latest, applications: [...latest.applications, capture.application] };
+        dataRef.current = next;
+        setData(next);
+        setApplicationPrefill(null);
+        setApplicationEditor(null);
+        setApplicationImportNotice(`已直接保存「${capture.application.company} · ${capture.application.role}」。`);
       } else {
         setApplicationPrefill(capture.application);
         setApplicationEditor("new");
         setApplicationImportNotice("LinkedIn 岗位已带入。检查内容后再保存，不会自动写入看板。");
       }
-      window.postMessage({ source: "map-app", type: "MAP_JOB_CAPTURE_ACK", captureId: capture.captureId, status: duplicate ? "duplicate" : "preview" }, window.location.origin);
+      window.postMessage({ source: "map-app", type: "MAP_JOB_CAPTURE_ACK", captureId: capture.captureId, status: duplicate ? "duplicate" : capture.action }, window.location.origin);
     };
     window.addEventListener("message", handleExtensionCapture);
     window.postMessage({ source: "map-app", type: "MAP_APP_READY" }, window.location.origin);
