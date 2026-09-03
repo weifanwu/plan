@@ -99,12 +99,14 @@ async function refreshAutofillState(tab = null) {
   const stored = await chrome.storage.local.get([PROFILE_KEY, AUTOFILL_ORIGINS_KEY]);
   const profile = stored[PROFILE_KEY] && typeof stored[PROFILE_KEY] === "object" ? stored[PROFILE_KEY] : {};
   const origins = Array.isArray(stored[AUTOFILL_ORIGINS_KEY]) ? stored[AUTOFILL_ORIGINS_KEY] : [];
-  const configured = Object.values(profile).filter((value) => typeof value === "string" && value.trim()).length;
-  autofillElements["profile-summary"].textContent = configured ? `已设置 ${configured} 项本地资料` : "尚未设置资料 · 点击开始填写";
+  const configuredFields = Object.values(profile).filter((value) => typeof value === "string" && value.trim()).length;
+  const experienceCount = Array.isArray(profile.workExperiences) ? profile.workExperiences.length : 0;
+  const configured = configuredFields + experienceCount;
+  autofillElements["profile-summary"].textContent = configured ? `已设置 ${configuredFields} 项资料 · ${experienceCount} 段工作经历` : "尚未设置资料 · 点击开始填写";
   autofillElements["auto-site"].checked = Boolean(origin && origins.includes(origin));
   if (!origin) setAutofillStatus("Chrome 内部页面不能自动填写，请打开招聘申请表。", "error");
   else if (!configured) setAutofillStatus("先填写一次个人资料，再回到申请页面使用。", "");
-  else setAutofillStatus(`已准备好 ${configured} 项资料。只填写空白字段。`, "success");
+  else setAutofillStatus(`已准备好 ${configuredFields} 项资料和 ${experienceCount} 段经历。只填写空白字段。`, "success");
 }
 
 async function ensureSitePermission(tab) {
@@ -122,7 +124,7 @@ async function injectAndFill(tab, announceResult = true) {
   await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["autofill.js"] });
   const result = await chrome.tabs.sendMessage(tab.id, { type: "MAP_AUTOFILL_RUN" });
   if (!result?.ok) throw new Error(result?.error || "自动填写失败。");
-  if (announceResult) setAutofillStatus(result.filled ? `已填写 ${result.filled} 个字段。请检查后继续。` : "没有找到可安全填写的空白字段。", result.filled ? "success" : "");
+  if (announceResult) setAutofillStatus(result.filled ? `已填写 ${result.filled} 个字段。请检查后继续。` : result.addedExperience ? "正在展开下一段工作经历并继续填写…" : "没有找到可安全填写的空白字段。", result.filled ? "success" : "");
   return result;
 }
 

@@ -8,7 +8,7 @@
   </head>
   <body>
     <main>
-      <header>
+      <header class="page-header">
         <div><span class="mark">M</span><div><p>MAP AUTOFILL</p><h1>我的申请资料</h1></div></div>
         <p>只保存在这台电脑的 Chrome 扩展中。留空的项目不会填写。</p>
       </header>
@@ -52,10 +52,30 @@
           </div>
         </section>
 
+        <section>
+          <div class="section-title"><span>04</span><div><h2>工作经历</h2><p>按这里的顺序填写申请表；第一段会作为最近的经历。</p></div></div>
+          <div id="experience-list" class="experience-list"></div>
+          <button id="add-experience" class="add-experience" type="button">＋ 添加一段工作经历</button>
+        </section>
+
         <aside><strong>不会自动处理</strong><span>密码、SIN/SSN、出生日期、性别与族裔、残障与退伍军人信息、薪资期望、签名、银行卡和简历文件上传。</span></aside>
         <div class="save-bar"><span id="save-status" role="status">尚未保存</span><button type="submit">保存到这台电脑</button></div>
       </form>
     </main>
+    <template id="experience-template">
+      <article class="experience-card">
+        <header><div><span class="experience-index"></span><strong>工作经历</strong></div><button class="remove-experience" type="button">删除</button></header>
+        <div class="fields">
+          <label><span>Company</span><input data-field="company" /></label>
+          <label><span>Job title</span><input data-field="title" /></label>
+          <label class="wide"><span>Location</span><input data-field="location" /></label>
+          <label><span>Start month</span><input data-field="startMonth" type="month" /></label>
+          <label><span>End month</span><input data-field="endMonth" type="month" /></label>
+          <label class="current-role"><input data-field="current" type="checkbox" /><span>目前仍在这里工作</span></label>
+          <label class="wide"><span>Responsibilities / achievements</span><textarea data-field="description" rows="6" placeholder="建议使用简历中的要点；扩展会填写到职责描述字段。"></textarea></label>
+        </div>
+      </article>
+    </template>
     <script src="options.js"></script>
   </body>
 </html>

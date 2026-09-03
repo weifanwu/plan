@@ -98,3 +98,20 @@ test("autofill requests access per recruiting site and never submits forms", asy
   assert.doesNotMatch(autofill, /\.submit\s*\(/);
   assert.doesNotMatch(autofill, /fetch\s*\(/);
 });
+
+test("autofill stores and fills ordered work experience without auto-submitting", async () => {
+  const autofill = await readFile(new URL("extension/autofill.js", root), "utf8");
+  const options = await readFile(new URL("extension/options.html", root), "utf8");
+  const optionsScript = await readFile(new URL("extension/options.js", root), "utf8");
+  assert.match(options, /id="experience-template"/);
+  assert.match(options, /data-field="company"/);
+  assert.match(options, /data-field="title"/);
+  assert.match(options, /data-field="startMonth"/);
+  assert.match(options, /data-field="endMonth"/);
+  assert.match(options, /data-field="description"/);
+  assert.match(optionsScript, /workExperiences/);
+  assert.match(autofill, /experienceFieldRules/);
+  assert.match(autofill, /findAddExperienceButton/);
+  assert.match(autofill, /workExperiences\.\$\{index\}/);
+  assert.doesNotMatch(autofill, /\.submit\s*\(/);
+});
