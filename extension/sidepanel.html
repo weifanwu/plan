@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MAP Job Capture</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <main>
+      <header class="brand">
+        <div><span>MAP</span><strong>JOB CAPTURE</strong></div>
+        <i>只读取当前页</i>
+      </header>
+      <section id="status" class="status" role="status">正在读取当前 LinkedIn 岗位…</section>
+      <form id="job-form" hidden>
+        <label><span>岗位</span><input id="role" required autocomplete="off" /></label>
+        <label><span>公司</span><input id="company" required autocomplete="organization" /></label>
+        <label><span>地点</span><input id="location" autocomplete="off" /></label>
+        <div class="two-column">
+          <label><span>阶段</span><select id="stage"><option>已投</option><option>面试</option><option>Offer</option><option>拒绝</option></select></label>
+          <label><span>投递日期</span><input id="date" type="date" required /></label>
+        </div>
+        <label><span>职位链接</span><input id="link" type="url" required /></label>
+        <label><span>岗位描述</span><textarea id="description" rows="13"></textarea></label>
+        <p class="stage-note">MAP 的看板从「已投」开始。如果你还没真正提交申请，请先保留预览，投递后再确认保存。</p>
+        <div class="actions"><button id="refresh" type="button">重新读取</button><button class="primary" type="submit">在 MAP 中预览</button></div>
+      </form>
+      <section class="privacy"><strong>本地直达</strong><p>扩展不会调用 AI，也不会直接写数据库。岗位只会送到你的 MAP 页面，必须由你再次确认。</p></section>
+    </main>
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>

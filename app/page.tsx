@@ -8,6 +8,7 @@ import { shiftTaskToDate } from "../lib/task-reschedule.mjs";
 import { isCompletedTaskArchived } from "../lib/task-retention.mjs";
 import { isTaskVisibleToday } from "../lib/task-visibility.mjs";
 import { mergeSyncPayload, syncPayloadEquals, toSyncPayload } from "../lib/sync-state.mjs";
+import { appendApplicationStage, buildCareerAnalytics, canonicalJobUrl, linkedinJobId, sameApplication } from "../lib/career-analytics.mjs";
 import FitnessModule from "./components/FitnessModule";
 import MealPlannerModule from "./components/MealPlannerModule";
 import ShoppingModule from "./components/ShoppingModule";
@@ -75,7 +76,23 @@ type ActivePhase = {
 type Habit = { id: string; label: string; done: boolean; icon: string };
 type Workout = { id: string; title: string; day: string; duration: string; done: boolean };
 type ApplicationStage = "已投" | "面试" | "Offer" | "拒绝";
-type Application = { id: string; company: string; role: string; stage: ApplicationStage; link: string; contact: string; date: string; notes: string };
+type ApplicationStageEvent = { stage: ApplicationStage; at: string };
+type Application = {
+  id: string;
+  company: string;
+  role: string;
+  stage: ApplicationStage;
+  link: string;
+  contact: string;
+  date: string;
+  notes: string;
+  description?: string;
+  location?: string;
+  source?: "manual" | "linkedin" | "ai";
+  externalJobId?: string;
+  capturedAt?: string;
+  stageHistory?: ApplicationStageEvent[];
+};
 type Note = { id: string; content: string; category: NoteCategory; pinned: boolean; createdAt: string; updatedAt: string };
 type Routine = { id: string; title: string; details: string; category: TaskCategory; goalId?: string | null; startDate: string; time?: string | null; frequency: RoutineFrequency; intervalDays: number; active: boolean; completedDates: string[] };
 type ReferenceNote = { id: string; title: string; content: string; pinned: boolean; aiExcluded: boolean; createdAt: string; updatedAt: string };
@@ -95,6 +112,7 @@ type UndoNotice = { message: string; restore: (current: AppData) => AppData };
 type PWAInstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
 type LockableScreenOrientation = ScreenOrientation & { lock?: (orientation: "portrait-primary") => Promise<void> };
 type TaskPrefill = { title: string; details: string; category: TaskCategory };
+type ExtensionJobCapture = { captureId: string; application: Application };
 type UIPreferences = { navigationOrder: View[]; semesterWeekOrder: SemesterWeekModule[] };
 type SearchKind = "view" | "task" | "routine" | "goal" | "application" | "schedule" | "note" | "reference" | "purchase" | "meal" | "exercise";
 type GlobalSearchResult = { id: string; kind: SearchKind; view: View; title: string; meta: string; recordId?: string };
@@ -219,7 +237,27 @@ function normalizeSemesterWeekOrder(value: unknown): SemesterWeekModule[] {
 }
 
 function normalizeApplications(applications: Application[] = []) {
-  return applications.map((application) => ({ ...application, stage: APPLICATION_STAGES.includes(application.stage as ApplicationStage) ? application.stage as ApplicationStage : "已投" as ApplicationStage }));
+  return applications.flatMap((application) => {
+    if (!application || typeof application.id !== "string") return [];
+    const stage = APPLICATION_STAGES.includes(application.stage as ApplicationStage) ? application.stage as ApplicationStage : "已投" as ApplicationStage;
+    const stageHistory = Array.isArray(application.stageHistory) ? application.stageHistory.filter((event): event is ApplicationStageEvent => Boolean(event && APPLICATION_STAGES.includes(event.stage as ApplicationStage) && typeof event.at === "string")) : [];
+    return [{
+      ...application,
+      stage,
+      company: typeof application.company === "string" ? application.company : "",
+      role: typeof application.role === "string" ? application.role : "",
+      link: typeof application.link === "string" ? application.link : "",
+      contact: typeof application.contact === "string" ? application.contact : "",
+      date: typeof application.date === "string" ? application.date : "",
+      notes: typeof application.notes === "string" ? application.notes : "",
+      description: typeof application.description === "string" ? application.description : "",
+      location: typeof application.location === "string" ? application.location : "",
+      source: application.source === "linkedin" || application.source === "ai" ? application.source : "manual",
+      externalJobId: typeof application.externalJobId === "string" ? application.externalJobId : linkedinJobId(application.link || ""),
+      capturedAt: typeof application.capturedAt === "string" ? application.capturedAt : "",
+      stageHistory,
+    }];
+  });
 }
 
 function normalizeTasks(tasks: Task[] = []) {
@@ -424,8 +462,10 @@ function formatAIRecordPreview(collection: AICollection, record: Record<string, 
     `职位：${record.role || "未填写"}`,
     `状态：${record.stage || "未填写"}`,
     `日期：${record.date || "未填写"}`,
+    record.location ? `地点：${record.location}` : "",
     record.link ? `链接：${record.link}` : "",
     record.contact ? `联系人：${record.contact}` : "",
+    record.description ? `岗位描述：${record.description}` : "",
     record.notes ? `备注：${record.notes}` : "",
   ].filter(Boolean).join("\n");
   if (collection === "tasks") return [
@@ -575,6 +615,47 @@ function extractReferenceLinks(content: string) {
   return [...new Set(matches.map((link) => link.replace(/[),.;，。；）]+$/, "")))].slice(0, 12);
 }
 
+function parseExtensionJobCapture(value: unknown): ExtensionJobCapture | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const envelope = value as Record<string, unknown>;
+  if (envelope.source !== "map-job-capture-extension" || envelope.type !== "MAP_JOB_CAPTURE") return null;
+  const raw = envelope.payload;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const clean = (field: unknown, limit: number) => typeof field === "string" ? field.trim().slice(0, limit) : "";
+  const company = clean(record.company, 180);
+  const role = clean(record.role, 240);
+  const rawLink = clean(record.link, 2000);
+  if (!company || !role || !rawLink) return null;
+  let link = "";
+  try {
+    const parsed = new URL(rawLink);
+    if (parsed.protocol !== "https:" || !/(^|\.)linkedin\.com$/i.test(parsed.hostname)) return null;
+    link = canonicalJobUrl(parsed.toString());
+  } catch { return null; }
+  const stage = APPLICATION_STAGES.includes(record.stage as ApplicationStage) ? record.stage as ApplicationStage : "已投";
+  const capturedAt = clean(record.capturedAt, 80) || new Date().toISOString();
+  return {
+    captureId: clean(envelope.captureId, 160) || uid(),
+    application: appendApplicationStage({
+      id: uid(),
+      company,
+      role,
+      stage,
+      link,
+      contact: "",
+      date: /^\d{4}-\d{2}-\d{2}$/.test(clean(record.date, 10)) ? clean(record.date, 10) : getTorontoToday(),
+      notes: clean(record.notes, 20_000),
+      description: clean(record.description, 80_000),
+      location: clean(record.location, 300),
+      source: "linkedin",
+      externalJobId: clean(record.externalJobId, 80) || linkedinJobId(link),
+      capturedAt,
+      stageHistory: [],
+    }, stage, capturedAt) as Application,
+  };
+}
+
 function referenceLinkLabel(link: string) {
   try { return new URL(link).hostname.replace(/^www\./, "") || link; } catch { return link; }
 }
@@ -609,6 +690,8 @@ export default function Home() {
   const [habitEditor, setHabitEditor] = useState<Habit | "new" | null>(null);
   const [workoutEditor, setWorkoutEditor] = useState<Workout | "new" | null>(null);
   const [applicationEditor, setApplicationEditor] = useState<Application | "new" | null>(null);
+  const [applicationPrefill, setApplicationPrefill] = useState<Application | null>(null);
+  const [applicationImportNotice, setApplicationImportNotice] = useState("");
   const [noteEditor, setNoteEditor] = useState<Note | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [noteCategory, setNoteCategory] = useState<NoteCategory>("待办");
@@ -920,6 +1003,30 @@ export default function Home() {
     return () => window.removeEventListener("keydown", handleGlobalSearch);
   }, []);
 
+  useEffect(() => {
+    const handleExtensionCapture = (event: MessageEvent) => {
+      if (event.source !== window || event.origin !== window.location.origin) return;
+      const capture = parseExtensionJobCapture(event.data);
+      if (!capture) return;
+      const duplicate = dataRef.current.applications.find((application) => sameApplication(application, capture.application));
+      setView("career");
+      setApplicationDateFilter("all");
+      if (duplicate) {
+        setApplicationPrefill(null);
+        setApplicationEditor(duplicate);
+        setApplicationImportNotice(`「${duplicate.company} · ${duplicate.role}」已经在看板中，已为你打开原记录。`);
+      } else {
+        setApplicationPrefill(capture.application);
+        setApplicationEditor("new");
+        setApplicationImportNotice("LinkedIn 岗位已带入。检查内容后再保存，不会自动写入看板。");
+      }
+      window.postMessage({ source: "map-app", type: "MAP_JOB_CAPTURE_ACK", captureId: capture.captureId, status: duplicate ? "duplicate" : "preview" }, window.location.origin);
+    };
+    window.addEventListener("message", handleExtensionCapture);
+    window.postMessage({ source: "map-app", type: "MAP_APP_READY" }, window.location.origin);
+    return () => window.removeEventListener("message", handleExtensionCapture);
+  }, []);
+
   const visibleTasks = useMemo(() => data.tasks.filter((task) => !isCompletedTaskArchived(task, today)), [data.tasks, today]);
   const calendarTasks = useMemo(() => visibleTasks.filter((task) => task.status === "todo"), [visibleTasks]);
   const todayDisplayTasks = useMemo(() => visibleTasks.filter((task) => isTaskVisibleToday(task, today)), [visibleTasks, today]);
@@ -969,6 +1076,7 @@ export default function Home() {
     return [...counts.entries()].sort(([left], [right]) => right.localeCompare(left));
   }, [data.applications]);
   const visibleApplications = applicationDateFilter === "all" ? data.applications : data.applications.filter((application) => application.date === applicationDateFilter);
+  const careerAnalytics = useMemo(() => buildCareerAnalytics(data.applications), [data.applications]);
   const upcomingTask = useMemo(() => visibleTasks.filter((task) => task.status === "todo" && task.date > today).slice().sort((a, b) => a.date.localeCompare(b.date) || (a.time || "99:99").localeCompare(b.time || "99:99"))[0] || null, [visibleTasks, today]);
   const upcomingDate = upcomingTask ? dateCardParts(upcomingTask.date) : null;
   const courseCount = useMemo(() => new Set(data.schedule.filter((item) => item.kind === "课程").map((item) => item.code)).size, [data.schedule]);
@@ -1007,7 +1115,7 @@ export default function Home() {
       ...visibleTasks.filter((task) => matches(task.title, task.details, task.category)).map((task) => ({ id: `task-${task.id}`, kind: "task" as const, view: "planner" as const, title: task.title, meta: `任务 · ${formatDate(task.date)} · ${task.time || "全天"}`, recordId: task.id })),
       ...data.routines.filter((routine) => matches(routine.title, routine.details, routine.category)).map((routine) => ({ id: `routine-${routine.id}`, kind: "routine" as const, view: "planner" as const, title: routine.title, meta: `固定任务 · ${routineFrequencyLabel(routine)}`, recordId: routine.id })),
       ...data.goals.filter((goal) => matches(goal.title, goal.description, goal.metric)).map((goal) => ({ id: `goal-${goal.id}`, kind: "goal" as const, view: "goals" as const, title: goal.title, meta: `长期目标 · ${goal.progress}%`, recordId: goal.id })),
-      ...data.applications.filter((application) => matches(application.company, application.role, application.notes, application.contact)).map((application) => ({ id: `application-${application.id}`, kind: "application" as const, view: "career" as const, title: `${application.company} · ${application.role}`, meta: `求职 · ${application.stage} · ${formatDate(application.date)}`, recordId: application.id })),
+      ...data.applications.filter((application) => matches(application.company, application.role, application.notes, application.contact, application.description, application.location)).map((application) => ({ id: `application-${application.id}`, kind: "application" as const, view: "career" as const, title: `${application.company} · ${application.role}`, meta: `求职 · ${application.stage}${application.date ? ` · ${formatDate(application.date)}` : ""}`, recordId: application.id })),
       ...data.schedule.filter((item) => matches(item.code, item.title, item.room, item.detail)).map((item) => ({ id: `schedule-${item.id}`, kind: "schedule" as const, view: "semester" as const, title: `${item.code} · ${item.title}`, meta: `${item.kind} · ${item.start}—${item.end} · ${item.room}`, recordId: item.id })),
       ...data.notes.filter((note) => matches(note.content, note.category)).map((note) => ({ id: `note-${note.id}`, kind: "note" as const, view: "notes" as const, title: noteTitle(note), meta: `${note.category === "想法" ? "想法" : "草稿"} · ${formatNoteTime(note.updatedAt)}`, recordId: note.id })),
       ...data.references.filter((reference) => matches(reference.title, reference.content)).map((reference) => ({ id: `reference-${reference.id}`, kind: "reference" as const, view: "vault" as const, title: reference.title, meta: `私人速记 · 本机检索${reference.aiExcluded ? "" : " · AI 可读"}`, recordId: reference.id })),
@@ -1374,12 +1482,41 @@ export default function Home() {
     undoTimerRef.current = null;
   }
 
+  function openNewApplication() {
+    setApplicationPrefill(null);
+    setApplicationImportNotice("");
+    setApplicationEditor("new");
+  }
+
+  function closeApplicationEditor() {
+    setApplicationEditor(null);
+    setApplicationPrefill(null);
+  }
+
+  function saveApplication(application: Application) {
+    const saved = appendApplicationStage(application, application.stage) as Application;
+    setData((current) => {
+      const applications = applicationEditor === "new"
+        ? [...current.applications, saved]
+        : current.applications.map((item) => item.id === saved.id ? saved : item);
+      const next = { ...current, applications };
+      dataRef.current = next;
+      return next;
+    });
+    if (applicationPrefill) setApplicationImportNotice(`已保存「${saved.company} · ${saved.role}」。`);
+    closeApplicationEditor();
+  }
+
   function moveApplication(id: string, stage: ApplicationStage) {
-    const application = data.applications.find((item) => item.id === id);
+    const application = dataRef.current.applications.find((item) => item.id === id);
     if (!application || application.stage === stage) return;
-    const previousStage = application.stage;
-    setData((current) => ({ ...current, applications: current.applications.map((application) => application.id === id ? { ...application, stage } : application) }));
-    showUndo(`已将「${application.company}」移到${stage}`, (current) => ({ ...current, applications: current.applications.map((item) => item.id === id && item.stage === stage ? { ...item, stage: previousStage } : item) }));
+    const previousApplication = application;
+    setData((current) => {
+      const next = { ...current, applications: current.applications.map((item) => item.id === id ? appendApplicationStage(item, stage) as Application : item) };
+      dataRef.current = next;
+      return next;
+    });
+    showUndo(`已将「${application.company}」移到${stage}`, (current) => ({ ...current, applications: current.applications.map((item) => item.id === id && item.stage === stage ? previousApplication : item) }));
   }
 
   function moveGoal(sourceId: string, targetId: string) {
@@ -1808,13 +1945,17 @@ export default function Home() {
       setAiMessages((current) => [...current, { id: uid(), role: "assistant", content: result.reply }]);
       if (result.action === "proposal") {
         const operatedData = applyAIOperations(data, result.operations, () => `ai-${uid()}`) as AppData;
+        const normalizedApplications = normalizeApplications(operatedData.applications).map((application) => {
+          const previous = data.applications.find((item) => item.id === application.id);
+          return !previous || previous.stage !== application.stage ? appendApplicationStage(application, application.stage) as Application : application;
+        });
         const nextData = {
           ...operatedData,
           phase: operatedData.phase.goalId && !operatedData.goals.some((goal) => goal.id === operatedData.phase.goalId) ? { ...operatedData.phase, goalId: null } : operatedData.phase,
           tasks: normalizeTaskGoals(operatedData.tasks, operatedData.goals),
           routines: normalizeRoutines(operatedData.routines, operatedData.goals),
           schedule: normalizeSchedule(operatedData.schedule),
-          applications: normalizeApplications(operatedData.applications),
+          applications: normalizedApplications,
           references: normalizeReferences(operatedData.references),
         };
         const changes = deriveAIChanges(data, nextData);
@@ -2149,13 +2290,33 @@ export default function Home() {
           <div className="page-content career-page">
             <section className="career-summary">
               <div><p className="section-kicker">OPPORTUNITY PIPELINE</p><h2>{visibleApplications.length}</h2><p>{applicationDateFilter === "all" ? "个机会正在记录 · 现有一年实习 Offer 作为保底" : `${formatDate(applicationDateFilter)} 投递 · 全部共 ${data.applications.length} 个机会`}</p></div>
-              <div className="career-actions"><label className="application-date-filter"><span>投递日期</span><select value={applicationDateFilter} onChange={(event) => setApplicationDateFilter(event.target.value)}><option value="all">全部日期 · {data.applications.length} 份</option>{applicationDateCounts.map(([date, count]) => <option value={date} key={date}>{formatDate(date)} · {count} 份</option>)}</select></label><button className="primary-button" onClick={() => setApplicationEditor("new")}>＋ 添加公司</button></div>
+              <div className="career-actions"><label className="application-date-filter"><span>投递日期</span><select value={applicationDateFilter} onChange={(event) => setApplicationDateFilter(event.target.value)}><option value="all">全部日期 · {data.applications.length} 份</option>{applicationDateCounts.map(([date, count]) => <option value={date} key={date}>{formatDate(date)} · {count} 份</option>)}</select></label><button className="primary-button" onClick={openNewApplication}>＋ 添加公司</button></div>
             </section>
+            {applicationImportNotice && <div className="job-capture-notice" role="status"><span><b>MAP CAPTURE</b>{applicationImportNotice}</span><button onClick={() => setApplicationImportNotice("")} aria-label="关闭岗位导入提示">×</button></div>}
+            {data.applications.length > 0 && <section className="career-insights" aria-label="求职数据总结">
+              <header><div><p className="section-kicker">SEARCH SIGNALS</p><h3>求职数据总结</h3></div><p>按当前记录计算，不把「拒绝」猜成「无回复」，也不虚构未记录的面试轮次。</p></header>
+              <div className="career-metrics">
+                <article><span>全部投递</span><strong>{careerAnalytics.total}</strong><small>份记录</small></article>
+                <article><span>当前推进</span><strong>{careerAnalytics.active}</strong><small>已投＋面试</small></article>
+                <article><span>进入面试</span><strong>{careerAnalytics.reachedInterview}</strong><small>{careerAnalytics.interviewRate}% 投递转化</small></article>
+                <article><span>拿到 Offer</span><strong>{careerAnalytics.reachedOffer}</strong><small>{careerAnalytics.offerRate}% 投递转化</small></article>
+                <article><span>当前拒绝</span><strong>{careerAnalytics.rejected}</strong><small>只算明确结果</small></article>
+              </div>
+              <div className="career-analysis-grid">
+                <div className="career-funnel" aria-label="投递到面试和 Offer 的漏斗">
+                  <div><span>全部投递</span><i><b style={{ width: careerAnalytics.total ? "100%" : "0%" }} /></i><strong>{careerAnalytics.total}</strong></div>
+                  <div><span>进入面试</span><i><b style={{ width: `${careerAnalytics.total ? Math.max(5, careerAnalytics.interviewRate) : 0}%` }} /></i><strong>{careerAnalytics.reachedInterview}</strong></div>
+                  <div><span>拿到 Offer</span><i><b style={{ width: `${careerAnalytics.total ? Math.max(5, careerAnalytics.offerRate) : 0}%` }} /></i><strong>{careerAnalytics.reachedOffer}</strong></div>
+                  <p>从现在开始，拖动或编辑阶段都会保留变化历史；旧记录没有发生过的阶段不会被猜测。</p>
+                </div>
+                <div className="career-weekly-table"><div className="career-table-head"><strong>按周查看</strong><span>最近 {careerAnalytics.weekly.length} 个有投递的周</span></div><div className="career-table-scroll"><table><thead><tr><th>投递周</th><th>投递</th><th>进面试</th><th>Offer</th><th>拒绝</th><th>面试率</th></tr></thead><tbody>{careerAnalytics.weekly.map((row: { start: string; end: string; total: number; interviews: number; offers: number; rejected: number; interviewRate: number }) => <tr key={row.start}><td>{formatShortDate(row.start)}—{formatShortDate(row.end)}</td><td>{row.total}</td><td>{row.interviews}</td><td>{row.offers}</td><td>{row.rejected}</td><td>{row.interviewRate}%</td></tr>)}</tbody></table></div>{careerAnalytics.weekly.length === 0 && <p className="career-table-empty">补上投递日期后，这里会自动生成每周数据。</p>}</div>
+              </div>
+            </section>}
             <div className="pipeline-guide"><span>{applicationDateFilter === "all" ? "拖动卡片即可更新进度" : `正在查看 ${formatDate(applicationDateFilter)} 的 ${visibleApplications.length} 份投递`}</span><i>已投 → 面试 → Offer / 拒绝</i></div>
             <section className="pipeline">
               {APPLICATION_STAGES.map((stage) => {
                 const applications = visibleApplications.filter((application) => application.stage === stage);
-                return <div className={`pipeline-column ${dragOverStage === stage ? "drag-over" : ""}`} key={stage} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverStage(stage); }} onDrop={(event) => { event.preventDefault(); const id = event.dataTransfer.getData("text/plain") || draggedApplicationId; if (id) moveApplication(id, stage); setDraggedApplicationId(null); setDragOverStage(null); }}><header><strong>{stage}</strong><span>{applications.length}</span></header><div className="pipeline-stack">{applications.map((application) => <button draggable className={`application-card ${draggedApplicationId === application.id ? "dragging" : ""}`} key={application.id} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", application.id); setDraggedApplicationId(application.id); }} onDragEnd={() => { setDraggedApplicationId(null); setDragOverStage(null); }} onClick={() => setApplicationEditor(application)}><span className="company-initial">{application.company.slice(0, 1).toUpperCase()}</span><strong>{application.company}</strong><p>{application.role}</p>{application.date && <small>{formatDate(application.date)}</small>}<i className="drag-handle" aria-hidden="true">⋮⋮</i></button>)}<button className="pipeline-add" onClick={() => setApplicationEditor("new")}>＋ 添加</button></div></div>;
+                return <div className={`pipeline-column ${dragOverStage === stage ? "drag-over" : ""}`} key={stage} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverStage(stage); }} onDrop={(event) => { event.preventDefault(); const id = event.dataTransfer.getData("text/plain") || draggedApplicationId; if (id) moveApplication(id, stage); setDraggedApplicationId(null); setDragOverStage(null); }}><header><strong>{stage}</strong><span>{applications.length}</span></header><div className="pipeline-stack">{applications.map((application) => <button draggable className={`application-card ${draggedApplicationId === application.id ? "dragging" : ""}`} key={application.id} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", application.id); setDraggedApplicationId(application.id); }} onDragEnd={() => { setDraggedApplicationId(null); setDragOverStage(null); }} onClick={() => { setApplicationPrefill(null); setApplicationEditor(application); }}><span className="company-initial">{application.company.slice(0, 1).toUpperCase()}</span><strong>{application.company}</strong><p>{application.role}</p>{application.location && <em>{application.location}</em>}{application.date && <small>{formatDate(application.date)}{application.source === "linkedin" ? " · LinkedIn" : ""}</small>}<i className="drag-handle" aria-hidden="true">⋮⋮</i></button>)}<button className="pipeline-add" onClick={openNewApplication}>＋ 添加</button></div></div>;
               })}
             </section>
             {data.applications.length > 0 && visibleApplications.length === 0 && <section className="career-filter-empty"><span>这个日期没有投递记录。</span><button className="text-link" onClick={() => setApplicationDateFilter("all")}>查看全部日期 →</button></section>}
@@ -2373,7 +2534,7 @@ export default function Home() {
       {goalEditor && <GoalModal value={goalEditor} onClose={() => setGoalEditor(null)} onSave={(goal) => { setData((current) => ({ ...current, goals: goalEditor === "new" ? [...current.goals, goal] : current.goals.map((item) => item.id === goal.id ? goal : item) })); setGoalEditor(null); }} onDelete={goalEditor === "new" ? undefined : () => { deleteGoal(goalEditor.id); setGoalEditor(null); }} />}
       {habitEditor && <HabitModal value={habitEditor} onClose={() => setHabitEditor(null)} onSave={(habit) => { setData((current) => ({ ...current, habits: habitEditor === "new" ? [...current.habits, habit] : current.habits.map((item) => item.id === habit.id ? habit : item) })); setHabitEditor(null); }} onDelete={habitEditor === "new" ? undefined : () => { removeRecord("habits", habitEditor.id, `已删除健康项目「${habitEditor.label}」`); setHabitEditor(null); }} />}
       {workoutEditor && <WorkoutModal value={workoutEditor} onClose={() => setWorkoutEditor(null)} onSave={(workout) => { setData((current) => ({ ...current, workouts: workoutEditor === "new" ? [...current.workouts, workout] : current.workouts.map((item) => item.id === workout.id ? workout : item) })); setWorkoutEditor(null); }} onDelete={workoutEditor === "new" ? undefined : () => { removeRecord("workouts", workoutEditor.id, `已删除运动「${workoutEditor.title}」`); setWorkoutEditor(null); }} />}
-      {applicationEditor && <ApplicationModal value={applicationEditor} onClose={() => setApplicationEditor(null)} onSave={(application) => { setData((current) => ({ ...current, applications: applicationEditor === "new" ? [...current.applications, application] : current.applications.map((item) => item.id === application.id ? application : item) })); setApplicationEditor(null); }} onDelete={applicationEditor === "new" ? undefined : () => { removeRecord("applications", applicationEditor.id, `已删除求职记录「${applicationEditor.company}」`); setApplicationEditor(null); }} />}
+      {applicationEditor && <ApplicationModal value={applicationEditor} prefill={applicationEditor === "new" ? applicationPrefill || undefined : undefined} onClose={closeApplicationEditor} onSave={saveApplication} onDelete={applicationEditor === "new" ? undefined : () => { removeRecord("applications", applicationEditor.id, `已删除求职记录「${applicationEditor.company}」`); closeApplicationEditor(); }} />}
       {noteEditor && <NoteModal value={noteEditor} onClose={() => setNoteEditor(null)} onSave={(note) => { setData((current) => ({ ...current, notes: current.notes.map((item) => item.id === note.id ? note : item) })); setNoteEditor(null); }} onDelete={() => { removeRecord("notes", noteEditor.id, `已删除草稿「${noteTitle(noteEditor)}」`); setNoteEditor(null); }} />}
       {ideaVersionViewer && <IdeaVersionModal value={ideaVersionViewer} versions={noteVersions.filter((version) => version.noteId === ideaVersionViewer.noteId)} onSelect={setIdeaVersionViewer} onRestore={restoreIdeaVersion} onClose={() => setIdeaVersionViewer(null)} />}
       {installHelp && <ModalFrame title="安装 MAP 到 Mac" subtitle="OFFLINE APP" onClose={() => setInstallHelp(false)}><div className="install-guide"><p>这台浏览器没有提供一键安装按钮。你仍然可以把 MAP 安装成独立的 Mac App：</p><ol><li>使用 Safari 打开 MAP 网站。</li><li>选择菜单栏的“文件”→“添加到程序坞”。</li><li>首次联网打开一次；之后断网也能查看和编辑计划。</li></ol><p className="install-guide-note">任务、草稿、目标、课表、求职和健康会在联网后跨设备同步；私人速记只有逐条开启授权后才同步，其他资料仍只留当前设备。MAP AI 和语音转写需要联网。</p><div className="modal-actions"><button className="primary-button" onClick={() => setInstallHelp(false)}>知道了</button></div></div></ModalFrame>}
@@ -2522,7 +2683,20 @@ function WorkoutModal({ value, onClose, onSave, onDelete }: { value: Workout | "
   return <ModalFrame title={existing ? "编辑运动" : "添加运动"} subtitle="MOVEMENT" onClose={onClose} onDelete={onDelete}><form onSubmit={(e) => { e.preventDefault(); onSave({ id: existing?.id || uid(), title, day, duration, done: existing?.done || false }); }}><div className="form-grid"><Field label="运动内容" wide><input value={title} onChange={(e) => setTitle(e.target.value)} required /></Field><Field label="安排"><input value={day} onChange={(e) => setDay(e.target.value)} /></Field><Field label="时长"><input value={duration} onChange={(e) => setDuration(e.target.value)} /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button><button className="primary-button">保存</button></div></form></ModalFrame>;
 }
 
-function ApplicationModal({ value, onClose, onSave, onDelete }: { value: Application | "new"; onClose: () => void; onSave: (application: Application) => void; onDelete?: () => void }) {
-  const existing = value === "new" ? null : value; const [company, setCompany] = useState(existing?.company || ""); const [role, setRole] = useState(existing?.role || ""); const [stage, setStage] = useState<ApplicationStage>(existing?.stage || "已投"); const [link, setLink] = useState(existing?.link || ""); const [contact, setContact] = useState(existing?.contact || ""); const [date, setDate] = useState(existing?.date || getTorontoToday()); const [notes, setNotes] = useState(existing?.notes || "");
-  return <ModalFrame title={existing ? "编辑求职记录" : "添加求职记录"} subtitle="APPLICATION" onClose={onClose} onDelete={onDelete}><form onSubmit={(e) => { e.preventDefault(); onSave({ id: existing?.id || uid(), company, role, stage, link, contact, date, notes }); }}><div className="form-grid"><Field label="公司"><input value={company} onChange={(e) => setCompany(e.target.value)} required /></Field><Field label="岗位"><input value={role} onChange={(e) => setRole(e.target.value)} required /></Field><Field label="阶段"><select value={stage} onChange={(e) => setStage(e.target.value as ApplicationStage)}>{APPLICATION_STAGES.map((item) => <option key={item}>{item}</option>)}</select></Field><Field label="投递日期"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field><Field label="职位链接" wide><input type="url" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://" /></Field><Field label="联系人" wide><input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="姓名、邮箱或 LinkedIn" /></Field><Field label="备注 / 下一步" wide><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="为什么值得投？下一步是什么？" /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button>{link && <button type="button" className="ghost-button" onClick={() => window.open(link, "_blank", "noopener,noreferrer")}>打开职位</button>}<button className="primary-button">保存记录</button></div></form></ModalFrame>;
+function ApplicationModal({ value, prefill, onClose, onSave, onDelete }: { value: Application | "new"; prefill?: Application; onClose: () => void; onSave: (application: Application) => void; onDelete?: () => void }) {
+  const existing = value === "new" ? null : value;
+  const seed = existing || prefill;
+  const [company, setCompany] = useState(seed?.company || "");
+  const [role, setRole] = useState(seed?.role || "");
+  const [stage, setStage] = useState<ApplicationStage>(seed?.stage || "已投");
+  const [link, setLink] = useState(seed?.link || "");
+  const [location, setLocation] = useState(seed?.location || "");
+  const [contact, setContact] = useState(seed?.contact || "");
+  const [date, setDate] = useState(seed?.date || getTorontoToday());
+  const [description, setDescription] = useState(seed?.description || "");
+  const [notes, setNotes] = useState(seed?.notes || "");
+  const title = prefill ? "检查 LinkedIn 岗位" : existing ? "编辑求职记录" : "添加求职记录";
+  return <ModalFrame title={title} subtitle={prefill ? "EXTENSION PREVIEW" : "APPLICATION"} onClose={onClose} onDelete={onDelete}><form onSubmit={(e) => { e.preventDefault(); const cleanLink = canonicalJobUrl(link); onSave({ id: existing?.id || prefill?.id || uid(), company: company.trim(), role: role.trim(), stage, link: cleanLink, location: location.trim(), contact: contact.trim(), date, description: description.trim(), notes: notes.trim(), source: seed?.source || "manual", externalJobId: seed?.externalJobId || linkedinJobId(cleanLink), capturedAt: seed?.capturedAt || "", stageHistory: seed?.stageHistory || [] }); }}>
+    {prefill && <div className="application-import-banner"><strong>保存前检查</strong><span>扩展只负责带入当前页面。这里的内容尚未写入看板；确认公司、岗位和阶段后再保存。</span></div>}
+    <div className="form-grid"><Field label="公司"><input value={company} onChange={(e) => setCompany(e.target.value)} required /></Field><Field label="岗位"><input value={role} onChange={(e) => setRole(e.target.value)} required /></Field><Field label="阶段"><select value={stage} onChange={(e) => setStage(e.target.value as ApplicationStage)}>{APPLICATION_STAGES.map((item) => <option key={item}>{item}</option>)}</select></Field><Field label="投递日期"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field><Field label="地点"><input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="例如 Toronto · Hybrid" /></Field><Field label="联系人"><input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="姓名、邮箱或 LinkedIn" /></Field><Field label="职位链接" wide><input type="url" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://" /></Field><Field label="岗位描述" wide><textarea className="application-description" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="扩展会把当前 LinkedIn 岗位说明带到这里。" /></Field><Field label="我的备注 / 下一步" wide><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="为什么值得投？下一步是什么？" /></Field></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={onClose}>取消</button>{link && <button type="button" className="ghost-button" onClick={() => window.open(link, "_blank", "noopener,noreferrer")}>打开职位</button>}<button className="primary-button">{prefill ? "确认并保存" : "保存记录"}</button></div></form></ModalFrame>;
 }

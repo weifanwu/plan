@@ -1,0 +1,38 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+const root = new URL("../", import.meta.url);
+
+test("MAP extension uses click-scoped LinkedIn access and a narrow MAP bridge", async () => {
+  const manifest = JSON.parse(await readFile(new URL("extension/manifest.json", root), "utf8"));
+  assert.equal(manifest.manifest_version, 3);
+  assert.ok(manifest.permissions.includes("activeTab"));
+  assert.ok(manifest.permissions.includes("scripting"));
+  assert.equal(manifest.permissions.includes("tabs"), false);
+  assert.equal(manifest.host_permissions.some((permission) => permission.includes("linkedin.com")), false);
+  assert.deepEqual(manifest.content_scripts[0].matches, [
+    "https://map-life-weifan.deep-robin-3429.chatgpt.site/*",
+    "http://localhost:3000/*",
+  ]);
+});
+
+test("job capture is preview-first and never writes MAP data directly", async () => {
+  const worker = await readFile(new URL("extension/service-worker.js", root), "utf8");
+  const bridge = await readFile(new URL("extension/map-bridge.js", root), "utf8");
+  const sidepanel = await readFile(new URL("extension/sidepanel.js", root), "utf8");
+  const page = await readFile(new URL("app/page.tsx", root), "utf8");
+  assert.doesNotMatch(worker, /fetch\s*\(/);
+  assert.match(sidepanel, /QUEUE_MAP_JOB_CAPTURE/);
+  assert.match(bridge, /MAP_JOB_CAPTURE/);
+  assert.match(page, /检查 LinkedIn 岗位/);
+  assert.match(page, /检查内容后再保存，不会自动写入看板/);
+});
+
+test("LinkedIn extractor has structured-data and DOM fallbacks", async () => {
+  const extractor = await readFile(new URL("extension/linkedin-extractor.js", root), "utf8");
+  assert.match(extractor, /application\/ld\+json/);
+  assert.match(extractor, /JobPosting/);
+  assert.match(extractor, /#job-details/);
+  assert.doesNotMatch(extractor, /fetch\s*\(/);
+});
