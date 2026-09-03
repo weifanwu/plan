@@ -1,5 +1,6 @@
 :root { color-scheme: light; --ink: #171914; --paper: #f4f1e8; --white: #fffefb; --line: #d7d3c8; --muted: #686b62; --lime: #d5f43f; --coral: #ff704f; }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; min-width: 320px; background: var(--paper); color: var(--ink); font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 main { min-height: 100vh; padding: 17px; }
 .brand { padding-bottom: 16px; border-bottom: 1px solid var(--ink); display: flex; align-items: center; justify-content: space-between; gap: 12px; }

@@ -30,8 +30,9 @@ async function extractCurrentJob() {
   setStatus("正在读取当前 LinkedIn 岗位…");
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id || !/^https:\/\/([a-z]+\.)?linkedin\.com\/jobs\//i.test(tab.url || "")) throw new Error("请先打开一个 LinkedIn 岗位详情页，再点击 MAP 扩展。");
+    if (!tab?.id) throw new Error("没有找到当前网页，请关闭侧边栏后重试。");
     const [{ result }] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: extractLinkedInJob });
+    if (result?.unsupported) throw new Error("请先打开一个 LinkedIn 岗位详情页，再点击 MAP 扩展。");
     if (!result) throw new Error("没有读取到当前岗位，请刷新 LinkedIn 页面后重试。");
     extractedJob = result;
     fillForm(result);

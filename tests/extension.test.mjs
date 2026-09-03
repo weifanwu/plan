@@ -4,17 +4,20 @@ import test from "node:test";
 
 const root = new URL("../", import.meta.url);
 
-test("MAP extension uses click-scoped LinkedIn access and a narrow MAP bridge", async () => {
+test("MAP extension limits LinkedIn access to jobs pages and uses a narrow MAP bridge", async () => {
   const manifest = JSON.parse(await readFile(new URL("extension/manifest.json", root), "utf8"));
   assert.equal(manifest.manifest_version, 3);
   assert.ok(manifest.permissions.includes("activeTab"));
   assert.ok(manifest.permissions.includes("scripting"));
   assert.equal(manifest.permissions.includes("tabs"), false);
-  assert.equal(manifest.host_permissions.some((permission) => permission.includes("linkedin.com")), false);
+  assert.deepEqual(manifest.host_permissions.filter((permission) => permission.includes("linkedin.com")), [
+    "https://*.linkedin.com/jobs/*",
+  ]);
   assert.deepEqual(manifest.content_scripts[0].matches, [
     "https://map-life-weifan.deep-robin-3429.chatgpt.site/*",
     "http://localhost:3000/*",
   ]);
+  assert.equal(manifest.content_scripts[0].matches.some((permission) => permission.includes("linkedin.com")), false);
 });
 
 test("job capture is preview-first and never writes MAP data directly", async () => {
@@ -34,5 +37,6 @@ test("LinkedIn extractor has structured-data and DOM fallbacks", async () => {
   assert.match(extractor, /application\/ld\+json/);
   assert.match(extractor, /JobPosting/);
   assert.match(extractor, /#job-details/);
+  assert.match(extractor, /isLinkedInJobsPage/);
   assert.doesNotMatch(extractor, /fetch\s*\(/);
 });

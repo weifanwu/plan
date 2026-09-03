@@ -1,4 +1,9 @@
 export function extractLinkedInJob() {
+  const isLinkedInJobsPage = window.location.protocol === "https:"
+    && /(^|\.)linkedin\.com$/i.test(window.location.hostname)
+    && window.location.pathname.startsWith("/jobs/");
+  if (!isLinkedInJobsPage) return { unsupported: true };
+
   const compact = (value, limit = 100_000) => String(value || "").replace(/\u00a0/g, " ").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, limit);
   const firstText = (selectors, limit) => {
     for (const selector of selectors) {

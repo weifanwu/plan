@@ -1,6 +1,6 @@
 # MAP Job Capture
 
-MAP 的私人 Chrome 扩展。它只在你点击工具栏图标后读取当前 LinkedIn 岗位，把公司、岗位、地点、链接和岗位描述送到 MAP 的预览窗口；不会后台扫描，也不会直接写数据库。
+MAP 的私人 Chrome 扩展。它只在你点击工具栏图标后读取当前 LinkedIn `/jobs/` 页面，把公司、岗位、地点、链接和岗位描述送到 MAP 的预览窗口；不会后台扫描，也不会直接写数据库。
 
 ## 安装
 
@@ -9,6 +9,8 @@ MAP 的私人 Chrome 扩展。它只在你点击工具栏图标后读取当前 L
 3. 点击「加载已解压的扩展程序」。
 4. 选择本仓库中的 `extension` 文件夹。
 5. 在 Chrome 工具栏的拼图菜单里，把 `MAP Job Capture` 固定到工具栏。
+
+更新代码后，请回到 `chrome://extensions`，在 `MAP Job Capture` 卡片上点击一次重新加载按钮。
 
 ## 使用
 
