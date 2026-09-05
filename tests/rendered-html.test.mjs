@@ -635,6 +635,8 @@ test("MAP AI sends conversation, selected model, app context, and approval schem
     assert.match(outbound.instructions, /今日指挥台/);
     assert.match(outbound.instructions, /草稿箱/);
     assert.match(outbound.instructions, /prefer adding a note with category 待办/);
+    assert.match(outbound.instructions, /TASK CREATION DEFAULTS/);
+    assert.match(outbound.instructions, /default a missing time to null \(全天\)/);
     assert.match(outbound.instructions, /one ranged task instead of duplicate daily tasks/);
     assert.match(outbound.instructions, /HIGH-FREQUENCY JOB CAPTURE/);
     assert.match(outbound.instructions, /CURRENT MAP CONTEXT/);
@@ -643,7 +645,39 @@ test("MAP AI sends conversation, selected model, app context, and approval schem
     assert.equal(outbound.reasoning.effort, "medium");
     assert.equal(outbound.text.verbosity, "low");
     assert.equal(outbound.max_output_tokens, 5000);
-    assert.equal(outbound.prompt_cache_key, "map-ai-v4-gpt-5.6-sol-full");
+    assert.equal(outbound.prompt_cache_key, "map-ai-v5-gpt-5.6-sol-full");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("MAP AI creates an unspecified task for today as all-day without asking scheduling questions", { concurrency: false }, async () => {
+  const worker = await loadWorker();
+  const currentData = { phase: {}, tasks: [], routines: [], schedule: [], goals: [], habits: [], workouts: [], applications: [], notes: [], references: [], habitDate: "2026-09-05", workoutWeek: "2026-08-31" };
+  const proposed = {
+    reply: "任务预览已准备好。", action: "proposal", summary: "创建买过滤器任务",
+    operations: [{ collection: "tasks", operation: "add", recordId: "ai-filter", recordJson: JSON.stringify({ id: "ai-filter", title: "买饮用水过滤器" }) }],
+  };
+  const originalFetch = globalThis.fetch;
+  let outbound;
+  globalThis.fetch = async (_url, init) => {
+    outbound = JSON.parse(init.body);
+    return Response.json({ output_text: JSON.stringify(proposed) });
+  };
+  try {
+    const response = await worker.fetch(new Request("http://localhost/api/ai-chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ currentData, today: "2026-09-05", messages: [{ role: "user", content: "帮我创建一个任务：买饮用水过滤器" }] }) }), { OPENAI_API_KEY: "test-key" }, { waitUntil() {}, passThroughOnException() {} });
+    const result = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-map-ai-context"), "tasks");
+    assert.match(outbound.instructions, /LATEST REQUEST OVERRIDE/);
+    assert.match(outbound.instructions, /Use date=2026-09-05 and time=null/);
+    assert.equal(result.action, "proposal");
+    assert.equal(result.operations.length, 1);
+    const task = JSON.parse(result.operations[0].recordJson);
+    assert.deepEqual(task, {
+      id: "ai-filter", title: "买饮用水过滤器", details: null, category: "生活", date: "2026-09-05", time: null,
+      endDate: null, carriedFrom: null, completedAt: null, goalId: null, priority: "normal", status: "todo",
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -754,7 +788,7 @@ test("job capture API strips unrelated model operations before preview", { concu
     assert.equal(result.operations[0].collection, "applications");
     assert.equal(outbound.model, "gpt-5.6-luna");
     assert.equal(outbound.max_output_tokens, 1600);
-    assert.equal(outbound.prompt_cache_key, "map-ai-v4-gpt-5.6-luna-applications");
+    assert.equal(outbound.prompt_cache_key, "map-ai-v5-gpt-5.6-luna-applications");
     assert.deepEqual(outbound.text.format.schema.properties.operations.items.properties.collection.enum, ["applications"]);
     assert.match(outbound.instructions, /Existing company/);
     assert.doesNotMatch(outbound.instructions, /unrelated-task-sentinel|unrelated-note-sentinel/);

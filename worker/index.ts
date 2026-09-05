@@ -33,6 +33,7 @@ type SyncRow = {
 
 const DATA_COLLECTIONS: DataCollection[] = ["tasks", "routines", "schedule", "goals", "habits", "workouts", "trainingPlans", "exercises", "exerciseLogs", "activityLogs", "mealThemes", "mealPlans", "mealRecipes", "nutritionGuides", "purchaseItems", "applications", "notes", "references"];
 const MUTATION_PATTERN = /(加入|添加|新增|创建|修改|更新|改成|移动|拖到|完成|删除|移除|取消|重排|调整|安排|记一下|记到|记录一下|记录这|记录该|记录到|保存|提醒我|放到|放进|标记|延期|推迟)|\b(add|create|update|edit|move|complete|delete|remove|reorder|schedule|save|mark|remind)\b/i;
+const TASK_CREATE_PATTERN = /(?:(?:创建|添加|新增|安排|记下|记一下|提醒我)[^。！？\n]{0,24}(?:任务|待办)|(?:任务|待办)[^。！？\n]{0,16}(?:创建|添加|新增|安排|记下|记一下)|\b(?:add|create|schedule)\b[^.?!\n]{0,24}\b(?:task|todo)\b|\bremind\s+me\b)/i;
 const REFERENCE_CONTEXT_PATTERN = /(私人速记|私人资料|常用网址|学校信息|参考资料|个人资料|备忘录|personal reference|quick reference)/i;
 const REFERENCE_LOOKUP_PATTERN = /(?:(?:我的|本人|查找|找到|告诉我|能不能拿到|what(?:'s| is) my)[^。！？\n]{0,24}(?:手机(?:号|号码)?|电话号码|phone\s*(?:number)?|地址|address|邮箱|email|学号|student\s*(?:number|id)|房间号|room\s*number|SIN|SSN|API\s*key|密码|password|账号|账户|confirmation\s*number|token|常用命令|网址)|(?:手机(?:号|号码)?|电话号码|phone\s*(?:number)?|地址|address|邮箱|email|学号|student\s*(?:number|id)|房间号|room\s*number|SIN|SSN|API\s*key|密码|password|账号|账户|confirmation\s*number|token|常用命令|网址)[^。！？\n]{0,12}(?:多少|是什么|在哪|有没有|找出来|告诉我|给我|\?|？))/i;
 const REFERENCE_CONTINUE_PATTERN = /(不需要管敏感|不用管敏感|继续整理|继续保存|照做|不要拒绝|不用脱敏|可以保存|保留原文)/i;
@@ -217,6 +218,38 @@ function focusedData(data: Record<string, unknown>, collection: DataCollection) 
   ]);
 }
 
+function normalizeTaskAddOperations(operations: unknown[], today: string) {
+  return operations.map((operation) => {
+    if (!operation || typeof operation !== "object") return operation;
+    const item = operation as { collection?: unknown; operation?: unknown; recordId?: unknown; recordJson?: unknown };
+    if (item.collection !== "tasks" || item.operation !== "add" || typeof item.recordJson !== "string") return operation;
+    try {
+      const record = JSON.parse(item.recordJson) as Record<string, unknown>;
+      if (!record || typeof record !== "object" || Array.isArray(record) || typeof record.title !== "string" || !record.title.trim()) return operation;
+      const categories = new Set(["学业", "求职", "生活", "健康"]);
+      return {
+        ...item,
+        recordJson: JSON.stringify({
+          id: typeof record.id === "string" && record.id.trim() ? record.id : item.recordId,
+          title: record.title.trim(),
+          details: typeof record.details === "string" && record.details.trim() ? record.details.trim() : null,
+          category: categories.has(String(record.category)) ? record.category : "生活",
+          date: typeof record.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(record.date) ? record.date : today,
+          time: typeof record.time === "string" && /^\d{2}:\d{2}$/.test(record.time) ? record.time : null,
+          endDate: typeof record.endDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(record.endDate) ? record.endDate : null,
+          carriedFrom: typeof record.carriedFrom === "string" ? record.carriedFrom : null,
+          completedAt: typeof record.completedAt === "string" ? record.completedAt : null,
+          goalId: typeof record.goalId === "string" ? record.goalId : null,
+          priority: record.priority === "high" ? "high" : "normal",
+          status: record.status === "done" ? "done" : "todo",
+        }),
+      };
+    } catch {
+      return operation;
+    }
+  });
+}
+
 async function handleTranscription(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return Response.json({ error: "Method not allowed" }, { status: 405 });
   if (!env.OPENAI_API_KEY) return Response.json({ error: "语音转写功能尚未配置。" }, { status: 503 });
@@ -268,6 +301,7 @@ async function handleAIChat(request: Request, env: Env): Promise<Response> {
     const priorUserContext = messages.slice(0, latestUserIndex).filter((message) => message.role === "user").slice(-2).map((message) => message.content).join("\n");
     const detectedFocus = detectFocusedMutation(latestUserMessage, priorUserContext);
     const focus = detectedFocus || (REFERENCE_CONTEXT_PATTERN.test(priorUserContext) && REFERENCE_CONTINUE_PATTERN.test(latestUserMessage) ? "references" : null);
+    const explicitTaskCreation = focus === "tasks" && TASK_CREATE_PATTERN.test(latestUserMessage);
     const referenceContext = REFERENCE_CONTEXT_PATTERN.test(latestUserMessage) || REFERENCE_CONTEXT_PATTERN.test(priorUserContext) || REFERENCE_LOOKUP_PATTERN.test(latestUserMessage);
     const rawCurrentData = body.currentData && typeof body.currentData === "object" ? body.currentData as Record<string, unknown> : {};
     const modelData = focus ? focusedData(rawCurrentData, focus) : referenceContext ? focusedData(rawCurrentData, "references") : Object.fromEntries(Object.entries(rawCurrentData).filter(([key]) => key !== "references" && key !== "uiPreferences"));
@@ -289,7 +323,7 @@ async function handleAIChat(request: Request, env: Env): Promise<Response> {
         store: false,
         reasoning: { effort: reasoningEffort },
         max_output_tokens: maxOutputTokens,
-        ...(model.startsWith("gpt-5.6") ? { prompt_cache_key: `map-ai-v4-${model}-${focus || (referenceContext ? "references" : "full")}` } : {}),
+        ...(model.startsWith("gpt-5.6") ? { prompt_cache_key: `map-ai-v5-${model}-${focus || (referenceContext ? "references" : "full")}` } : {}),
         instructions: `You are MAP AI, the conversational copilot inside a private, offline-first life management app. Reply in the user's language, normally Chinese. Today is ${today} in America/Toronto.
 
 WHAT MAP IS
@@ -331,7 +365,7 @@ FITNESS DATA SHAPES AND RULES
 CONVERSATION BEHAVIOR
 - In full context mode, use all relevant MAP records, especially notes, when answering or analyzing. In focused mutation mode, the supplied JSON intentionally contains only the records relevant to the requested change.
 - You are a chatbot, not merely a command parser. You can answer questions, compare options, summarize notes, identify conflicts, analyze workload, and suggest next steps without changing data.
-- If a requested change is ambiguous or important information is missing, ask one concise follow-up question. In that case action must be answer with no operations.
+- If a requested change is ambiguous or important information is missing, ask one concise follow-up question. In that case action must be answer with no operations. Missing task scheduling fields are an explicit exception governed by TASK CREATION DEFAULTS below.
 - Never claim that a change has already been applied. The UI requires the user to approve every proposal.
 - Use action=proposal only when the user clearly asks to add, edit, move, complete, reorder, or delete MAP data and the requested change is sufficiently clear. For analysis, discussion, suggestions, or clarification, use action=answer.
 
@@ -357,7 +391,8 @@ DATA RULES
 - The browser applies operations locally to the current data. You never return the complete MAP dataset.
 - For new records create a unique id beginning with ai-. Resolve relative dates against today. Use YYYY-MM-DD dates and 24-hour HH:MM times.
 - Tasks are formal actions with a date; use endDate only when work genuinely spans a date range. A task with time=null is an all-day task; use a 24-hour HH:MM string only when the user specifies a concrete time. When the user asks to work on one outcome throughout a week or from one date through another, create one ranged task instead of duplicate daily tasks. Use routines for actions repeated daily or every N days. Schedule is only recurring weekly time blocks; goals are long-term directions; applications are job opportunities; notes are the unscheduled backlog and rough-idea inbox; references are reusable personal information; habits are daily nutrition checks. Meal selection belongs in mealThemes/mealPlans/mealRecipes, nutrition philosophy belongs in nutritionGuides, and undated things to buy belong in purchaseItems. Fitness plans, techniques, strength history, and completed activities belong in the four fitness collections described above. Never use legacy workouts for new fitness changes.
-- When the user wants to remember an action but gives no date and does not ask to schedule it now, prefer adding a note with category 待办. Do not invent a task date. Use a dated task only when the user supplies a date, asks to schedule it, or explicitly asks to create a task.
+- TASK CREATION DEFAULTS: When the user explicitly asks to create, add, schedule, or be reminded of a task, missing date or time is never a reason to ask a follow-up. Default a missing date to today (${today}), default a missing time to null (全天), and default endDate/details/goalId/carriedFrom/completedAt to null, category to the best obvious match or 生活, priority to normal, and status to todo. Immediately return a proposal preview. Ask only if the action/title itself cannot be determined or two existing records make the target genuinely ambiguous.
+- When the user wants to remember an action but gives no date and does not ask to schedule it now, prefer adding a note with category 待办. Do not invent a task date. This note rule never overrides an explicit request to create a task; explicit task creation always uses today's all-day defaults when scheduling fields are omitted.
 - Preserve details, goalId, carriedFrom, and completedAt on existing tasks unless explicitly changing them. For a new task, set goalId to the matching existing goal id when the connection is clear; otherwise use null. Use null for missing optional task fields. Preserve note timestamps unless changed; use valid ISO timestamps for new or updated notes.
 - Each operation has collection, operation, recordId, and recordJson. collection is one MAP array. operation is add, update, delete, or reorder.
 - For add, recordJson is a JSON string containing one complete new record. For update, it is a JSON string containing only the fields explicitly requested to change; the browser merges it into recordId. For delete, recordJson is an empty string. For reorder, recordJson is a JSON string containing the ordered id array.
@@ -365,6 +400,7 @@ DATA RULES
 - For action=proposal: reply that a preview is ready; summary names only the requested outcome; operations contains only the exact changes requested now.
 
 CURRENT MAP CONTEXT (authoritative for the records included):
+${explicitTaskCreation ? `LATEST REQUEST OVERRIDE: This is an explicit task-creation request. Do not ask for a date, time, category, priority, details, or goal. Use date=${today} and time=null for anything the user did not specify, then return the task preview now.` : ""}
 ${currentData}`,
         input: inputMessages,
         text: {
@@ -409,9 +445,10 @@ ${currentData}`,
     if (!outputText) return Response.json({ error: "MAP AI 没有返回可用的回复。" }, { status: 502 });
     const parsed = JSON.parse(outputText) as { reply?: unknown; action?: unknown; summary?: unknown; operations?: unknown };
     const action = parsed.action === "proposal" ? "proposal" : "answer";
-    const operations = action === "proposal" && Array.isArray(parsed.operations)
+    const filteredOperations = action === "proposal" && Array.isArray(parsed.operations)
       ? parsed.operations.filter((operation) => !focus || operation && typeof operation === "object" && (operation as { collection?: unknown }).collection === focus)
       : [];
+    const operations = normalizeTaskAddOperations(filteredOperations, today);
     const result = {
       reply: typeof parsed.reply === "string" ? parsed.reply : "我没有生成可用的回复，请再试一次。",
       action,
