@@ -870,6 +870,21 @@ export default function Home() {
   }, [ready, semesterWeekOrder]);
 
   useEffect(() => {
+    const persistBeforeClose = () => {
+      if (!syncReadyRef.current) return;
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(dataRef.current));
+      if (!syncPayloadEquals(toSyncPayload(dataRef.current), syncBaseRef.current)) window.localStorage.setItem(SYNC_DIRTY_KEY, "1");
+    };
+    const persistWhenHidden = () => { if (document.visibilityState === "hidden") persistBeforeClose(); };
+    window.addEventListener("pagehide", persistBeforeClose);
+    document.addEventListener("visibilitychange", persistWhenHidden);
+    return () => {
+      window.removeEventListener("pagehide", persistBeforeClose);
+      document.removeEventListener("visibilitychange", persistWhenHidden);
+    };
+  }, []);
+
+  useEffect(() => {
     if (ready) window.localStorage.setItem(NAV_ORDER_STORAGE_KEY, JSON.stringify(navOrder));
   }, [ready, navOrder]);
 
@@ -1737,10 +1752,14 @@ export default function Home() {
         hasFollowUpChanges = !syncPayloadEquals(nextPayload, server.data);
       }
 
-      rememberSync(server.revision, server.data || desired);
       const mergedReferences = mergeDeviceAndCloudReferences(dataRef.current.references, nextPayload.references);
       const nextData = hydrateAppData({ ...nextPayload, references: mergedReferences }, getTorontoToday(), mergedReferences);
-      if (!syncPayloadEquals(toSyncPayload(dataRef.current), nextPayload)) {
+      hasFollowUpChanges = !syncPayloadEquals(toSyncPayload(nextData), server.data);
+      // Persist the actual data before advancing its sync baseline. Closing
+      // between these writes must never make an old snapshot look like an edit.
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nextData));
+      rememberSync(server.revision, server.data || desired);
+      if (!syncPayloadEquals(toSyncPayload(dataRef.current), toSyncPayload(nextData))) {
         skipNextSyncPayloadRef.current = hasFollowUpChanges ? null : toSyncPayload(nextData) as SyncedAppData;
         dataRef.current = nextData;
         setData(nextData);
@@ -1750,6 +1769,8 @@ export default function Home() {
         window.localStorage.setItem(SYNC_DIRTY_KEY, "1");
         setSyncStatus("pending");
         setSyncMessage("新改动待同步");
+        if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = setTimeout(() => { void synchronizeData(); }, 850);
       } else {
         window.localStorage.removeItem(SYNC_DIRTY_KEY);
         setSyncStatus(conflicts ? "conflict" : "synced");
