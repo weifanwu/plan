@@ -2232,7 +2232,7 @@ export default function Home() {
                   <div className="mobile-agenda-list">
                     {mobileSelectedTasks.map((task) => <article key={task.id} className={`mobile-agenda-item task ${categoryTone[task.category]} ${task.carriedFrom ? "carried" : ""}`}><TaskCalendarCheck task={task} onToggle={() => toggleTask(task.id)} /><button onClick={() => setTaskEditor(task)}><time>{task.date === mobileCalendarDate ? task.time || "全天" : "持续"}</time><span><strong>{task.title}</strong><small>{task.endDate ? `${formatDate(task.date)} → ${formatDate(task.endDate)}` : task.category}{task.details ? ` · ${task.details}` : ""}</small></span></button></article>)}
                     {mobileSelectedRoutines.map((routine) => <article key={routine.id} className={`mobile-agenda-item routine ${categoryTone[routine.category]}`}><RoutineCalendarCheck completed={routine.completedDates.includes(mobileCalendarDate)} label={routine.title} onToggle={() => toggleRoutineCompletion(routine.id, mobileCalendarDate)} /><button onClick={() => setRoutineEditor(routine)}><time>{routine.time || "全天"}</time><span><strong>{routine.title}</strong><small>固定任务 · {routineFrequencyLabel(routine)}</small></span></button></article>)}
-                    {mobileSelectedSchedules.map((item) => <button key={item.id} className={`mobile-agenda-item schedule ${item.color}`} onClick={() => setScheduleEditor(item)}><span className="mobile-agenda-symbol">{item.kind === "TA" ? "TA" : "课"}</span><time>{item.start}</time><span><strong>{item.code}</strong><small>{item.title} · {item.room}</small></span></button>)}
+                    {mobileSelectedSchedules.map((item) => <button key={item.id} className={`mobile-agenda-item schedule ${item.color}`} onClick={() => setScheduleEditor(item)}><span className="mobile-agenda-symbol">{item.kind === "TA" ? "TA" : "课"}</span><time>{item.start}<small>{item.end}</small></time><span><strong>{item.code}</strong><small>{item.title}</small><em>{item.room || "待确认"}</em></span></button>)}
                     {mobileSelectedTasks.length === 0 && mobileSelectedRoutines.length === 0 && mobileSelectedSchedules.length === 0 && <div className="mobile-agenda-empty"><span>○</span><p>这一天没有安排</p><button onClick={() => openNewTask(mobileCalendarDate)}>添加一个任务</button></div>}
                   </div>
                 </section>
@@ -2258,8 +2258,11 @@ export default function Home() {
                         {[0, 1, 2, 3, 4, 5].map((line) => <i key={line} style={{ top: `${line * 20}%` }} />)}
                         {data.schedule.filter((item) => item.days.includes(day)).map((item) => {
                           const top = ((timeToMinutes(item.start) - 480) / 600) * 100;
-                          const height = ((timeToMinutes(item.end) - timeToMinutes(item.start)) / 600) * 100;
-                          return <button key={item.id} className={`schedule-block ${item.color}`} style={{ top: `${top}%`, height: `${height}%` }} onClick={() => setScheduleEditor(item)}><strong>{item.code}</strong><span>{item.start}—{item.end}</span><small>{item.room}</small></button>;
+                          const duration = timeToMinutes(item.end) - timeToMinutes(item.start);
+                          const height = (duration / 600) * 100;
+                          const compact = duration <= 60;
+                          const room = item.room || "待确认";
+                          return <button key={item.id} className={`schedule-block ${item.color} ${compact ? "compact" : ""}`} style={{ top: `${top}%`, height: `${height}%` }} onClick={() => setScheduleEditor(item)} title={`${item.title} · ${item.start}—${item.end} · ${room}`} aria-label={`编辑 ${item.code}，${item.start} 到 ${item.end}，地点 ${room}`}><strong>{item.code}</strong><span className="schedule-block-meta"><span>{item.start}—{item.end}</span><small>{room}</small></span></button>;
                         })}
                       </div>
                     </div>
